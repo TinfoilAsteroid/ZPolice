@@ -1,0 +1,3588 @@
+# file opened: zpolice.asm
+   1  0000              ;==============================================================================
+   2  0000              ; Z-POLICE  -  3D vector city flight for the ZX Spectrum Next
+   3  0000              ;
+   4  0000              ;  Z80N assembler (sjasmplus --zxnext).  Layer 2 256x192x8bpp, double buffered.
+   5  0000              ;  Maths: world positions are 16-bit integers (one city cell = 256 units),
+   6  0000              ;         trig values are S7.8 fixed point (1.0 = $0100).
+   7  0000              ;  Hidden line removal: painter's algorithm. Buildings are walked over the
+   8  0000              ;  grid far-to-near (no sort needed). Each building is filled solid and then
+   9  0000              ;  outlined, so nearer buildings overwrite the lines of those behind them:
+  10  0000              ;    - wholly on screen: its silhouette (table driven from the visible face
+  11  0000              ;      set) is filled once, outlined, and the interior edges drawn as lines
+  12  0000              ;    - crossing the view frustum: each visible face is clipped in 3D
+  13  0000              ;      (Sutherland-Hodgman, 5 planes), filled and outlined separately
+  14  0000              ;  Rasterisation then only ever sees on-screen 8-bit coordinates.
+  15  0000              ;
+  16  0000              ;  Controls: Q/A speed up/down   W stop      S/F turn left/right
+  17  0000              ;            E/D nose down/up    T/G climb/descend
+  18  0000              ;
+  19  0000              ;  Memory while running:
+  20  0000              ;    $0000-$BFFF  Layer 2 back buffer (MMU slots 0-5), address = y*256+x
+  21  0000              ;    $C000-$FFFF  code, tables, variables, stack (16K bank 0)
+  22  0000              ;==============================================================================
+  23  0000
+  24  0000                      DEVICE ZXSPECTRUMNEXT
+  25  0000                      SLDOPT COMMENT WPMEM, LOGPOINT, ASSERTION
+  26  0000                      CSPECTMAP zpolice.map
+  27  0000                      OPT --zxnext=cspect --syntax=a --reversepop
+  28  0000              ;------------------------------------------------------------------------------
+  29  0000              ; Tuning constants
+  30  0000              ;------------------------------------------------------------------------------
+  31  0000              NEAR            equ 16          ; near clip plane (world units)
+  32  0000              VIEW_R          equ 6           ; buildings drawn within +/- this many cells
+  33  0000              DOT_R           equ 5           ; street intersection markers radius (cells)
+  34  0000              PMAX            equ 24          ; pitch limit (256 = 360 deg) - match gentables.py
+  35  0000              SPEED_MAX       equ 56
+  36  0000              SPEED_MIN       equ -12
+  37  0000              YAW_RATE        equ 3
+  38  0000              CLIMB_RATE      equ 8
+  39  0000              MIN_Y           equ 16
+  40  0000              MAX_Y           equ 900
+  41  0000              WORLD_MIN       equ 64
+  42  0000              WORLD_MAX       equ 8128
+  43  0000              DMA_SPAN_MIN    equ 20          ; spans this wide or wider are filled by DMA
+  44  0000              COLL_M          equ 24          ; collision margin around buildings
+  45  0000
+  46  0000              INSET0          equ 40          ; block footprint
+  47  0000              SIZE0           equ 176
+  48  0000              INSET1          equ 80          ; tower footprint
+  49  0000              SIZE1           equ 96
+  50  0000
+  51  0000              ; Layer 2 colours (RRRGGGBB). Avoid $E3 (global transparency).
+  52  0000              SKY_COL         equ $01
+  53  0000              GROUND_COL      equ $08
+  54  0000              FILL_COL        equ $00
+  55  0000              EDGE_COL        equ $FF
+  56  0000              DOT_COL         equ $B6
+  57  0000              HUD_COL         equ $1C
+  58  0000              HUD_WARN        equ $E0
+  59  0000
+  60  0000              L2_BANK_A       equ 9           ; 16K banks 9-11
+  61  0000              L2_BANK_B       equ 12          ; 16K banks 12-14
+  62  0000
+  63  0000              ; zxnDMA WR0 (transfer A->B) with only the length low / high byte following
+  64  0000              DMA_WR0_LEN_LO  equ %00100101
+  65  0000              DMA_WR0_LEN_HI  equ %01000101
+  66  0000
+  67  0000              ; Self-modified opcodes for the line drawer
+  68  0000              OP_INC_L        equ $2C
+  69  0000              OP_DEC_L        equ $2D
+  70  0000              OP_INC_H        equ $24
+  71  0000              OP_DEC_H        equ $25
+  72  0000
+  73  0000              ; dst = src + vec  (three 16-bit components)
+  74  0000                      MACRO VADD QD, QS, QV
+  75  0000 ~                    ld hl,(QS)
+  76  0000 ~                    ld de,(QV)
+  77  0000 ~                    add hl,de
+  78  0000 ~                    ld (QD),hl
+  79  0000 ~                    ld hl,(QS+2)
+  80  0000 ~                    ld de,(QV+2)
+  81  0000 ~                    add hl,de
+  82  0000 ~                    ld (QD+2),hl
+  83  0000 ~                    ld hl,(QS+4)
+  84  0000 ~                    ld de,(QV+4)
+  85  0000 ~                    add hl,de
+  86  0000 ~                    ld (QD+4),hl
+  87  0000                      ENDM
+  88  0000
+  89  0000              ; Copy cached screen corner of face vertex (HL)+ into p2buf (DE)+ with the
+  90  0000              ; outline flag for edge bit EB taken from df_mask.  B = high vtx.
+  91  0000                      MACRO FACEVTX EB
+  92  0000 ~                    ld a,(hl)
+  93  0000 ~                    inc hl
+  94  0000 ~                    add a,7
+  95  0000 ~                    ld c,a
+  96  0000 ~                    ld a,(bc)
+  97  0000 ~                    ld (de),a
+  98  0000 ~                    inc e
+  99  0000 ~                    inc c
+ 100  0000 ~                    ld a,(bc)
+ 101  0000 ~                    ld (de),a
+ 102  0000 ~                    inc e
+ 103  0000 ~                    ld a,(df_mask)
+ 104  0000 ~                    and EB
+ 105  0000 ~                    ld (de),a
+ 106  0000 ~                    inc e
+ 107  0000 ~                    inc e
+ 108  0000                      ENDM
+ 109  0000
+ 110  0000                      ORG $C000
+ 111  C000
+ 112  C000              ;==============================================================================
+ 113  C000              ; Entry
+ 114  C000              ;==============================================================================
+ 115  C000              start:
+ 116  C000 F3                   di
+ 117  C001 31 71 E3             ld sp,stack_top
+ 118  C004 ED 91 07 03          nextreg $07,3                   ; 28MHz
+ 119  C008 ED 91 70 00          nextreg $70,0                   ; Layer 2 256x192 mode
+ 120  C00C ED 91 14 E3          nextreg $14,$E3                 ; global transparency colour
+ 121  C010 ED 91 15 00          nextreg $15,%00000000           ; sprites off, priority S L U
+ 122  C014 ED 91 16 00          nextreg $16,0                   ; Layer 2 scroll X
+ 123  C018 ED 91 17 00          nextreg $17,0                   ; Layer 2 scroll Y
+ 124  C01C ED 91 1C 01          nextreg $1C,%00000001           ; reset L2 clip index
+ 125  C020 ED 91 18 00          nextreg $18,0
+ 126  C024 ED 91 18 FF          nextreg $18,255
+ 127  C028 ED 91 18 00          nextreg $18,0
+ 128  C02C ED 91 18 BF          nextreg $18,191
+ 129  C030 AF                   xor a
+ 130  C031 D3 FE                out ($FE),a                     ; black border
+ 131  C033 01 3B 12             ld bc,$123B
+ 132  C036 3E 02                ld a,%00000010                  ; Layer 2 visible, no write paging
+ 133  C038 ED 79                out (c),a
+ 134  C03A
+ 135  C03A                      ; clear both buffers once
+ 136  C03A 3E 60                ld a,96
+ 137  C03C 32 60 D0             ld (horizon),a
+ 138  C03F 3E 09                ld a,L2_BANK_A
+ 139  C041 CD 89 C0             call map_bank
+ 140  C044 CD 39 CA             call clear_screen
+ 141  C047 3E 0C                ld a,L2_BANK_B
+ 142  C049 CD 89 C0             call map_bank
+ 143  C04C CD 39 CA             call clear_screen
+ 144  C04F 3E 09                ld a,L2_BANK_A
+ 145  C051 ED 92 12             nextreg $12,a
+ 146  C054 32 5E D0             ld (front_bank),a
+ 147  C057 3E 0C                ld a,L2_BANK_B
+ 148  C059 32 5F D0             ld (back_bank),a
+ 149  C05C
+ 150  C05C              ;==============================================================================
+ 151  C05C              ; Main loop
+ 152  C05C              ;==============================================================================
+ 153  C05C              main_loop:
+ 154  C05C CD BC C0             call update_player
+ 155  C05F CD 8D C2             call setup_frame
+ 156  C062 3A 5F D0             ld a,(back_bank)
+ 157  C065 CD 89 C0             call map_bank
+ 158  C068 CD 39 CA             call clear_screen
+ 159  C06B CD 0C CF             call draw_dots
+ 160  C06E CD 81 CA             call draw_city
+ 161  C071 CD B8 CF             call draw_hud
+ 162  C074 CD A2 C0             call wait_vblank
+ 163  C077                      ; flip
+ 164  C077 3A 5F D0             ld a,(back_bank)
+ 165  C07A ED 92 12             nextreg $12,a
+ 166  C07D 2A 5E D0             ld hl,(front_bank)              ; L = front, H = back
+ 167  C080 7D                   ld a,l
+ 168  C081 6C                   ld l,h
+ 169  C082 67                   ld h,a
+ 170  C083 22 5E D0             ld (front_bank),hl
+ 171  C086 C3 5C C0             jp main_loop
+ 172  C089
+ 173  C089              ;------------------------------------------------------------------------------
+ 174  C089              ; Map the 48K Layer 2 buffer starting at 16K bank A into $0000-$BFFF
+ 175  C089              ;------------------------------------------------------------------------------
+ 176  C089              map_bank:
+ 177  C089 87                   add a,a                         ; 8K page
+ 178  C08A ED 92 50             nextreg $50,a
+ 179  C08D 3C                   inc a
+ 180  C08E ED 92 51             nextreg $51,a
+ 181  C091 3C                   inc a
+ 182  C092 ED 92 52             nextreg $52,a
+ 183  C095 3C                   inc a
+ 184  C096 ED 92 53             nextreg $53,a
+ 185  C099 3C                   inc a
+ 186  C09A ED 92 54             nextreg $54,a
+ 187  C09D 3C                   inc a
+ 188  C09E ED 92 55             nextreg $55,a
+ 189  C0A1 C9                   ret
+ 190  C0A2
+ 191  C0A2              ;------------------------------------------------------------------------------
+ 192  C0A2              ; Wait until the raster is outside the display area (line >= 192)
+ 193  C0A2              ;------------------------------------------------------------------------------
+ 194  C0A2              wait_vblank:
+ 195  C0A2 01 3B 24             ld bc,$243B
+ 196  C0A5 3E 1E                ld a,$1E
+ 197  C0A7 ED 79                out (c),a
+ 198  C0A9 04                   inc b
+ 199  C0AA ED 78                in a,(c)
+ 200  C0AC E6 01                and 1
+ 201  C0AE C0                   ret nz                          ; line >= 256
+ 202  C0AF 05                   dec b
+ 203  C0B0 3E 1F                ld a,$1F
+ 204  C0B2 ED 79                out (c),a
+ 205  C0B4 04                   inc b
+ 206  C0B5 ED 78                in a,(c)
+ 207  C0B7 FE C0                cp 192
+ 208  C0B9 38 E7                jr c,wait_vblank
+ 209  C0BB C9                   ret
+ 210  C0BC
+ 211  C0BC              ;==============================================================================
+ 212  C0BC              ; Player input and movement
+ 213  C0BC              ;==============================================================================
+ 214  C0BC              update_player:
+ 215  C0BC AF                   xor a
+ 216  C0BD D3 FE                out ($FE),a                     ; border back to black
+ 217  C0BF                      ; remember position in case we fly into something
+ 218  C0BF 21 49 D0             ld hl,cam_x
+ 219  C0C2 11 51 D0             ld de,old_pos
+ 220  C0C5 01 08 00             ld bc,8                         ; cam_x(3) cam_z(3) cam_y(2)
+ 221  C0C8 ED B0                ldir
+ 222  C0CA
+ 223  C0CA 01 FE FB             ld bc,$FBFE                     ; Q W E R T
+ 224  C0CD ED 78                in a,(c)
+ 225  C0CF 2F                   cpl
+ 226  C0D0 32 5C D0             ld (keys1),a
+ 227  C0D3 01 FE FD             ld bc,$FDFE                     ; A S D F G
+ 228  C0D6 ED 78                in a,(c)
+ 229  C0D8 2F                   cpl
+ 230  C0D9 32 5D D0             ld (keys2),a
+ 231  C0DC
+ 232  C0DC                      ; --- speed ---
+ 233  C0DC 3A 5C D0             ld a,(keys1)
+ 234  C0DF CB 47                bit 0,a                         ; Q
+ 235  C0E1 28 0B                jr z,.nq
+ 236  C0E3 3A 5B D0             ld a,(speed)
+ 237  C0E6 FE 38                cp SPEED_MAX
+ 238  C0E8 28 04                jr z,.nq
+ 239  C0EA 3C                   inc a
+ 240  C0EB 32 5B D0             ld (speed),a
+ 241  C0EE 3A 5D D0     .nq:    ld a,(keys2)
+ 242  C0F1 CB 47                bit 0,a                         ; A
+ 243  C0F3 28 0B                jr z,.na
+ 244  C0F5 3A 5B D0             ld a,(speed)
+ 245  C0F8 FE F4                cp (SPEED_MIN) & $FF
+ 246  C0FA 28 04                jr z,.na
+ 247  C0FC 3D                   dec a
+ 248  C0FD 32 5B D0             ld (speed),a
+ 249  C100 3A 5C D0     .na:    ld a,(keys1)
+ 250  C103 CB 4F                bit 1,a                         ; W
+ 251  C105 28 04                jr z,.nw
+ 252  C107 AF                   xor a
+ 253  C108 32 5B D0             ld (speed),a
+ 254  C10B              .nw:
+ 255  C10B                      ; --- yaw ---
+ 256  C10B 3A 5D D0             ld a,(keys2)
+ 257  C10E CB 4F                bit 1,a                         ; S - left
+ 258  C110 28 08                jr z,.ns
+ 259  C112 3A 59 D0             ld a,(yaw)
+ 260  C115 D6 03                sub YAW_RATE
+ 261  C117 32 59 D0             ld (yaw),a
+ 262  C11A 3A 5D D0     .ns:    ld a,(keys2)
+ 263  C11D CB 5F                bit 3,a                         ; F - right
+ 264  C11F 28 08                jr z,.nf
+ 265  C121 3A 59 D0             ld a,(yaw)
+ 266  C124 C6 03                add a,YAW_RATE
+ 267  C126 32 59 D0             ld (yaw),a
+ 268  C129              .nf:
+ 269  C129                      ; --- pitch ---
+ 270  C129 3A 5C D0             ld a,(keys1)
+ 271  C12C CB 57                bit 2,a                         ; E - nose down
+ 272  C12E 28 0B                jr z,.ne
+ 273  C130 3A 5A D0             ld a,(pitch)
+ 274  C133 FE E8                cp (-PMAX) & $FF
+ 275  C135 28 04                jr z,.ne
+ 276  C137 3D                   dec a
+ 277  C138 32 5A D0             ld (pitch),a
+ 278  C13B 3A 5D D0     .ne:    ld a,(keys2)
+ 279  C13E CB 57                bit 2,a                         ; D - nose up
+ 280  C140 28 0B                jr z,.nd
+ 281  C142 3A 5A D0             ld a,(pitch)
+ 282  C145 FE 18                cp PMAX
+ 283  C147 28 04                jr z,.nd
+ 284  C149 3C                   inc a
+ 285  C14A 32 5A D0             ld (pitch),a
+ 286  C14D              .nd:
+ 287  C14D                      ; --- height ---
+ 288  C14D 3A 5C D0             ld a,(keys1)
+ 289  C150 CB 67                bit 4,a                         ; T - up
+ 290  C152 28 10                jr z,.nt
+ 291  C154 2A 4F D0             ld hl,(cam_y)
+ 292  C157 11 08 00             ld de,CLIMB_RATE
+ 293  C15A 19                   add hl,de
+ 294  C15B 11 84 03             ld de,MAX_Y
+ 295  C15E CD 10 C2             call min_hl_de
+ 296  C161 22 4F D0             ld (cam_y),hl
+ 297  C164 3A 5D D0     .nt:    ld a,(keys2)
+ 298  C167 CB 67                bit 4,a                         ; G - down
+ 299  C169 28 10                jr z,.ng
+ 300  C16B 2A 4F D0             ld hl,(cam_y)
+ 301  C16E 11 F8 FF             ld de,-CLIMB_RATE
+ 302  C171 19                   add hl,de
+ 303  C172 11 10 00             ld de,MIN_Y
+ 304  C175 CD 18 C2             call max_hl_de
+ 305  C178 22 4F D0             ld (cam_y),hl
+ 306  C17B              .ng:
+ 307  C17B                      ; --- move along heading: pos += speed * (sin, cos) ---
+ 308  C17B 3A 5B D0             ld a,(speed)
+ 309  C17E B7                   or a
+ 310  C17F 28 30                jr z,.moved
+ 311  C181 3A 59 D0             ld a,(yaw)
+ 312  C184 CD 13 C3             call get_sin
+ 313  C187 EB                   ex de,hl
+ 314  C188 3A 5B D0             ld a,(speed)
+ 315  C18B 67                   ld h,a
+ 316  C18C 2E 00                ld l,0
+ 317  C18E CD C6 C3             call fmul                       ; HL = speed*sin in 1/256 units
+ 318  C191 DD 21 49 D0          ld ix,cam_x
+ 319  C195 CD C9 C1             call add_pos
+ 320  C198 3A 59 D0             ld a,(yaw)
+ 321  C19B C6 40                add a,64
+ 322  C19D CD 13 C3             call get_sin
+ 323  C1A0 EB                   ex de,hl
+ 324  C1A1 3A 5B D0             ld a,(speed)
+ 325  C1A4 67                   ld h,a
+ 326  C1A5 2E 00                ld l,0
+ 327  C1A7 CD C6 C3             call fmul
+ 328  C1AA DD 21 4C D0          ld ix,cam_z
+ 329  C1AE CD C9 C1             call add_pos
+ 330  C1B1              .moved:
+ 331  C1B1 CD 20 C2             call check_collision
+ 332  C1B4 C8                   ret z
+ 333  C1B5                      ; crashed - restore and stop
+ 334  C1B5 21 51 D0             ld hl,old_pos
+ 335  C1B8 11 49 D0             ld de,cam_x
+ 336  C1BB 01 08 00             ld bc,8
+ 337  C1BE ED B0                ldir
+ 338  C1C0 AF                   xor a
+ 339  C1C1 32 5B D0             ld (speed),a
+ 340  C1C4 3E 02                ld a,2
+ 341  C1C6 D3 FE                out ($FE),a                     ; red border flash
+ 342  C1C8 C9                   ret
+ 343  C1C9
+ 344  C1C9              ; IX -> 24-bit position (frac, lo, hi). HL = signed delta in 1/256 units.
+ 345  C1C9              ; Clamps the integer part to WORLD_MIN..WORLD_MAX.
+ 346  C1C9              add_pos:
+ 347  C1C9 7C                   ld a,h
+ 348  C1CA 17                   rla
+ 349  C1CB 9F                   sbc a,a
+ 350  C1CC 4F                   ld c,a                          ; sign extension
+ 351  C1CD DD 7E 00             ld a,(ix+0)
+ 352  C1D0 85                   add a,l
+ 353  C1D1 DD 77 00             ld (ix+0),a
+ 354  C1D4 DD 7E 01             ld a,(ix+1)
+ 355  C1D7 8C                   adc a,h
+ 356  C1D8 DD 77 01             ld (ix+1),a
+ 357  C1DB DD 7E 02             ld a,(ix+2)
+ 358  C1DE 89                   adc a,c
+ 359  C1DF DD 77 02             ld (ix+2),a
+ 360  C1E2 DD 6E 01             ld l,(ix+1)
+ 361  C1E5 DD 66 02             ld h,(ix+2)
+ 362  C1E8 CB 7C                bit 7,h
+ 363  C1EA 20 1B                jr nz,.lo
+ 364  C1EC 11 40 00             ld de,WORLD_MIN
+ 365  C1EF B7                   or a
+ 366  C1F0 ED 52                sbc hl,de
+ 367  C1F2 38 13                jr c,.lo
+ 368  C1F4 DD 6E 01             ld l,(ix+1)
+ 369  C1F7 DD 66 02             ld h,(ix+2)
+ 370  C1FA 11 C0 1F             ld de,WORLD_MAX
+ 371  C1FD CD 10 C2             call min_hl_de
+ 372  C200 DD 75 01             ld (ix+1),l
+ 373  C203 DD 74 02             ld (ix+2),h
+ 374  C206 C9                   ret
+ 375  C207 DD 36 01 40  .lo:    ld (ix+1),WORLD_MIN & $FF
+ 376  C20B DD 36 02 00          ld (ix+2),WORLD_MIN >> 8
+ 377  C20F C9                   ret
+ 378  C210
+ 379  C210              ; Unsigned 16-bit clamps
+ 380  C210              min_hl_de:
+ 381  C210 E5                   push hl
+ 382  C211 B7                   or a
+ 383  C212 ED 52                sbc hl,de
+ 384  C214 E1                   pop hl
+ 385  C215 D8                   ret c
+ 386  C216 EB                   ex de,hl
+ 387  C217 C9                   ret
+ 388  C218              max_hl_de:
+ 389  C218 E5                   push hl
+ 390  C219 B7                   or a
+ 391  C21A ED 52                sbc hl,de
+ 392  C21C E1                   pop hl
+ 393  C21D D0                   ret nc
+ 394  C21E EB                   ex de,hl
+ 395  C21F C9                   ret
+ 396  C220
+ 397  C220              ; Returns NZ if the camera is inside a building (+margin)
+ 398  C220              check_collision:
+ 399  C220 CD 5D C2             call cam_cell_ptr
+ 400  C223 7E                   ld a,(hl)
+ 401  C224 B7                   or a
+ 402  C225 C8                   ret z
+ 403  C226 4F                   ld c,a
+ 404  C227 CD 72 C2             call bld_dims                   ; B = inset, E = size
+ 405  C22A 78                   ld a,b
+ 406  C22B D6 18                sub COLL_M
+ 407  C22D 57                   ld d,a                          ; lo bound
+ 408  C22E 78                   ld a,b
+ 409  C22F 83                   add a,e
+ 410  C230 C6 18                add a,COLL_M
+ 411  C232 5F                   ld e,a                          ; hi bound
+ 412  C233 3A 4A D0             ld a,(cam_x+1)
+ 413  C236 BA                   cp d
+ 414  C237 38 22                jr c,.no
+ 415  C239 BB                   cp e
+ 416  C23A 30 1F                jr nc,.no
+ 417  C23C 3A 4D D0             ld a,(cam_z+1)
+ 418  C23F BA                   cp d
+ 419  C240 38 19                jr c,.no
+ 420  C242 BB                   cp e
+ 421  C243 30 16                jr nc,.no
+ 422  C245 79                   ld a,c
+ 423  C246 CD 80 C2             call bld_height                 ; HL = height
+ 424  C249 11 18 00             ld de,COLL_M
+ 425  C24C 19                   add hl,de
+ 426  C24D ED 5B 4F D0          ld de,(cam_y)
+ 427  C251 B7                   or a
+ 428  C252 ED 52                sbc hl,de                       ; height+M - camY
+ 429  C254 38 05                jr c,.no
+ 430  C256 28 03                jr z,.no
+ 431  C258 F6 01                or 1                            ; NZ
+ 432  C25A C9                   ret
+ 433  C25B AF           .no:    xor a
+ 434  C25C C9                   ret
+ 435  C25D
+ 436  C25D              ; HL -> map byte for the cell the camera is in
+ 437  C25D              cam_cell_ptr:
+ 438  C25D 3A 4E D0             ld a,(cam_z+2)
+ 439  C260 6F                   ld l,a
+ 440  C261 26 00                ld h,0
+ 441  C263 29                   add hl,hl
+ 442  C264 29                   add hl,hl
+ 443  C265 29                   add hl,hl
+ 444  C266 29                   add hl,hl
+ 445  C267 29                   add hl,hl
+ 446  C268 3A 4B D0             ld a,(cam_x+2)
+ 447  C26B ED 31                add hl,a
+ 448  C26D 11 71 DE             ld de,city_map
+ 449  C270 19                   add hl,de
+ 450  C271 C9                   ret
+ 451  C272
+ 452  C272              ; C = map byte -> B = inset, E = size
+ 453  C272              bld_dims:
+ 454  C272 CB 61                bit 4,c
+ 455  C274 20 05                jr nz,.t
+ 456  C276 06 28                ld b,INSET0
+ 457  C278 1E B0                ld e,SIZE0
+ 458  C27A C9                   ret
+ 459  C27B 06 50        .t:     ld b,INSET1
+ 460  C27D 1E 60                ld e,SIZE1
+ 461  C27F C9                   ret
+ 462  C280
+ 463  C280              ; A = map byte -> HL = height in world units
+ 464  C280              bld_height:
+ 465  C280 E6 0F                and 15
+ 466  C282 87                   add a,a
+ 467  C283 21 51 DE             ld hl,htab
+ 468  C286 ED 31                add hl,a
+ 469  C288 7E                   ld a,(hl)
+ 470  C289 23                   inc hl
+ 471  C28A 66                   ld h,(hl)
+ 472  C28B 6F                   ld l,a
+ 473  C28C C9                   ret
+ 474  C28D
+ 475  C28D              ;==============================================================================
+ 476  C28D              ; Per-frame view setup: trig, rotated building edge vectors, horizon
+ 477  C28D              ;==============================================================================
+ 478  C28D              setup_frame:
+ 479  C28D 3A 59 D0             ld a,(yaw)
+ 480  C290 CD 13 C3             call get_sin
+ 481  C293 22 61 D0             ld (sin_y),hl
+ 482  C296 3A 59 D0             ld a,(yaw)
+ 483  C299 C6 40                add a,64
+ 484  C29B CD 13 C3             call get_sin
+ 485  C29E 22 63 D0             ld (cos_y),hl
+ 486  C2A1 3A 5A D0             ld a,(pitch)
+ 487  C2A4 CD 13 C3             call get_sin
+ 488  C2A7 22 65 D0             ld (sin_p),hl
+ 489  C2AA 3A 5A D0             ld a,(pitch)
+ 490  C2AD C6 40                add a,64
+ 491  C2AF CD 13 C3             call get_sin
+ 492  C2B2 22 67 D0             ld (cos_p),hl
+ 493  C2B5
+ 494  C2B5                      ; ground plane relative to camera: dy = -camY
+ 495  C2B5 2A 4F D0             ld hl,(cam_y)
+ 496  C2B8 CD BA C3             call neg_hl
+ 497  C2BB E5                   push hl
+ 498  C2BC ED 5B 67 D0          ld de,(cos_p)
+ 499  C2C0 CD C6 C3             call fmul
+ 500  C2C3 22 69 D0             ld (yb),hl                      ; Y contribution of ground
+ 501  C2C6 E1                   pop hl
+ 502  C2C7 ED 5B 65 D0          ld de,(sin_p)
+ 503  C2CB CD C6 C3             call fmul
+ 504  C2CE 22 6B D0             ld (zb),hl                      ; Z contribution of ground
+ 505  C2D1
+ 506  C2D1                      ; frustum cull factor c = cosP - 0.75|sinP|
+ 507  C2D1 2A 65 D0             ld hl,(sin_p)
+ 508  C2D4 CD C1 C3             call abs_hl
+ 509  C2D7 CD 8D C5             call z34
+ 510  C2DA EB                   ex de,hl
+ 511  C2DB 2A 67 D0             ld hl,(cos_p)
+ 512  C2DE B7                   or a
+ 513  C2DF ED 52                sbc hl,de
+ 514  C2E1 22 99 D0             ld (cull_c),hl
+ 515  C2E4
+ 516  C2E4 21 B0 00             ld hl,SIZE0
+ 517  C2E7 DD 21 6D D0          ld ix,vecs0
+ 518  C2EB CD 1B C3             call make_vecs
+ 519  C2EE 21 60 00             ld hl,SIZE1
+ 520  C2F1 DD 21 7D D0          ld ix,vecs1
+ 521  C2F5 CD 1B C3             call make_vecs
+ 522  C2F8
+ 523  C2F8 3A 4B D0             ld a,(cam_x+2)
+ 524  C2FB 32 A7 D0             ld (cx),a
+ 525  C2FE 3A 4E D0             ld a,(cam_z+2)
+ 526  C301 32 A8 D0             ld (cz),a
+ 527  C304
+ 528  C304 3A 5A D0             ld a,(pitch)
+ 529  C307 C6 18                add a,PMAX
+ 530  C309 21 00 DC             ld hl,hztab
+ 531  C30C ED 31                add hl,a
+ 532  C30E 7E                   ld a,(hl)
+ 533  C30F 32 60 D0             ld (horizon),a
+ 534  C312 C9                   ret
+ 535  C313
+ 536  C313              ; A = angle -> HL = sin (S7.8)
+ 537  C313              get_sin:
+ 538  C313 6F                   ld l,a
+ 539  C314 26 D7                ld h,high sin_lo
+ 540  C316 7E                   ld a,(hl)
+ 541  C317 24                   inc h
+ 542  C318 66                   ld h,(hl)
+ 543  C319 6F                   ld l,a
+ 544  C31A C9                   ret
+ 545  C31B
+ 546  C31B              ; Rotate the building edge vectors (s,0,0) and (0,0,s) into camera space.
+ 547  C31B              ; HL = s, IX -> 16 bytes: VX(X,Y,Z) VZ(X,Y,Z) corner offset (X,Z1)
+ 548  C31B              make_vecs:
+ 549  C31B 22 A1 D0             ld (mv_s),hl
+ 550  C31E ED 5B 63 D0          ld de,(cos_y)
+ 551  C322 CD C6 C3             call fmul
+ 552  C325 22 A3 D0             ld (mv_c),hl                    ; s*cosY
+ 553  C328 2A A1 D0             ld hl,(mv_s)
+ 554  C32B ED 5B 61 D0          ld de,(sin_y)
+ 555  C32F CD C6 C3             call fmul
+ 556  C332 22 A5 D0             ld (mv_n),hl                    ; s*sinY
+ 557  C335                      ; VX = ( s cosY, -s sinY sinP, s sinY cosP )
+ 558  C335 2A A3 D0             ld hl,(mv_c)
+ 559  C338 DD 75 00             ld (ix+0),l
+ 560  C33B DD 74 01             ld (ix+1),h
+ 561  C33E 2A A5 D0             ld hl,(mv_n)
+ 562  C341 ED 5B 65 D0          ld de,(sin_p)
+ 563  C345 CD C6 C3             call fmul
+ 564  C348 CD BA C3             call neg_hl
+ 565  C34B DD 75 02             ld (ix+2),l
+ 566  C34E DD 74 03             ld (ix+3),h
+ 567  C351 2A A5 D0             ld hl,(mv_n)
+ 568  C354 ED 5B 67 D0          ld de,(cos_p)
+ 569  C358 CD C6 C3             call fmul
+ 570  C35B DD 75 04             ld (ix+4),l
+ 571  C35E DD 74 05             ld (ix+5),h
+ 572  C361                      ; VZ = ( -s sinY, -s cosY sinP, s cosY cosP )
+ 573  C361 2A A5 D0             ld hl,(mv_n)
+ 574  C364 CD BA C3             call neg_hl
+ 575  C367 DD 75 06             ld (ix+6),l
+ 576  C36A DD 74 07             ld (ix+7),h
+ 577  C36D 2A A3 D0             ld hl,(mv_c)
+ 578  C370 ED 5B 65 D0          ld de,(sin_p)
+ 579  C374 CD C6 C3             call fmul
+ 580  C377 CD BA C3             call neg_hl
+ 581  C37A DD 75 08             ld (ix+8),l
+ 582  C37D DD 74 09             ld (ix+9),h
+ 583  C380 2A A3 D0             ld hl,(mv_c)
+ 584  C383 ED 5B 67 D0          ld de,(cos_p)
+ 585  C387 CD C6 C3             call fmul
+ 586  C38A DD 75 0A             ld (ix+10),l
+ 587  C38D DD 74 0B             ld (ix+11),h
+ 588  C390                      ; cell centre -> footprint corner (-s/2,-s/2) in yaw space
+ 589  C390 2A A5 D0             ld hl,(mv_n)
+ 590  C393 ED 5B A3 D0          ld de,(mv_c)
+ 591  C397 B7                   or a
+ 592  C398 ED 52                sbc hl,de
+ 593  C39A CB 2C                sra h
+ 594  C39C CB 1D                rr l
+ 595  C39E DD 75 0C             ld (ix+12),l                    ; X: s/2 (sinY - cosY)
+ 596  C3A1 DD 74 0D             ld (ix+13),h
+ 597  C3A4 2A A5 D0             ld hl,(mv_n)
+ 598  C3A7 ED 5B A3 D0          ld de,(mv_c)
+ 599  C3AB 19                   add hl,de
+ 600  C3AC CB 2C                sra h
+ 601  C3AE CB 1D                rr l
+ 602  C3B0 CD BA C3             call neg_hl
+ 603  C3B3 DD 75 0E             ld (ix+14),l                    ; Z1: -s/2 (sinY + cosY)
+ 604  C3B6 DD 74 0F             ld (ix+15),h
+ 605  C3B9 C9                   ret
+ 606  C3BA
+ 607  C3BA              ;==============================================================================
+ 608  C3BA              ; Fixed point maths
+ 609  C3BA              ;==============================================================================
+ 610  C3BA
+ 611  C3BA              ; HL = -HL
+ 612  C3BA              neg_hl:
+ 613  C3BA AF                   xor a
+ 614  C3BB 95                   sub l
+ 615  C3BC 6F                   ld l,a
+ 616  C3BD 9F                   sbc a,a
+ 617  C3BE 94                   sub h
+ 618  C3BF 67                   ld h,a
+ 619  C3C0 C9                   ret
+ 620  C3C1
+ 621  C3C1              ; HL = |HL|
+ 622  C3C1              abs_hl:
+ 623  C3C1 CB 7C                bit 7,h
+ 624  C3C3 C8                   ret z
+ 625  C3C4 18 F4                jr neg_hl
+ 626  C3C6
+ 627  C3C6              ; fmul: HL = HL * DE >> 8
+ 628  C3C6              ;   HL = signed 16-bit integer, DE = S7.8 factor in -1.0..+1.0
+ 629  C3C6              ;   Sign/magnitude using two 8x8 MUL D,E.  Preserves IX, IY.
+ 630  C3C6              fmul:
+ 631  C3C6 7C                   ld a,h
+ 632  C3C7 AA                   xor d
+ 633  C3C8 F5                   push af                         ; result sign in bit 7
+ 634  C3C9 CB 7C                bit 7,h
+ 635  C3CB 28 06                jr z,.ap
+ 636  C3CD AF                   xor a
+ 637  C3CE 95                   sub l
+ 638  C3CF 6F                   ld l,a
+ 639  C3D0 9F                   sbc a,a
+ 640  C3D1 94                   sub h
+ 641  C3D2 67                   ld h,a
+ 642  C3D3 CB 7A        .ap:    bit 7,d
+ 643  C3D5 28 06                jr z,.bp
+ 644  C3D7 AF                   xor a
+ 645  C3D8 93                   sub e
+ 646  C3D9 5F                   ld e,a
+ 647  C3DA 9F                   sbc a,a
+ 648  C3DB 92                   sub d
+ 649  C3DC 57                   ld d,a
+ 650  C3DD 7A           .bp:    ld a,d
+ 651  C3DE B7                   or a
+ 652  C3DF 20 10                jr nz,.one                      ; |factor| == 1.0
+ 653  C3E1 7B                   ld a,e
+ 654  C3E2 55                   ld d,l
+ 655  C3E3 ED 30                mul d,e                         ; lo * f
+ 656  C3E5 4A                   ld c,d
+ 657  C3E6 54                   ld d,h
+ 658  C3E7 5F                   ld e,a
+ 659  C3E8 ED 30                mul d,e                         ; hi * f
+ 660  C3EA 7B                   ld a,e
+ 661  C3EB 81                   add a,c
+ 662  C3EC 6F                   ld l,a
+ 663  C3ED 7A                   ld a,d
+ 664  C3EE CE 00                adc a,0
+ 665  C3F0 67                   ld h,a
+ 666  C3F1 F1           .one:   pop af
+ 667  C3F2 F0                   ret p
+ 668  C3F3 AF                   xor a
+ 669  C3F4 95                   sub l
+ 670  C3F5 6F                   ld l,a
+ 671  C3F6 9F                   sbc a,a
+ 672  C3F7 94                   sub h
+ 673  C3F8 67                   ld h,a
+ 674  C3F9 C9                   ret
+ 675  C3FA
+ 676  C3FA              ; HL = (HL * DE) >> 16   HL signed, DE unsigned 0.16 fraction
+ 677  C3FA              mul_frac:
+ 678  C3FA 7C                   ld a,h
+ 679  C3FB 32 DB D0             ld (mf_sign),a
+ 680  C3FE CD C1 C3             call abs_hl
+ 681  C401 44                   ld b,h                          ; ah
+ 682  C402 4D                   ld c,l                          ; al
+ 683  C403 D5                   push de
+ 684  C404 51                   ld d,c
+ 685  C405 ED 30                mul d,e                         ; al*tl
+ 686  C407 6A                   ld l,d
+ 687  C408 26 00                ld h,0
+ 688  C40A D1                   pop de
+ 689  C40B D5                   push de
+ 690  C40C 5A                   ld e,d
+ 691  C40D 51                   ld d,c
+ 692  C40E ED 30                mul d,e                         ; al*th
+ 693  C410 19                   add hl,de
+ 694  C411 3E 00                ld a,0
+ 695  C413 8F                   adc a,a
+ 696  C414 D1                   pop de
+ 697  C415 D5                   push de
+ 698  C416 50                   ld d,b
+ 699  C417 ED 30                mul d,e                         ; ah*tl
+ 700  C419 19                   add hl,de
+ 701  C41A CE 00                adc a,0                         ; A:HL = middle sum
+ 702  C41C 6C                   ld l,h
+ 703  C41D 67                   ld h,a
+ 704  C41E D1                   pop de
+ 705  C41F 5A                   ld e,d
+ 706  C420 50                   ld d,b
+ 707  C421 ED 30                mul d,e                         ; ah*th
+ 708  C423 19                   add hl,de
+ 709  C424 3A DB D0             ld a,(mf_sign)
+ 710  C427 CB 7F                bit 7,a
+ 711  C429 C8                   ret z
+ 712  C42A C3 BA C3             jp neg_hl
+ 713  C42D
+ 714  C42D              ; IX = (HL << 16) / DE   with HL < DE (unsigned) -> 0.16 fraction
+ 715  C42D              div_frac:
+ 716  C42D DD 21 00 00          ld ix,0
+ 717  C431 3E 10                ld a,16
+ 718  C433 DD 29        .lp:    add ix,ix
+ 719  C435 29                   add hl,hl
+ 720  C436 38 08                jr c,.sub
+ 721  C438 B7                   or a
+ 722  C439 ED 52                sbc hl,de
+ 723  C43B 30 06                jr nc,.set
+ 724  C43D 19                   add hl,de
+ 725  C43E 18 05                jr .nx
+ 726  C440 B7           .sub:   or a
+ 727  C441 ED 52                sbc hl,de
+ 728  C443 DD 23        .set:   inc ix
+ 729  C445 3D           .nx:    dec a
+ 730  C446 20 EB                jr nz,.lp
+ 731  C448 C9                   ret
+ 732  C449
+ 733  C449              ; E = A / C, A = A mod C  (8-bit unsigned)
+ 734  C449              div8:
+ 735  C449 5F                   ld e,a
+ 736  C44A AF                   xor a
+ 737  C44B 06 08                ld b,8
+ 738  C44D CB 23        .lp:    sla e
+ 739  C44F 17                   rla
+ 740  C450 38 03                jr c,.s
+ 741  C452 B9                   cp c
+ 742  C453 38 02                jr c,.n
+ 743  C455 91           .s:     sub c
+ 744  C456 1C                   inc e
+ 745  C457 10 F4        .n:     djnz .lp
+ 746  C459 C9                   ret
+ 747  C45A
+ 748  C45A              ;==============================================================================
+ 749  C45A              ; Perspective projection
+ 750  C45A              ;   in : HL -> X,Y,Z (camera space, inside the view frustum, Z > 0)
+ 751  C45A              ;   out: A = screen x (0..255), C = screen y (0..191)
+ 752  C45A              ;   sx = 128 + 128*X/Z,  sy = 96 - 128*Y/Z   (90 degree horizontal FOV)
+ 753  C45A              ;   Z is normalised to 9 bits (256..511) with a barrel shift (count from a
+ 754  C45A              ;   log2 table) that is also applied to X and Y, which are then multiplied
+ 755  C45A              ;   by a 16-bit reciprocal from rtab.  |X| <= Z keeps Xn within 9 bits.
+ 756  C45A              ;==============================================================================
+ 757  C45A              project:
+ 758  C45A 4E                   ld c,(hl)
+ 759  C45B 23                   inc hl
+ 760  C45C 46                   ld b,(hl)
+ 761  C45D 23                   inc hl                          ; BC = X
+ 762  C45E 5E                   ld e,(hl)
+ 763  C45F 23                   inc hl
+ 764  C460 56                   ld d,(hl)
+ 765  C461 23                   inc hl                          ; DE = Y
+ 766  C462 D5                   push de
+ 767  C463 C5                   push bc
+ 768  C464 7E                   ld a,(hl)
+ 769  C465 23                   inc hl
+ 770  C466 66                   ld h,(hl)
+ 771  C467 6F                   ld l,a                          ; HL = Z
+ 772  C468 CB 7C                bit 7,h
+ 773  C46A 20 03                jr nz,.z1
+ 774  C46C B4                   or h
+ 775  C46D 20 03                jr nz,.zok
+ 776  C46F 21 01 00     .z1:    ld hl,1
+ 777  C472 7C           .zok:   ld a,h
+ 778  C473 FE 02                cp 2
+ 779  C475 38 0B                jr c,.lt512
+ 780  C477 5F                   ld e,a                          ; Z >= 512: shift right by log2(H)
+ 781  C478 16 DB                ld d,high lgtab
+ 782  C47A 1A                   ld a,(de)
+ 783  C47B 47                   ld b,a
+ 784  C47C EB                   ex de,hl
+ 785  C47D ED 2A                bsrl de,b
+ 786  C47F EB                   ex de,hl
+ 787  C480 18 14                jr .nrm
+ 788  C482 06 00        .lt512: ld b,0
+ 789  C484 B7                   or a
+ 790  C485 20 0F                jr nz,.nrm                      ; 256..511 already normalised
+ 791  C487 5D                   ld e,l                          ; Z < 256: shift left by 8-log2(L)
+ 792  C488 16 DB                ld d,high lgtab
+ 793  C48A 1A                   ld a,(de)
+ 794  C48B D6 08                sub 8
+ 795  C48D 4F                   ld c,a                          ; negative shift count
+ 796  C48E ED 44                neg
+ 797  C490 47                   ld b,a
+ 798  C491 EB                   ex de,hl
+ 799  C492 ED 28                bsla de,b
+ 800  C494 EB                   ex de,hl
+ 801  C495 41                   ld b,c
+ 802  C496 78           .nrm:   ld a,b                          ; patch shift and reciprocal into
+ 803  C497 32 F6 C4             ld (scale_comp.sh+1),a                  ; scale_comp's immediates
+ 804  C49A 26 D9                ld h,high rtab_lo               ; L = Zn - 256
+ 805  C49C 7E                   ld a,(hl)
+ 806  C49D 32 12 C5             ld (scale_comp.rl+1),a
+ 807  C4A0 32 28 C5             ld (scale_comp.r16+1),a
+ 808  C4A3 24                   inc h
+ 809  C4A4 7E                   ld a,(hl)
+ 810  C4A5 32 18 C5             ld (scale_comp.rh+1),a
+ 811  C4A8 32 29 C5             ld (scale_comp.r16+2),a
+ 812  C4AB
+ 813  C4AB E1                   pop hl                          ; X
+ 814  C4AC 7C                   ld a,h
+ 815  C4AD F5                   push af
+ 816  C4AE CD EB C4             call scale_comp
+ 817  C4B1 4F                   ld c,a
+ 818  C4B2 F1                   pop af
+ 819  C4B3 17                   rla
+ 820  C4B4 38 09                jr c,.xn
+ 821  C4B6 3E 80                ld a,128
+ 822  C4B8 81                   add a,c
+ 823  C4B9 30 0A                jr nc,.xd
+ 824  C4BB 3E FF                ld a,255
+ 825  C4BD 18 06                jr .xd
+ 826  C4BF 3E 80        .xn:    ld a,128
+ 827  C4C1 91                   sub c
+ 828  C4C2 30 01                jr nc,.xd
+ 829  C4C4 AF                   xor a
+ 830  C4C5 32 DA D0     .xd:    ld (pj_sx),a
+ 831  C4C8
+ 832  C4C8 E1                   pop hl                          ; Y
+ 833  C4C9 7C                   ld a,h
+ 834  C4CA F5                   push af
+ 835  C4CB CD EB C4             call scale_comp
+ 836  C4CE 4F                   ld c,a
+ 837  C4CF F1                   pop af
+ 838  C4D0 17                   rla
+ 839  C4D1 38 08                jr c,.yn
+ 840  C4D3 3E 60                ld a,96
+ 841  C4D5 91                   sub c
+ 842  C4D6 30 0E                jr nc,.yd
+ 843  C4D8 AF                   xor a
+ 844  C4D9 18 0B                jr .yd
+ 845  C4DB 3E 60        .yn:    ld a,96
+ 846  C4DD 81                   add a,c
+ 847  C4DE 38 04                jr c,.yc
+ 848  C4E0 FE C0                cp 192
+ 849  C4E2 38 02                jr c,.yd
+ 850  C4E4 3E BF        .yc:    ld a,191
+ 851  C4E6 4F           .yd:    ld c,a
+ 852  C4E7 3A DA D0             ld a,(pj_sx)
+ 853  C4EA C9                   ret
+ 854  C4EB
+ 855  C4EB              ; HL = signed component -> A = round(|HL| * 128 / Z)
+ 856  C4EB              ; The shift and reciprocal for this Z are patched in by project.
+ 857  C4EB              scale_comp:
+ 858  C4EB CB 7C                bit 7,h
+ 859  C4ED 28 06                jr z,.ap
+ 860  C4EF AF                   xor a
+ 861  C4F0 95                   sub l
+ 862  C4F1 6F                   ld l,a
+ 863  C4F2 9F                   sbc a,a
+ 864  C4F3 94                   sub h
+ 865  C4F4 67                   ld h,a
+ 866  C4F5              .ap:
+ 867  C4F5 3E 00        .sh:    ld a,0
+ 868  C4F7 B7                   or a
+ 869  C4F8 28 10                jr z,.sd
+ 870  C4FA EB                   ex de,hl
+ 871  C4FB FA 04 C5             jp m,.l
+ 872  C4FE 47                   ld b,a
+ 873  C4FF ED 2A                bsrl de,b
+ 874  C501 EB                   ex de,hl
+ 875  C502 18 06                jr .sd
+ 876  C504 ED 44        .l:     neg
+ 877  C506 47                   ld b,a
+ 878  C507 ED 28                bsla de,b
+ 879  C509 EB                   ex de,hl
+ 880  C50A 7C           .sd:    ld a,h
+ 881  C50B FE 02                cp 2
+ 882  C50D 30 27                jr nc,.big
+ 883  C50F 44           .ok:    ld b,h                          ; bit 8 of Xn
+ 884  C510 55                   ld d,l
+ 885  C511 1E 00        .rl:    ld e,0
+ 886  C513 ED 30                mul d,e                         ; Xl*Rl
+ 887  C515 4A                   ld c,d
+ 888  C516 55                   ld d,l
+ 889  C517 1E 00        .rh:    ld e,0
+ 890  C519 ED 30                mul d,e                         ; Xl*Rh
+ 891  C51B 79                   ld a,c
+ 892  C51C 83                   add a,e
+ 893  C51D 6F                   ld l,a
+ 894  C51E 7A                   ld a,d
+ 895  C51F CE 00                adc a,0
+ 896  C521 67                   ld h,a                          ; HL = (Xl*R) >> 8
+ 897  C522 0E 00                ld c,0
+ 898  C524 05                   dec b
+ 899  C525 20 06                jr nz,.nh
+ 900  C527 11 00 00     .r16:   ld de,0
+ 901  C52A 19                   add hl,de                       ; + (256*R) >> 8
+ 902  C52B CB 11                rl c
+ 903  C52D 24           .nh:    inc h                           ; + rounding (0.5 after >>9)
+ 904  C52E 20 01                jr nz,.nr
+ 905  C530 0C                   inc c
+ 906  C531 79           .nr:    ld a,c
+ 907  C532 1F                   rra
+ 908  C533 7C                   ld a,h
+ 909  C534 1F                   rra                             ; A = (C:H) >> 1  = P >> 9
+ 910  C535 C9                   ret
+ 911  C536 21 FF 01     .big:   ld hl,511                       ; clamp (rounding at frustum edge)
+ 912  C539 18 D4                jr .ok
+ 913  C53B
+ 914  C53B              ;==============================================================================
+ 915  C53B              ; Outcode: HL -> vertex (X,Y,Z) -> A = bits
+ 916  C53B              ;   1 near (Z<NEAR)  2 left (X<-Z)  4 right (X>Z)
+ 917  C53B              ;   8 top (Y>0.75Z)  16 bottom (Y<-0.75Z)
+ 918  C53B              ;==============================================================================
+ 919  C53B              calc_oc:
+ 920  C53B 5E                   ld e,(hl)
+ 921  C53C 23                   inc hl
+ 922  C53D 56                   ld d,(hl)                       ; DE = X
+ 923  C53E 23                   inc hl
+ 924  C53F 4E                   ld c,(hl)
+ 925  C540 23                   inc hl
+ 926  C541 46                   ld b,(hl)                       ; BC = Y
+ 927  C542 23                   inc hl
+ 928  C543 7E                   ld a,(hl)
+ 929  C544 23                   inc hl
+ 930  C545 66                   ld h,(hl)
+ 931  C546 6F                   ld l,a                          ; HL = Z
+ 932  C547 CB 7C                bit 7,h
+ 933  C549 20 0D                jr nz,.nr
+ 934  C54B 7C                   ld a,h
+ 935  C54C B7                   or a
+ 936  C54D 3E 00                ld a,0
+ 937  C54F 20 09                jr nz,.n1
+ 938  C551 7D                   ld a,l
+ 939  C552 FE 10                cp NEAR
+ 940  C554 3E 00                ld a,0
+ 941  C556 30 02                jr nc,.n1
+ 942  C558 3E 01        .nr:    ld a,1
+ 943  C55A E5           .n1:    push hl
+ 944  C55B 19                   add hl,de                       ; Z+X
+ 945  C55C CB 7C                bit 7,h
+ 946  C55E 28 02                jr z,.n2
+ 947  C560 F6 02                or 2
+ 948  C562 E1           .n2:    pop hl
+ 949  C563 E5                   push hl
+ 950  C564 B7                   or a
+ 951  C565 ED 52                sbc hl,de                       ; Z-X
+ 952  C567 CB 7C                bit 7,h
+ 953  C569 28 02                jr z,.n3
+ 954  C56B F6 04                or 4
+ 955  C56D E1           .n3:    pop hl
+ 956  C56E 54                   ld d,h
+ 957  C56F 5D                   ld e,l
+ 958  C570 CB 2A                sra d
+ 959  C572 CB 1B                rr e
+ 960  C574 CB 2A                sra d
+ 961  C576 CB 1B                rr e
+ 962  C578 B7                   or a
+ 963  C579 ED 52                sbc hl,de                       ; 0.75Z
+ 964  C57B E5                   push hl
+ 965  C57C B7                   or a
+ 966  C57D ED 42                sbc hl,bc                       ; 0.75Z-Y
+ 967  C57F CB 7C                bit 7,h
+ 968  C581 28 02                jr z,.n4
+ 969  C583 F6 08                or 8
+ 970  C585 E1           .n4:    pop hl
+ 971  C586 09                   add hl,bc                       ; 0.75Z+Y
+ 972  C587 CB 7C                bit 7,h
+ 973  C589 C8                   ret z
+ 974  C58A F6 10                or 16
+ 975  C58C C9                   ret
+ 976  C58D
+ 977  C58D              ; HL = 0.75 * HL (signed)
+ 978  C58D              z34:
+ 979  C58D 54                   ld d,h
+ 980  C58E 5D                   ld e,l
+ 981  C58F CB 2A                sra d
+ 982  C591 CB 1B                rr e
+ 983  C593 CB 2A                sra d
+ 984  C595 CB 1B                rr e
+ 985  C597 B7                   or a
+ 986  C598 ED 52                sbc hl,de
+ 987  C59A C9                   ret
+ 988  C59B
+ 989  C59B              ; Signed distance of vertex IX to clip plane (clip_plane bit). >= 0 is inside.
+ 990  C59B              plane_dist:
+ 991  C59B DD 6E 04             ld l,(ix+4)
+ 992  C59E DD 66 05             ld h,(ix+5)
+ 993  C5A1 3A EA D0             ld a,(clip_plane)
+ 994  C5A4 FE 01                cp 1
+ 995  C5A6 20 05                jr nz,.p2
+ 996  C5A8 11 F0 FF             ld de,-NEAR
+ 997  C5AB 19                   add hl,de
+ 998  C5AC C9                   ret
+ 999  C5AD DD 5E 00     .p2:    ld e,(ix+0)
+1000  C5B0 DD 56 01             ld d,(ix+1)
+1001  C5B3 FE 02                cp 2
+1002  C5B5 20 02                jr nz,.p3
+1003  C5B7 19                   add hl,de
+1004  C5B8 C9                   ret
+1005  C5B9 FE 04        .p3:    cp 4
+1006  C5BB 20 04                jr nz,.p4
+1007  C5BD B7                   or a
+1008  C5BE ED 52                sbc hl,de
+1009  C5C0 C9                   ret
+1010  C5C1 F5           .p4:    push af
+1011  C5C2 CD 8D C5             call z34
+1012  C5C5 F1                   pop af
+1013  C5C6 DD 5E 02             ld e,(ix+2)
+1014  C5C9 DD 56 03             ld d,(ix+3)
+1015  C5CC FE 08                cp 8
+1016  C5CE 20 04                jr nz,.p5
+1017  C5D0 B7                   or a
+1018  C5D1 ED 52                sbc hl,de
+1019  C5D3 C9                   ret
+1020  C5D4 19           .p5:    add hl,de
+1021  C5D5 C9                   ret
+1022  C5D6
+1023  C5D6              ;==============================================================================
+1024  C5D6              ; Sutherland-Hodgman clip of clip_src (clip_n verts) against clip_plane into
+1025  C5D6              ; clip_dst.  Vertex = X,Y,Z,flag,pad (8 bytes).  flag=1 means the edge from
+1026  C5D6              ; this vertex to the next is a real building edge (gets outlined); edges
+1027  C5D6              ; created along a clip plane get flag=0 so the screen border isn't outlined.
+1028  C5D6              ;==============================================================================
+1029  C5D6              clip_poly:
+1030  C5D6 3A E7 D0             ld a,(clip_n)
+1031  C5D9 3D                   dec a
+1032  C5DA 87                   add a,a
+1033  C5DB 87                   add a,a
+1034  C5DC 87                   add a,a
+1035  C5DD 2A EB D0             ld hl,(clip_src)
+1036  C5E0 ED 31                add hl,a
+1037  C5E2 22 EF D0             ld (clip_s),hl
+1038  C5E5 E5                   push hl
+1039  C5E6 DD E1                pop ix
+1040  C5E8 CD 9B C5             call plane_dist
+1041  C5EB 22 F3 D0             ld (clip_ds),hl
+1042  C5EE 2A EB D0             ld hl,(clip_src)
+1043  C5F1 22 F1 D0             ld (clip_e),hl
+1044  C5F4 FD 2A ED D0          ld iy,(clip_dst)
+1045  C5F8 AF                   xor a
+1046  C5F9 32 E8 D0             ld (clip_on),a
+1047  C5FC 3A E7 D0             ld a,(clip_n)
+1048  C5FF 32 E9 D0             ld (clip_cnt),a
+1049  C602 DD 2A F1 D0  .loop:  ld ix,(clip_e)
+1050  C606 CD 9B C5             call plane_dist
+1051  C609 22 F5 D0             ld (clip_de),hl
+1052  C60C CB 7C                bit 7,h
+1053  C60E 20 2E                jr nz,.eout
+1054  C610 3A F4 D0             ld a,(clip_ds+1)
+1055  C613 CB 7F                bit 7,a
+1056  C615 28 0D                jr z,.ein
+1057  C617                      ; S out, E in: intersection carries S's edge flag
+1058  C617 DD 2A EF D0          ld ix,(clip_s)
+1059  C61B DD 7E 06             ld a,(ix+6)
+1060  C61E 32 F7 D0             ld (clip_if),a
+1061  C621 CD 6C C6             call clip_isect
+1062  C624 DD 2A F1 D0  .ein:   ld ix,(clip_e)
+1063  C628 06 07                ld b,7
+1064  C62A DD 7E 00     .cpy:   ld a,(ix+0)
+1065  C62D FD 77 00             ld (iy+0),a
+1066  C630 DD 23                inc ix
+1067  C632 FD 23                inc iy
+1068  C634 10 F4                djnz .cpy
+1069  C636 FD 23                inc iy
+1070  C638 21 E8 D0             ld hl,clip_on
+1071  C63B 34                   inc (hl)
+1072  C63C 18 0E                jr .next
+1073  C63E 3A F4 D0     .eout:  ld a,(clip_ds+1)
+1074  C641 CB 7F                bit 7,a
+1075  C643 20 07                jr nz,.next
+1076  C645                      ; S in, E out: intersection starts a clip-plane edge
+1077  C645 AF                   xor a
+1078  C646 32 F7 D0             ld (clip_if),a
+1079  C649 CD 6C C6             call clip_isect
+1080  C64C 2A F1 D0     .next:  ld hl,(clip_e)
+1081  C64F 22 EF D0             ld (clip_s),hl
+1082  C652 11 08 00             ld de,8
+1083  C655 19                   add hl,de
+1084  C656 22 F1 D0             ld (clip_e),hl
+1085  C659 2A F5 D0             ld hl,(clip_de)
+1086  C65C 22 F3 D0             ld (clip_ds),hl
+1087  C65F 21 E9 D0             ld hl,clip_cnt
+1088  C662 35                   dec (hl)
+1089  C663 20 9D                jr nz,.loop
+1090  C665 3A E8 D0             ld a,(clip_on)
+1091  C668 32 E7 D0             ld (clip_n),a
+1092  C66B C9                   ret
+1093  C66C
+1094  C66C              ; Output S + t*(E-S) at IY, t = dS/(dS-dE)
+1095  C66C              clip_isect:
+1096  C66C 2A F3 D0             ld hl,(clip_ds)
+1097  C66F CD C1 C3             call abs_hl
+1098  C672 22 F8 D0             ld (ci_a),hl
+1099  C675 2A F5 D0             ld hl,(clip_de)
+1100  C678 CD C1 C3             call abs_hl
+1101  C67B ED 5B F8 D0          ld de,(ci_a)
+1102  C67F 19                   add hl,de
+1103  C680 EB                   ex de,hl                        ; DE = |dS|+|dE|, HL = |dS|
+1104  C681 E5                   push hl
+1105  C682 B7                   or a
+1106  C683 ED 52                sbc hl,de
+1107  C685 E1                   pop hl
+1108  C686 38 06                jr c,.dv
+1109  C688 DD 21 FF FF          ld ix,$FFFF
+1110  C68C 18 03                jr .t
+1111  C68E CD 2D C4     .dv:    call div_frac
+1112  C691 DD 22 FA D0  .t:     ld (ci_t),ix
+1113  C695 AF                   xor a
+1114  C696 CD 03 C7             call lerp_c
+1115  C699 FD 75 00             ld (iy+0),l
+1116  C69C FD 74 01             ld (iy+1),h
+1117  C69F 3E 02                ld a,2
+1118  C6A1 CD 03 C7             call lerp_c
+1119  C6A4 FD 75 02             ld (iy+2),l
+1120  C6A7 FD 74 03             ld (iy+3),h
+1121  C6AA 3E 04                ld a,4
+1122  C6AC CD 03 C7             call lerp_c
+1123  C6AF FD 75 04             ld (iy+4),l
+1124  C6B2 FD 74 05             ld (iy+5),h
+1125  C6B5                      ; snap the point exactly onto the plane so rounding can't leave a
+1126  C6B5                      ; gap between the polygon and the screen edge
+1127  C6B5 FD 6E 04             ld l,(iy+4)
+1128  C6B8 FD 66 05             ld h,(iy+5)                     ; Z
+1129  C6BB 3A EA D0             ld a,(clip_plane)
+1130  C6BE FE 01                cp 1
+1131  C6C0 20 0A                jr nz,.s2
+1132  C6C2 FD 36 04 10          ld (iy+4),NEAR                  ; near:   Z = NEAR
+1133  C6C6 FD 36 05 00          ld (iy+5),0
+1134  C6CA 18 27                jr .nz
+1135  C6CC FE 02        .s2:    cp 2
+1136  C6CE 20 05                jr nz,.s4
+1137  C6D0 CD BA C3             call neg_hl                     ; left:   X = -Z
+1138  C6D3 18 18                jr .sx
+1139  C6D5 FE 04        .s4:    cp 4
+1140  C6D7 28 14                jr z,.sx                        ; right:  X = Z
+1141  C6D9 F5                   push af
+1142  C6DA CD 8D C5             call z34
+1143  C6DD F1                   pop af
+1144  C6DE FE 08                cp 8
+1145  C6E0 28 03                jr z,.sy                        ; top:    Y = 0.75Z
+1146  C6E2 CD BA C3             call neg_hl                     ; bottom: Y = -0.75Z
+1147  C6E5 FD 75 02     .sy:    ld (iy+2),l
+1148  C6E8 FD 74 03             ld (iy+3),h
+1149  C6EB 18 06                jr .nz
+1150  C6ED FD 75 00     .sx:    ld (iy+0),l
+1151  C6F0 FD 74 01             ld (iy+1),h
+1152  C6F3 3A F7 D0     .nz:    ld a,(clip_if)
+1153  C6F6 FD 77 06             ld (iy+6),a
+1154  C6F9 01 08 00             ld bc,8
+1155  C6FC FD 09                add iy,bc
+1156  C6FE 21 E8 D0             ld hl,clip_on
+1157  C701 34                   inc (hl)
+1158  C702 C9                   ret
+1159  C703
+1160  C703              ; A = coordinate offset -> HL = S.c + (E.c - S.c) * t
+1161  C703              lerp_c:
+1162  C703 2A F1 D0             ld hl,(clip_e)
+1163  C706 ED 31                add hl,a
+1164  C708 5E                   ld e,(hl)
+1165  C709 23                   inc hl
+1166  C70A 56                   ld d,(hl)
+1167  C70B 2A EF D0             ld hl,(clip_s)
+1168  C70E ED 31                add hl,a
+1169  C710 7E                   ld a,(hl)
+1170  C711 23                   inc hl
+1171  C712 66                   ld h,(hl)
+1172  C713 6F                   ld l,a
+1173  C714 E5                   push hl
+1174  C715 EB                   ex de,hl
+1175  C716 B7                   or a
+1176  C717 ED 52                sbc hl,de
+1177  C719 ED 5B FA D0          ld de,(ci_t)
+1178  C71D CD FA C3             call mul_frac
+1179  C720 D1                   pop de
+1180  C721 19                   add hl,de
+1181  C722 C9                   ret
+1182  C723
+1183  C723              ;==============================================================================
+1184  C723              ; Draw one face of the current building
+1185  C723              ;   HL -> 4 vertex offsets into vtx[] (index*16), df_mask = edges to outline
+1186  C723              ;   (bit k = edge from corner k to corner k+1)
+1187  C723              ;==============================================================================
+1188  C723              draw_face:
+1189  C723 22 DC D0             ld (df_ptr),hl
+1190  C726 01 00 FF             ld bc,$FF00                     ; B = AND of outcodes, C = OR
+1191  C729 16 D2                ld d,high vtx
+1192  C72B                      REPT 4
+1193  C72B 7E          >        ld a,(hl)
+1194  C72C 23          >        inc hl
+1195  C72D C6 06       >        add a,6
+1196  C72F 5F          >        ld e,a
+1197  C730 1A          >        ld a,(de)
+1198  C731 5F          >        ld e,a
+1199  C732 A0          >        and b
+1200  C733 47          >        ld b,a
+1201  C734 7B          >        ld a,e
+1202  C735 B1          >        or c
+1203  C736 4F          >        ld c,a
+1193  C737 7E          >        ld a,(hl)
+1194  C738 23          >        inc hl
+1195  C739 C6 06       >        add a,6
+1196  C73B 5F          >        ld e,a
+1197  C73C 1A          >        ld a,(de)
+1198  C73D 5F          >        ld e,a
+1199  C73E A0          >        and b
+1200  C73F 47          >        ld b,a
+1201  C740 7B          >        ld a,e
+1202  C741 B1          >        or c
+1203  C742 4F          >        ld c,a
+1193  C743 7E          >        ld a,(hl)
+1194  C744 23          >        inc hl
+1195  C745 C6 06       >        add a,6
+1196  C747 5F          >        ld e,a
+1197  C748 1A          >        ld a,(de)
+1198  C749 5F          >        ld e,a
+1199  C74A A0          >        and b
+1200  C74B 47          >        ld b,a
+1201  C74C 7B          >        ld a,e
+1202  C74D B1          >        or c
+1203  C74E 4F          >        ld c,a
+1193  C74F 7E          >        ld a,(hl)
+1194  C750 23          >        inc hl
+1195  C751 C6 06       >        add a,6
+1196  C753 5F          >        ld e,a
+1197  C754 1A          >        ld a,(de)
+1198  C755 5F          >        ld e,a
+1199  C756 A0          >        and b
+1200  C757 47          >        ld b,a
+1201  C758 7B          >        ld a,e
+1202  C759 B1          >        or c
+1203  C75A 4F          >        ld c,a
+1204  C75B                      ENDR
+1205  C75B 78                   ld a,b
+1206  C75C B7                   or a
+1207  C75D C0                   ret nz                          ; wholly outside one plane
+1208  C75E 79                   ld a,c
+1209  C75F B7                   or a
+1210  C760 20 60                jr nz,.clip
+1211  C762
+1212  C762                      ; fast path - every corner on screen, use cached projections
+1213  C762 2A DC D0             ld hl,(df_ptr)
+1214  C765 11 80 D2             ld de,p2buf
+1215  C768 06 D2                ld b,high vtx
+1216  C76A                      FACEVTX 1
+1216  C76A 7E          >        ld a,(hl)
+1216  C76B 23          >        inc hl
+1216  C76C C6 07       >        add a,7
+1216  C76E 4F          >        ld c,a
+1216  C76F 0A          >        ld a,(bc)
+1216  C770 12          >        ld (de),a
+1216  C771 1C          >        inc e
+1216  C772 0C          >        inc c
+1216  C773 0A          >        ld a,(bc)
+1216  C774 12          >        ld (de),a
+1216  C775 1C          >        inc e
+1216  C776 3A DF D0    >        ld a,(df_mask)
+1216  C779 E6 01       >        and 1
+1216  C77B 12          >        ld (de),a
+1216  C77C 1C          >        inc e
+1216  C77D 1C          >        inc e
+1217  C77E                      FACEVTX 2
+1217  C77E 7E          >        ld a,(hl)
+1217  C77F 23          >        inc hl
+1217  C780 C6 07       >        add a,7
+1217  C782 4F          >        ld c,a
+1217  C783 0A          >        ld a,(bc)
+1217  C784 12          >        ld (de),a
+1217  C785 1C          >        inc e
+1217  C786 0C          >        inc c
+1217  C787 0A          >        ld a,(bc)
+1217  C788 12          >        ld (de),a
+1217  C789 1C          >        inc e
+1217  C78A 3A DF D0    >        ld a,(df_mask)
+1217  C78D E6 02       >        and 2
+1217  C78F 12          >        ld (de),a
+1217  C790 1C          >        inc e
+1217  C791 1C          >        inc e
+1218  C792                      FACEVTX 4
+1218  C792 7E          >        ld a,(hl)
+1218  C793 23          >        inc hl
+1218  C794 C6 07       >        add a,7
+1218  C796 4F          >        ld c,a
+1218  C797 0A          >        ld a,(bc)
+1218  C798 12          >        ld (de),a
+1218  C799 1C          >        inc e
+1218  C79A 0C          >        inc c
+1218  C79B 0A          >        ld a,(bc)
+1218  C79C 12          >        ld (de),a
+1218  C79D 1C          >        inc e
+1218  C79E 3A DF D0    >        ld a,(df_mask)
+1218  C7A1 E6 04       >        and 4
+1218  C7A3 12          >        ld (de),a
+1218  C7A4 1C          >        inc e
+1218  C7A5 1C          >        inc e
+1219  C7A6                      FACEVTX 8
+1219  C7A6 7E          >        ld a,(hl)
+1219  C7A7 23          >        inc hl
+1219  C7A8 C6 07       >        add a,7
+1219  C7AA 4F          >        ld c,a
+1219  C7AB 0A          >        ld a,(bc)
+1219  C7AC 12          >        ld (de),a
+1219  C7AD 1C          >        inc e
+1219  C7AE 0C          >        inc c
+1219  C7AF 0A          >        ld a,(bc)
+1219  C7B0 12          >        ld (de),a
+1219  C7B1 1C          >        inc e
+1219  C7B2 3A DF D0    >        ld a,(df_mask)
+1219  C7B5 E6 08       >        and 8
+1219  C7B7 12          >        ld (de),a
+1219  C7B8 1C          >        inc e
+1219  C7B9 1C          >        inc e
+1220  C7BA 3E 04                ld a,4
+1221  C7BC 32 BC D1             ld (p2n),a
+1222  C7BF C3 69 C8             jp .render
+1223  C7C2
+1224  C7C2 32 DE D0     .clip:  ld (df_or),a
+1225  C7C5 3A DF D0             ld a,(df_mask)
+1226  C7C8 32 E0 D0             ld (df_m),a
+1227  C7CB 2A DC D0             ld hl,(df_ptr)
+1228  C7CE FD 21 FC D0          ld iy,clipA
+1229  C7D2 06 04                ld b,4
+1230  C7D4 7E           .cp:    ld a,(hl)
+1231  C7D5 23                   inc hl
+1232  C7D6 DD 6F                ld ixl,a
+1233  C7D8 3E D2                ld a,high vtx
+1234  C7DA DD 67                ld ixh,a
+1235  C7DC 0E 06                ld c,6
+1236  C7DE DD 7E 00     .cpb:   ld a,(ix+0)
+1237  C7E1 FD 77 00             ld (iy+0),a
+1238  C7E4 DD 23                inc ix
+1239  C7E6 FD 23                inc iy
+1240  C7E8 0D                   dec c
+1241  C7E9 20 F3                jr nz,.cpb
+1242  C7EB 3A E0 D0             ld a,(df_m)
+1243  C7EE 5F                   ld e,a
+1244  C7EF E6 01                and 1
+1245  C7F1 FD 77 00             ld (iy+0),a                     ; edge flag from mask
+1246  C7F4 7B                   ld a,e
+1247  C7F5 0F                   rrca
+1248  C7F6 32 E0 D0             ld (df_m),a
+1249  C7F9 FD 23                inc iy
+1250  C7FB FD 23                inc iy
+1251  C7FD 10 D5                djnz .cp
+1252  C7FF 3E 04                ld a,4
+1253  C801 32 E7 D0             ld (clip_n),a
+1254  C804 21 FC D0             ld hl,clipA
+1255  C807 22 EB D0             ld (clip_src),hl
+1256  C80A 21 5C D1             ld hl,clipB
+1257  C80D 22 ED D0             ld (clip_dst),hl
+1258  C810 3E 01                ld a,1
+1259  C812 32 EA D0     .pl:    ld (clip_plane),a
+1260  C815 21 DE D0             ld hl,df_or
+1261  C818 A6                   and (hl)
+1262  C819 28 17                jr z,.skip
+1263  C81B CD D6 C5             call clip_poly
+1264  C81E 3A E7 D0             ld a,(clip_n)
+1265  C821 FE 03                cp 3
+1266  C823 D8                   ret c
+1267  C824 2A EB D0             ld hl,(clip_src)
+1268  C827 ED 5B ED D0          ld de,(clip_dst)
+1269  C82B ED 53 EB D0          ld (clip_src),de
+1270  C82F 22 ED D0             ld (clip_dst),hl
+1271  C832 3A EA D0     .skip:  ld a,(clip_plane)
+1272  C835 87                   add a,a
+1273  C836 FE 20                cp 32
+1274  C838 20 D8                jr nz,.pl
+1275  C83A
+1276  C83A DD 2A EB D0          ld ix,(clip_src)
+1277  C83E FD 21 80 D2          ld iy,p2buf
+1278  C842 3A E7 D0             ld a,(clip_n)
+1279  C845 32 BC D1             ld (p2n),a
+1280  C848 47                   ld b,a
+1281  C849 C5           .pj:    push bc
+1282  C84A DD E5                push ix
+1283  C84C E1                   pop hl
+1284  C84D CD 5A C4             call project
+1285  C850 FD 77 00             ld (iy+0),a
+1286  C853 FD 71 01             ld (iy+1),c
+1287  C856 DD 7E 06             ld a,(ix+6)
+1288  C859 FD 77 02             ld (iy+2),a
+1289  C85C 01 08 00             ld bc,8
+1290  C85F DD 09                add ix,bc
+1291  C861 01 04 00             ld bc,4
+1292  C864 FD 09                add iy,bc
+1293  C866 C1                   pop bc
+1294  C867 10 E0                djnz .pj
+1295  C869
+1296  C869              .render:
+1297  C869                      ; close the polygon: copy vertex 0 after the last
+1298  C869 3A BC D1             ld a,(p2n)
+1299  C86C 87                   add a,a
+1300  C86D 87                   add a,a
+1301  C86E 21 80 D2             ld hl,p2buf
+1302  C871 ED 31                add hl,a
+1303  C873 3A 80 D2             ld a,(p2buf)
+1304  C876 77                   ld (hl),a
+1305  C877 23                   inc hl
+1306  C878 3A 81 D2             ld a,(p2buf+1)
+1307  C87B 77                   ld (hl),a
+1308  C87C CD 87 C8             call fill_poly
+1309  C87F 3E FF                ld a,EDGE_COL
+1310  C881 32 C0 D1             ld (line_col),a
+1311  C884 C3 C5 C9             jp outline_poly
+1312  C887
+1313  C887              ;==============================================================================
+1314  C887              ; Convex polygon fill from p2buf (8-bit screen coords).
+1315  C887              ;   Each edge is walked with an exact integer DDA into one of two x tables:
+1316  C887              ;   downward edges -> TA, upward edges -> TB.  For a convex polygon every row
+1317  C887              ;   then has one entry in each, and the span between them is filled.
+1318  C887              ;   Winding doesn't matter.
+1319  C887              ;==============================================================================
+1320  C887              fill_poly:
+1321  C887 3A BC D1             ld a,(p2n)
+1322  C88A 47                   ld b,a
+1323  C88B 21 81 D2             ld hl,p2buf+1
+1324  C88E 0E FF                ld c,255
+1325  C890 16 00                ld d,0
+1326  C892 7E           .mm:    ld a,(hl)
+1327  C893 B9                   cp c
+1328  C894 30 01                jr nc,.m1
+1329  C896 4F                   ld c,a
+1330  C897 BA           .m1:    cp d
+1331  C898 38 01                jr c,.m2
+1332  C89A 57                   ld d,a
+1333  C89B 23           .m2:    inc hl
+1334  C89C 23                   inc hl
+1335  C89D 23                   inc hl
+1336  C89E 23                   inc hl
+1337  C89F 10 F1                djnz .mm
+1338  C8A1 79                   ld a,c
+1339  C8A2 BA                   cp d
+1340  C8A3 C8                   ret z                           ; zero height - outline only
+1341  C8A4 32 BD D1             ld (fy0),a
+1342  C8A7 7A                   ld a,d
+1343  C8A8 32 BE D1             ld (fy1),a
+1344  C8AB
+1345  C8AB DD 21 80 D2          ld ix,p2buf
+1346  C8AF 3A BC D1             ld a,(p2n)
+1347  C8B2 32 BF D1             ld (fe_cnt),a
+1348  C8B5 DD 56 00     .ed:    ld d,(ix+0)
+1349  C8B8 DD 5E 01             ld e,(ix+1)
+1350  C8BB DD 46 04             ld b,(ix+4)
+1351  C8BE DD 4E 05             ld c,(ix+5)
+1352  C8C1 7B                   ld a,e
+1353  C8C2 B9                   cp c
+1354  C8C3 28 15                jr z,.nx                        ; horizontal edge
+1355  C8C5 38 0A                jr c,.down
+1356  C8C7 7A                   ld a,d                          ; going up: swap ends, use TB
+1357  C8C8 50                   ld d,b
+1358  C8C9 47                   ld b,a
+1359  C8CA 7B                   ld a,e
+1360  C8CB 59                   ld e,c
+1361  C8CC 4F                   ld c,a
+1362  C8CD 3E D5                ld a,high TB
+1363  C8CF 18 02                jr .walk
+1364  C8D1 3E D4        .down:  ld a,high TA
+1365  C8D3 DD E5        .walk:  push ix
+1366  C8D5 CD EC C8             call walk_edge
+1367  C8D8 DD E1                pop ix
+1368  C8DA 01 04 00     .nx:    ld bc,4
+1369  C8DD DD 09                add ix,bc
+1370  C8DF 21 BF D1             ld hl,fe_cnt
+1371  C8E2 35                   dec (hl)
+1372  C8E3 20 D0                jr nz,.ed
+1373  C8E5
+1374  C8E5 16 00                ld d,FILL_COL
+1375  C8E7 1E 00                ld e,FILL_COL
+1376  C8E9 C3 71 C9             jp fill_spans
+1377  C8EC
+1378  C8EC              ; Walk an edge (D=xa, E=ya) -> (B=xb, C=yb), yb > ya, into table page A.
+1379  C8EC              ; Bresenham style: x += q each row, fractional r/dy accumulated in a biased
+1380  C8EC              ; byte (carry == wrap), so the end point is hit exactly.
+1381  C8EC              walk_edge:
+1382  C8EC 67                   ld h,a
+1383  C8ED 6B                   ld l,e
+1384  C8EE 79                   ld a,c
+1385  C8EF 93                   sub e
+1386  C8F0 4F                   ld c,a                          ; C = dy (1..191)
+1387  C8F1 78                   ld a,b
+1388  C8F2 92                   sub d                           ; dx
+1389  C8F3 38 37                jr c,.neg
+1390  C8F5 B9                   cp c
+1391  C8F6 30 07                jr nc,.pdv
+1392  C8F8 DD 6F                ld ixl,a                        ; steep: q = 0, r = dx
+1393  C8FA CD 65 C9             call .setup
+1394  C8FD 18 20                jr .p0
+1395  C8FF CD 49 C4     .pdv:   call div8                       ; E = q, A = r
+1396  C902 DD 63                ld ixh,e
+1397  C904 DD 6F                ld ixl,a
+1398  C906 CD 65 C9             call .setup
+1399  C909 DD 7C                ld a,ixh
+1400  C90B B7                   or a
+1401  C90C 28 11                jr z,.p0
+1402  C90E 72           .pl:    ld (hl),d
+1403  C90F 2C                   inc l
+1404  C910 7A                   ld a,d
+1405  C911 DD 84                add a,ixh
+1406  C913 57                   ld d,a
+1407  C914 7B                   ld a,e
+1408  C915 DD 85                add a,ixl
+1409  C917 30 02                jr nc,.pl1
+1410  C919 81                   add a,c
+1411  C91A 14                   inc d
+1412  C91B 5F           .pl1:   ld e,a
+1413  C91C 10 F0                djnz .pl
+1414  C91E C9                   ret
+1415  C91F 72           .p0:    ld (hl),d
+1416  C920 2C                   inc l
+1417  C921 7B                   ld a,e
+1418  C922 DD 85                add a,ixl
+1419  C924 30 02                jr nc,.p01
+1420  C926 81                   add a,c
+1421  C927 14                   inc d
+1422  C928 5F           .p01:   ld e,a
+1423  C929 10 F4                djnz .p0
+1424  C92B C9                   ret
+1425  C92C
+1426  C92C ED 44        .neg:   neg
+1427  C92E B9                   cp c
+1428  C92F 30 07                jr nc,.ndv
+1429  C931 DD 6F                ld ixl,a
+1430  C933 CD 65 C9             call .setup
+1431  C936 18 20                jr .n0
+1432  C938 CD 49 C4     .ndv:   call div8
+1433  C93B DD 63                ld ixh,e
+1434  C93D DD 6F                ld ixl,a
+1435  C93F CD 65 C9             call .setup
+1436  C942 DD 7C                ld a,ixh
+1437  C944 B7                   or a
+1438  C945 28 11                jr z,.n0
+1439  C947 72           .nl:    ld (hl),d
+1440  C948 2C                   inc l
+1441  C949 7A                   ld a,d
+1442  C94A DD 94                sub ixh
+1443  C94C 57                   ld d,a
+1444  C94D 7B                   ld a,e
+1445  C94E DD 85                add a,ixl
+1446  C950 30 02                jr nc,.nl1
+1447  C952 81                   add a,c
+1448  C953 15                   dec d
+1449  C954 5F           .nl1:   ld e,a
+1450  C955 10 F0                djnz .nl
+1451  C957 C9                   ret
+1452  C958 72           .n0:    ld (hl),d
+1453  C959 2C                   inc l
+1454  C95A 7B                   ld a,e
+1455  C95B DD 85                add a,ixl
+1456  C95D 30 02                jr nc,.n01
+1457  C95F 81                   add a,c
+1458  C960 15                   dec d
+1459  C961 5F           .n01:   ld e,a
+1460  C962 10 F4                djnz .n0
+1461  C964 C9                   ret
+1462  C965
+1463  C965              ; B = dy+1 rows, E = biased accumulator (dy/2 - dy), C = -dy
+1464  C965 41           .setup: ld b,c
+1465  C966 04                   inc b
+1466  C967 79                   ld a,c
+1467  C968 CB 3F                srl a
+1468  C96A 91                   sub c
+1469  C96B 5F                   ld e,a
+1470  C96C 79                   ld a,c
+1471  C96D ED 44                neg
+1472  C96F 4F                   ld c,a
+1473  C970 C9                   ret
+1474  C971
+1475  C971              ;==============================================================================
+1476  C971              ; Span filler.  Rows fy0..fy1, x from TA/TB.  DE = colour pair.
+1477  C971              ; Short spans use the stack pointer as a 2-byte write pointer into the frame
+1478  C971              ; buffer (interrupts are disabled), jumping into an unrolled block of PUSH DE.
+1479  C971              ; Spans of DMA_SPAN_MIN pixels or more are written by the zxnDMA, which only
+1480  C971              ; needs its length and destination reloaded (see clear_screen).
+1481  C971              ;==============================================================================
+1482  C971              fill_spans:
+1483  C971 ED 73 C1 D1          ld (saved_sp),sp
+1484  C975 3A BD D1             ld a,(fy0)
+1485  C978 47                   ld b,a
+1486  C979 3A BE D1             ld a,(fy1)
+1487  C97C DD 6F                ld ixl,a
+1488  C97E              fs_loop:
+1489  C97E 26 D4                ld h,high TA
+1490  C980 68                   ld l,b
+1491  C981 7E                   ld a,(hl)
+1492  C982 24                   inc h
+1493  C983 4E                   ld c,(hl)
+1494  C984 B9                   cp c
+1495  C985 38 03                jr c,.ord
+1496  C987 69                   ld l,c
+1497  C988 4F                   ld c,a
+1498  C989 7D                   ld a,l
+1499  C98A 6F           .ord:   ld l,a                          ; A = left x, C = right x
+1500  C98B 60                   ld h,b
+1501  C98C 79                   ld a,c
+1502  C98D 95                   sub l                           ; width-1
+1503  C98E FE 13                cp DMA_SPAN_MIN-1
+1504  C990 30 13                jr nc,.dma
+1505  C992 CB 3F        .push:  srl a
+1506  C994 38 03                jr c,.even
+1507  C996 73                   ld (hl),e                       ; odd width: single pixel first
+1508  C997 18 01                jr .go
+1509  C999 3C           .even:  inc a
+1510  C99A 69           .go:    ld l,c
+1511  C99B 23                   inc hl                          ; one past right edge (may be $C000)
+1512  C99C F9                   ld sp,hl
+1513  C99D 6F                   ld l,a
+1514  C99E 3E 80                ld a,low push_end
+1515  C9A0 95                   sub l
+1516  C9A1 6F                   ld l,a
+1517  C9A2 26 D3                ld h,high push_end
+1518  C9A4 E9                   jp (hl)
+1519  C9A5
+1520  C9A5                      ; Long span: zxnDMA from the fixed FILL_COL byte (port A) to HL.
+1521  C9A5                      ; Everything but length and destination was set up by clear_screen.
+1522  C9A5 3C           .dma:   inc a
+1523  C9A6 28 EA                jr z,.push                      ; 256 wide: length needs the high byte
+1524  C9A8 4F                   ld c,a
+1525  C9A9 3E 25                ld a,DMA_WR0_LEN_LO
+1526  C9AB D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1527  C9AD 79                   ld a,c
+1528  C9AE D3 6B                out (IO_DATAGEAR_DMA_PORT),a    ; length = width
+1529  C9B0 3E AD                ld a,DMA_WR4_CONT_MODE
+1530  C9B2 D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1531  C9B4 7D                   ld a,l
+1532  C9B5 D3 6B                out (IO_DATAGEAR_DMA_PORT),a    ; port B = y*256 + x
+1533  C9B7 7C                   ld a,h
+1534  C9B8 D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1535  C9BA 3E CF                ld a,DMA_LOAD
+1536  C9BC D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1537  C9BE 3E 87                ld a,DMA_ENABLE
+1538  C9C0 D3 6B                out (IO_DATAGEAR_DMA_PORT),a    ; CPU waits until the span is written
+1539  C9C2 C3 80 D3             jp push_end
+1540  C9C5
+1541  C9C5              ;==============================================================================
+1542  C9C5              ; Outline the polygon in p2buf, skipping edges flagged 0 (clip edges)
+1543  C9C5              ;==============================================================================
+1544  C9C5              outline_poly:
+1545  C9C5 DD 21 80 D2          ld ix,p2buf
+1546  C9C9 3A BC D1             ld a,(p2n)
+1547  C9CC 47                   ld b,a
+1548  C9CD C5           .lp:    push bc
+1549  C9CE DD 7E 02             ld a,(ix+2)
+1550  C9D1 B7                   or a
+1551  C9D2 28 0F                jr z,.sk
+1552  C9D4 DD 6E 00             ld l,(ix+0)
+1553  C9D7 DD 66 01             ld h,(ix+1)
+1554  C9DA DD 5E 04             ld e,(ix+4)
+1555  C9DD DD 56 05             ld d,(ix+5)
+1556  C9E0 CD EC C9             call draw_line
+1557  C9E3 01 04 00     .sk:    ld bc,4
+1558  C9E6 DD 09                add ix,bc
+1559  C9E8 C1                   pop bc
+1560  C9E9 10 E2                djnz .lp
+1561  C9EB C9                   ret
+1562  C9EC
+1563  C9EC              ;==============================================================================
+1564  C9EC              ; Bresenham line, on-screen 8-bit coordinates.
+1565  C9EC              ;   L = x0, H = y0, E = x1, D = y1, colour in line_col.  Preserves IX, IY.
+1566  C9EC              ;==============================================================================
+1567  C9EC              draw_line:
+1568  C9EC 3A C0 D1             ld a,(line_col)
+1569  C9EF 4F                   ld c,a
+1570  C9F0 7B                   ld a,e
+1571  C9F1 95                   sub l
+1572  C9F2 30 06                jr nc,.xp
+1573  C9F4 ED 44                neg
+1574  C9F6 06 2D                ld b,OP_DEC_L
+1575  C9F8 18 02                jr .xd
+1576  C9FA 06 2C        .xp:    ld b,OP_INC_L
+1577  C9FC 5F           .xd:    ld e,a                          ; |dx|
+1578  C9FD 78                   ld a,b
+1579  C9FE 32 21 CA             ld (.smx1),a
+1580  CA01 32 34 CA             ld (.smx2),a
+1581  CA04 7A                   ld a,d
+1582  CA05 94                   sub h
+1583  CA06 30 06                jr nc,.yp
+1584  CA08 ED 44                neg
+1585  CA0A 06 25                ld b,OP_DEC_H
+1586  CA0C 18 02                jr .yd
+1587  CA0E 06 24        .yp:    ld b,OP_INC_H
+1588  CA10 57           .yd:    ld d,a                          ; |dy|
+1589  CA11 78                   ld a,b
+1590  CA12 32 25 CA             ld (.smy1),a
+1591  CA15 32 30 CA             ld (.smy2),a
+1592  CA18 7B                   ld a,e
+1593  CA19 BA                   cp d
+1594  CA1A 38 0E                jr c,.ymaj
+1595  CA1C 43                   ld b,e
+1596  CA1D 04                   inc b
+1597  CA1E CB 3F                srl a
+1598  CA20 71           .xl:    ld (hl),c
+1599  CA21 2C           .smx1:  inc l
+1600  CA22 92                   sub d
+1601  CA23 30 02                jr nc,.xs
+1602  CA25 24           .smy1:  inc h
+1603  CA26 83                   add a,e
+1604  CA27 10 F7        .xs:    djnz .xl
+1605  CA29 C9                   ret
+1606  CA2A 42           .ymaj:  ld b,d
+1607  CA2B 04                   inc b
+1608  CA2C 7A                   ld a,d
+1609  CA2D CB 3F                srl a
+1610  CA2F 71           .yl:    ld (hl),c
+1611  CA30 24           .smy2:  inc h
+1612  CA31 93                   sub e
+1613  CA32 30 02                jr nc,.ys
+1614  CA34 2C           .smx2:  inc l
+1615  CA35 82                   add a,d
+1616  CA36 10 F7        .ys:    djnz .yl
+1617  CA38 C9                   ret
+1618  CA39
+1619  CA39              ;==============================================================================
+1620  CA39              ; Clear the back buffer with the zxnDMA: sky above the horizon row, ground
+1621  CA39              ; below.  Two fills reuse the l2_fill command block from layer2_cls.asm,
+1622  CA39              ; patching its destination (port B) and length; the source (port A) is the
+1623  CA39              ; fixed byte l2_cls_byte.  A zero-length fill is skipped.
+1624  CA39              ;==============================================================================
+1625  CA39              clear_screen:
+1626  CA39 3A 60 D0             ld a,(horizon)
+1627  CA3C B7                   or a
+1628  CA3D 28 0B                jr z,.ground                    ; no sky rows
+1629  CA3F 47                   ld b,a                          ; sky: $0000, horizon*256 bytes
+1630  CA40 0E 00                ld c,0
+1631  CA42 21 00 00             ld hl,0
+1632  CA45 3E 01                ld a,SKY_COL
+1633  CA47 CD 6D CA             call dma_fill
+1634  CA4A              .ground:
+1635  CA4A 3A 60 D0             ld a,(horizon)
+1636  CA4D FE C0                cp 192
+1637  CA4F 28 0F                jr z,.spans                     ; no ground rows
+1638  CA51 67                   ld h,a                          ; ground: horizon*256 .. $BFFF
+1639  CA52 2E 00                ld l,0
+1640  CA54 47                   ld b,a
+1641  CA55 3E C0                ld a,192
+1642  CA57 90                   sub b
+1643  CA58 47                   ld b,a
+1644  CA59 0E 00                ld c,0
+1645  CA5B 3E 08                ld a,GROUND_COL
+1646  CA5D CD 6D CA             call dma_fill
+1647  CA60                      ; Leave the DMA ready for fill_spans: the source byte becomes the
+1648  CA60                      ; building fill colour and the length high byte 0, so each span only
+1649  CA60                      ; reloads length low, destination, LOAD and ENABLE.
+1650  CA60 3E 00        .spans: ld a,FILL_COL
+1651  CA62 32 00 D6             ld (l2_cls_byte),a
+1652  CA65 3E 45                ld a,DMA_WR0_LEN_HI
+1653  CA67 D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1654  CA69 AF                   xor a
+1655  CA6A D3 6B                out (IO_DATAGEAR_DMA_PORT),a
+1656  CA6C C9                   ret
+1657  CA6D
+1658  CA6D              ; DMA fill: HL = destination, BC = length (non-zero), A = colour
+1659  CA6D              dma_fill:
+1660  CA6D 32 00 D6             ld (l2_cls_byte),a
+1661  CA70 22 0D D6             ld (l2_fill_bstrt),hl
+1662  CA73 ED 43 08 D6          ld (l2_fill_length),bc
+1663  CA77 21 01 D6             ld hl,l2_fill
+1664  CA7A 06 12                ld b,l2_fill_cmd_len
+1665  CA7C 0E 6B                ld c,IO_DATAGEAR_DMA_PORT
+1666  CA7E ED B3                otir                            ; CPU waits while the DMA runs
+1667  CA80 C9                   ret
+1668  CA81
+1669  CA81              ;==============================================================================
+1670  CA81              ; City traversal - back to front without sorting.
+1671  CA81              ;   For grid-aligned boxes in separate cells, a box can only hide boxes whose
+1672  CA81              ;   cell offsets from the camera cell are larger (or equal) on both axes in
+1673  CA81              ;   the same quadrant.  So: rows from the far edges inwards, and within each
+1674  CA81              ;   row columns from the far edges inwards, the camera row/column last.
+1675  CA81              ;==============================================================================
+1676  CA81              draw_city:
+1677  CA81 3A A8 D0             ld a,(cz)
+1678  CA84 D6 06                sub VIEW_R
+1679  CA86 32 AA D0             ld (cell_j),a
+1680  CA89 3A AA D0     .b:     ld a,(cell_j)
+1681  CA8C 21 A8 D0             ld hl,cz
+1682  CA8F BE                   cp (hl)
+1683  CA90 28 09                jr z,.f
+1684  CA92 CD B5 CA             call draw_row
+1685  CA95 21 AA D0             ld hl,cell_j
+1686  CA98 34                   inc (hl)
+1687  CA99 18 EE                jr .b
+1688  CA9B 3A A8 D0     .f:     ld a,(cz)
+1689  CA9E C6 06                add a,VIEW_R
+1690  CAA0 32 AA D0             ld (cell_j),a
+1691  CAA3 3A AA D0     .f2:    ld a,(cell_j)
+1692  CAA6 21 A8 D0             ld hl,cz
+1693  CAA9 BE                   cp (hl)
+1694  CAAA 28 09                jr z,draw_row                   ; camera row last
+1695  CAAC CD B5 CA             call draw_row
+1696  CAAF 21 AA D0             ld hl,cell_j
+1697  CAB2 35                   dec (hl)
+1698  CAB3 18 EE                jr .f2
+1699  CAB5
+1700  CAB5              draw_row:
+1701  CAB5 3A AA D0             ld a,(cell_j)
+1702  CAB8 FE 20                cp 32
+1703  CABA D0                   ret nc
+1704  CABB 3A A7 D0             ld a,(cx)
+1705  CABE D6 06                sub VIEW_R
+1706  CAC0 32 A9 D0             ld (cell_i),a
+1707  CAC3 CD 25 CB             call row_start
+1708  CAC6 3A A9 D0     .l:     ld a,(cell_i)
+1709  CAC9 21 A7 D0             ld hl,cx
+1710  CACC BE                   cp (hl)
+1711  CACD 28 1F                jr z,.r
+1712  CACF CD 52 CB             call try_cell
+1713  CAD2 21 A9 D0             ld hl,cell_i
+1714  CAD5 34                   inc (hl)
+1715  CAD6 2A BF D0             ld hl,(row_x)                   ; one cell +x: (X,Z1) += (cosY,sinY)
+1716  CAD9 ED 5B 63 D0          ld de,(cos_y)
+1717  CADD 19                   add hl,de
+1718  CADE 22 BF D0             ld (row_x),hl
+1719  CAE1 2A C1 D0             ld hl,(row_z1)
+1720  CAE4 ED 5B 61 D0          ld de,(sin_y)
+1721  CAE8 19                   add hl,de
+1722  CAE9 22 C1 D0             ld (row_z1),hl
+1723  CAEC 18 D8                jr .l
+1724  CAEE 3A A7 D0     .r:     ld a,(cx)
+1725  CAF1 C6 06                add a,VIEW_R
+1726  CAF3 32 A9 D0             ld (cell_i),a
+1727  CAF6 CD 25 CB             call row_start
+1728  CAF9 3A A9 D0     .r2:    ld a,(cell_i)
+1729  CAFC 21 A7 D0             ld hl,cx
+1730  CAFF BE                   cp (hl)
+1731  CB00 28 50                jr z,try_cell                   ; camera column last
+1732  CB02 CD 52 CB             call try_cell
+1733  CB05 21 A9 D0             ld hl,cell_i
+1734  CB08 35                   dec (hl)
+1735  CB09 2A BF D0             ld hl,(row_x)                   ; one cell -x
+1736  CB0C ED 5B 63 D0          ld de,(cos_y)
+1737  CB10 B7                   or a
+1738  CB11 ED 52                sbc hl,de
+1739  CB13 22 BF D0             ld (row_x),hl
+1740  CB16 2A C1 D0             ld hl,(row_z1)
+1741  CB19 ED 5B 61 D0          ld de,(sin_y)
+1742  CB1D B7                   or a
+1743  CB1E ED 52                sbc hl,de
+1744  CB20 22 C1 D0             ld (row_z1),hl
+1745  CB23 18 D4                jr .r2
+1746  CB25
+1747  CB25              ; Yaw-rotated centre of cell (cell_i, cell_j) -> row_x, row_z1.  Moving one
+1748  CB25              ; cell (256 units) in x then changes (X, Z1) by exactly the raw (cosY, sinY).
+1749  CB25              row_start:
+1750  CB25 3A A9 D0             ld a,(cell_i)
+1751  CB28 67                   ld h,a
+1752  CB29 2E 80                ld l,128
+1753  CB2B ED 5B 4A D0          ld de,(cam_x+1)
+1754  CB2F B7                   or a
+1755  CB30 ED 52                sbc hl,de
+1756  CB32 22 B7 D0             ld (t_dx),hl
+1757  CB35 3A AA D0             ld a,(cell_j)
+1758  CB38 67                   ld h,a
+1759  CB39 2E 80                ld l,128
+1760  CB3B ED 5B 4D D0          ld de,(cam_z+1)
+1761  CB3F B7                   or a
+1762  CB40 ED 52                sbc hl,de
+1763  CB42 22 B9 D0             ld (t_dz),hl
+1764  CB45 CD B4 CE             call rot_yaw
+1765  CB48 22 BF D0             ld (row_x),hl
+1766  CB4B 2A BB D0             ld hl,(t_z1)
+1767  CB4E 22 C1 D0             ld (row_z1),hl
+1768  CB51 C9                   ret
+1769  CB52
+1770  CB52              try_cell:
+1771  CB52 3A A9 D0             ld a,(cell_i)
+1772  CB55 FE 20                cp 32
+1773  CB57 D0                   ret nc
+1774  CB58                      ; fall through
+1775  CB58
+1776  CB58              ;------------------------------------------------------------------------------
+1777  CB58              ; Transform and draw the building in (cell_i, cell_j)
+1778  CB58              ;------------------------------------------------------------------------------
+1779  CB58              draw_cell:
+1780  CB58 3A AA D0             ld a,(cell_j)
+1781  CB5B 6F                   ld l,a
+1782  CB5C 26 00                ld h,0
+1783  CB5E 29                   add hl,hl
+1784  CB5F 29                   add hl,hl
+1785  CB60 29                   add hl,hl
+1786  CB61 29                   add hl,hl
+1787  CB62 29                   add hl,hl
+1788  CB63 3A A9 D0             ld a,(cell_i)
+1789  CB66 ED 31                add hl,a
+1790  CB68 11 71 DE             ld de,city_map
+1791  CB6B 19                   add hl,de
+1792  CB6C 7E                   ld a,(hl)
+1793  CB6D B7                   or a
+1794  CB6E C8                   ret z
+1795  CB6F 4F                   ld c,a
+1796  CB70 CD 80 C2             call bld_height
+1797  CB73 22 AB D0             ld (bld_h),hl
+1798  CB76 CD 72 C2             call bld_dims                   ; B = inset, E = size
+1799  CB79                      ; world corners
+1800  CB79 3A A9 D0             ld a,(cell_i)
+1801  CB7C 67                   ld h,a
+1802  CB7D 68                   ld l,b
+1803  CB7E 22 AF D0             ld (bld_x0),hl
+1804  CB81 7B                   ld a,e
+1805  CB82 ED 31                add hl,a
+1806  CB84 22 B1 D0             ld (bld_x1),hl
+1807  CB87 3A AA D0             ld a,(cell_j)
+1808  CB8A 67                   ld h,a
+1809  CB8B 68                   ld l,b
+1810  CB8C 22 B3 D0             ld (bld_z0),hl
+1811  CB8F 7B                   ld a,e
+1812  CB90 ED 31                add hl,a
+1813  CB92 22 B5 D0             ld (bld_z1),hl
+1814  CB95
+1815  CB95 21 6D D0             ld hl,vecs0
+1816  CB98 11 B1 00             ld de,177                       ; block radius 125 * sqrt2
+1817  CB9B CB 61                bit 4,c
+1818  CB9D 28 06                jr z,.v0
+1819  CB9F 21 7D D0             ld hl,vecs1
+1820  CBA2 11 60 00             ld de,96                        ; tower radius 68 * sqrt2
+1821  CBA5 22 AD D0     .v0:    ld (bld_vecs),hl
+1822  CBA8 ED 53 C4 D0          ld (bld_r),de
+1823  CBAC
+1824  CBAC                      ; yaw-space centre of this cell, kept up to date by draw_row
+1825  CBAC 2A C1 D0             ld hl,(row_z1)
+1826  CBAF 22 BB D0             ld (t_z1),hl
+1827  CBB2 2A BF D0             ld hl,(row_x)
+1828  CBB5 22 BD D0             ld (t_x),hl
+1829  CBB8                      ; Horizontal frustum cull, valid at any pitch: a visible point has
+1830  CBB8                      ; |X|*c <= Z1 with c = cosP - 0.75|sinP|. Reject the bounding circle.
+1831  CBB8 CD C1 C3             call abs_hl
+1832  CBBB ED 5B 99 D0          ld de,(cull_c)
+1833  CBBF CD C6 C3             call fmul
+1834  CBC2 ED 5B BB D0          ld de,(t_z1)
+1835  CBC6 B7                   or a
+1836  CBC7 ED 52                sbc hl,de
+1837  CBC9 ED 5B C4 D0          ld de,(bld_r)
+1838  CBCD B7                   or a
+1839  CBCE ED 52                sbc hl,de
+1840  CBD0 F0                   ret p
+1841  CBD1                      ; centre -> corner (x0,z0), still in yaw space
+1842  CBD1 DD 2A AD D0          ld ix,(bld_vecs)
+1843  CBD5 DD 6E 0C             ld l,(ix+12)
+1844  CBD8 DD 66 0D             ld h,(ix+13)
+1845  CBDB ED 5B BD D0          ld de,(t_x)
+1846  CBDF 19                   add hl,de
+1847  CBE0 22 00 D2             ld (vtx+0),hl
+1848  CBE3 DD 6E 0E             ld l,(ix+14)
+1849  CBE6 DD 66 0F             ld h,(ix+15)
+1850  CBE9 ED 5B BB D0          ld de,(t_z1)
+1851  CBED 19                   add hl,de
+1852  CBEE 22 BB D0             ld (t_z1),hl
+1853  CBF1 CD E8 CE             call rot_pitch
+1854  CBF4 22 02 D2             ld (vtx+2),hl
+1855  CBF7 ED 53 04 D2          ld (vtx+4),de
+1856  CBFB 2A AD D0             ld hl,(bld_vecs)
+1857  CBFE 11 8D D0             ld de,cur_vx
+1858  CC01 01 0C 00             ld bc,12
+1859  CC04 ED B0                ldir                            ; cur_vx, cur_vz
+1860  CC06
+1861  CC06                      ; vertical edge vector (0, h cosP, h sinP)
+1862  CC06 2A AB D0             ld hl,(bld_h)
+1863  CC09 ED 5B 67 D0          ld de,(cos_p)
+1864  CC0D CD C6 C3             call fmul
+1865  CC10 22 9D D0             ld (vy_vec+2),hl
+1866  CC13 2A AB D0             ld hl,(bld_h)
+1867  CC16 ED 5B 65 D0          ld de,(sin_p)
+1868  CC1A CD C6 C3             call fmul
+1869  CC1D 22 9F D0             ld (vy_vec+4),hl
+1870  CC20
+1871  CC20                      ; vertices: index = x + 2*z + 4*top  (box edges are shared vectors)
+1872  CC20                      VADD vtx+16, vtx+0,  cur_vx
+1872  CC20 2A 00 D2    >        ld hl,(vtx+0)
+1872  CC23 ED 5B 8D D0 >        ld de,(cur_vx)
+1872  CC27 19          >        add hl,de
+1872  CC28 22 10 D2    >        ld (vtx+16),hl
+1872  CC2B 2A 02 D2    >        ld hl,(vtx+0+2)
+1872  CC2E ED 5B 8F D0 >        ld de,(cur_vx+2)
+1872  CC32 19          >        add hl,de
+1872  CC33 22 12 D2    >        ld (vtx+16+2),hl
+1872  CC36 2A 04 D2    >        ld hl,(vtx+0+4)
+1872  CC39 ED 5B 91 D0 >        ld de,(cur_vx+4)
+1872  CC3D 19          >        add hl,de
+1872  CC3E 22 14 D2    >        ld (vtx+16+4),hl
+1873  CC41                      VADD vtx+32, vtx+0,  cur_vz
+1873  CC41 2A 00 D2    >        ld hl,(vtx+0)
+1873  CC44 ED 5B 93 D0 >        ld de,(cur_vz)
+1873  CC48 19          >        add hl,de
+1873  CC49 22 20 D2    >        ld (vtx+32),hl
+1873  CC4C 2A 02 D2    >        ld hl,(vtx+0+2)
+1873  CC4F ED 5B 95 D0 >        ld de,(cur_vz+2)
+1873  CC53 19          >        add hl,de
+1873  CC54 22 22 D2    >        ld (vtx+32+2),hl
+1873  CC57 2A 04 D2    >        ld hl,(vtx+0+4)
+1873  CC5A ED 5B 97 D0 >        ld de,(cur_vz+4)
+1873  CC5E 19          >        add hl,de
+1873  CC5F 22 24 D2    >        ld (vtx+32+4),hl
+1874  CC62                      VADD vtx+48, vtx+16, cur_vz
+1874  CC62 2A 10 D2    >        ld hl,(vtx+16)
+1874  CC65 ED 5B 93 D0 >        ld de,(cur_vz)
+1874  CC69 19          >        add hl,de
+1874  CC6A 22 30 D2    >        ld (vtx+48),hl
+1874  CC6D 2A 12 D2    >        ld hl,(vtx+16+2)
+1874  CC70 ED 5B 95 D0 >        ld de,(cur_vz+2)
+1874  CC74 19          >        add hl,de
+1874  CC75 22 32 D2    >        ld (vtx+48+2),hl
+1874  CC78 2A 14 D2    >        ld hl,(vtx+16+4)
+1874  CC7B ED 5B 97 D0 >        ld de,(cur_vz+4)
+1874  CC7F 19          >        add hl,de
+1874  CC80 22 34 D2    >        ld (vtx+48+4),hl
+1875  CC83                      VADD vtx+64, vtx+0,  vy_vec
+1875  CC83 2A 00 D2    >        ld hl,(vtx+0)
+1875  CC86 ED 5B 9B D0 >        ld de,(vy_vec)
+1875  CC8A 19          >        add hl,de
+1875  CC8B 22 40 D2    >        ld (vtx+64),hl
+1875  CC8E 2A 02 D2    >        ld hl,(vtx+0+2)
+1875  CC91 ED 5B 9D D0 >        ld de,(vy_vec+2)
+1875  CC95 19          >        add hl,de
+1875  CC96 22 42 D2    >        ld (vtx+64+2),hl
+1875  CC99 2A 04 D2    >        ld hl,(vtx+0+4)
+1875  CC9C ED 5B 9F D0 >        ld de,(vy_vec+4)
+1875  CCA0 19          >        add hl,de
+1875  CCA1 22 44 D2    >        ld (vtx+64+4),hl
+1876  CCA4                      VADD vtx+80, vtx+16, vy_vec
+1876  CCA4 2A 10 D2    >        ld hl,(vtx+16)
+1876  CCA7 ED 5B 9B D0 >        ld de,(vy_vec)
+1876  CCAB 19          >        add hl,de
+1876  CCAC 22 50 D2    >        ld (vtx+80),hl
+1876  CCAF 2A 12 D2    >        ld hl,(vtx+16+2)
+1876  CCB2 ED 5B 9D D0 >        ld de,(vy_vec+2)
+1876  CCB6 19          >        add hl,de
+1876  CCB7 22 52 D2    >        ld (vtx+80+2),hl
+1876  CCBA 2A 14 D2    >        ld hl,(vtx+16+4)
+1876  CCBD ED 5B 9F D0 >        ld de,(vy_vec+4)
+1876  CCC1 19          >        add hl,de
+1876  CCC2 22 54 D2    >        ld (vtx+80+4),hl
+1877  CCC5                      VADD vtx+96, vtx+32, vy_vec
+1877  CCC5 2A 20 D2    >        ld hl,(vtx+32)
+1877  CCC8 ED 5B 9B D0 >        ld de,(vy_vec)
+1877  CCCC 19          >        add hl,de
+1877  CCCD 22 60 D2    >        ld (vtx+96),hl
+1877  CCD0 2A 22 D2    >        ld hl,(vtx+32+2)
+1877  CCD3 ED 5B 9D D0 >        ld de,(vy_vec+2)
+1877  CCD7 19          >        add hl,de
+1877  CCD8 22 62 D2    >        ld (vtx+96+2),hl
+1877  CCDB 2A 24 D2    >        ld hl,(vtx+32+4)
+1877  CCDE ED 5B 9F D0 >        ld de,(vy_vec+4)
+1877  CCE2 19          >        add hl,de
+1877  CCE3 22 64 D2    >        ld (vtx+96+4),hl
+1878  CCE6                      VADD vtx+112,vtx+48, vy_vec
+1878  CCE6 2A 30 D2    >        ld hl,(vtx+48)
+1878  CCE9 ED 5B 9B D0 >        ld de,(vy_vec)
+1878  CCED 19          >        add hl,de
+1878  CCEE 22 70 D2    >        ld (vtx+112),hl
+1878  CCF1 2A 32 D2    >        ld hl,(vtx+48+2)
+1878  CCF4 ED 5B 9D D0 >        ld de,(vy_vec+2)
+1878  CCF8 19          >        add hl,de
+1878  CCF9 22 72 D2    >        ld (vtx+112+2),hl
+1878  CCFC 2A 34 D2    >        ld hl,(vtx+48+4)
+1878  CCFF ED 5B 9F D0 >        ld de,(vy_vec+4)
+1878  CD03 19          >        add hl,de
+1878  CD04 22 74 D2    >        ld (vtx+112+4),hl
+1879  CD07
+1880  CD07                      ; Back face culling is exact in world space for an axis aligned box.
+1881  CD07                      ; C = visible faces: bit0 -X, bit1 +X, bit2 -Z, bit3 +Z, bit4 top
+1882  CD07 0E 00                ld c,0
+1883  CD09 2A 4A D0             ld hl,(cam_x+1)
+1884  CD0C ED 5B AF D0          ld de,(bld_x0)
+1885  CD10 B7                   or a
+1886  CD11 ED 52                sbc hl,de
+1887  CD13 30 02                jr nc,.v1
+1888  CD15 CB C1                set 0,c
+1889  CD17 2A B1 D0     .v1:    ld hl,(bld_x1)
+1890  CD1A ED 5B 4A D0          ld de,(cam_x+1)
+1891  CD1E B7                   or a
+1892  CD1F ED 52                sbc hl,de
+1893  CD21 30 02                jr nc,.v2
+1894  CD23 CB C9                set 1,c
+1895  CD25 2A 4D D0     .v2:    ld hl,(cam_z+1)
+1896  CD28 ED 5B B3 D0          ld de,(bld_z0)
+1897  CD2C B7                   or a
+1898  CD2D ED 52                sbc hl,de
+1899  CD2F 30 02                jr nc,.v3
+1900  CD31 CB D1                set 2,c
+1901  CD33 2A B5 D0     .v3:    ld hl,(bld_z1)
+1902  CD36 ED 5B 4D D0          ld de,(cam_z+1)
+1903  CD3A B7                   or a
+1904  CD3B ED 52                sbc hl,de
+1905  CD3D 30 02                jr nc,.v4
+1906  CD3F CB D9                set 3,c
+1907  CD41 2A AB D0     .v4:    ld hl,(bld_h)
+1908  CD44 ED 5B 4F D0          ld de,(cam_y)
+1909  CD48 B7                   or a
+1910  CD49 ED 52                sbc hl,de
+1911  CD4B 30 02                jr nc,.v5
+1912  CD4D CB E1                set 4,c
+1913  CD4F 79           .v5:    ld a,c
+1914  CD50 32 E1 D0             ld (bld_vis),a
+1915  CD53 B7                   or a
+1916  CD54 C8                   ret z                           ; camera inside the footprint
+1917  CD55 21 31 DD             ld hl,used_tab
+1918  CD58 ED 31                add hl,a
+1919  CD5A 7E                   ld a,(hl)
+1920  CD5B 32 C3 D0             ld (bld_used),a                 ; corners belonging to visible faces
+1921  CD5E
+1922  CD5E                      ; outcodes, trivial reject, project the on-screen corners
+1923  CD5E 3E FF                ld a,$FF
+1924  CD60 32 C6 D0             ld (and_oc),a
+1925  CD63 DD 21 00 D2          ld ix,vtx
+1926  CD67 06 08                ld b,8
+1927  CD69 C5           .ocl:   push bc
+1928  CD6A 3A C3 D0             ld a,(bld_used)
+1929  CD6D 0F                   rrca
+1930  CD6E 32 C3 D0             ld (bld_used),a
+1931  CD71 30 20                jr nc,.np                       ; hidden corner: not needed
+1932  CD73 DD E5                push ix
+1933  CD75 E1                   pop hl
+1934  CD76 CD 3B C5             call calc_oc
+1935  CD79 DD 77 06             ld (ix+6),a                     ; outcode
+1936  CD7C 21 C6 D0             ld hl,and_oc
+1937  CD7F A6                   and (hl)
+1938  CD80 77                   ld (hl),a
+1939  CD81 DD 7E 06             ld a,(ix+6)
+1940  CD84 B7                   or a
+1941  CD85 20 0C                jr nz,.np
+1942  CD87 DD E5                push ix
+1943  CD89 E1                   pop hl
+1944  CD8A CD 5A C4             call project
+1945  CD8D DD 77 07             ld (ix+7),a                     ; sx
+1946  CD90 DD 71 08             ld (ix+8),c                     ; sy
+1947  CD93 11 10 00     .np:    ld de,16
+1948  CD96 DD 19                add ix,de
+1949  CD98 C1                   pop bc
+1950  CD99 10 CE                djnz .ocl
+1951  CD9B 3A C6 D0             ld a,(and_oc)
+1952  CD9E B7                   or a
+1953  CD9F C0                   ret nz
+1954  CDA0
+1955  CDA0 3A E1 D0             ld a,(bld_vis)
+1956  CDA3                      ; Fast path: if every silhouette corner is on screen, fill the box
+1957  CDA3                      ; silhouette once and draw the interior edges as plain lines.
+1958  CDA3 87                   add a,a
+1959  CDA4 87                   add a,a
+1960  CDA5 87                   add a,a
+1961  CDA6 21 31 DC             ld hl,sil_tab
+1962  CDA9 ED 31                add hl,a
+1963  CDAB 22 E2 D0             ld (sil_ptr),hl
+1964  CDAE 7E                   ld a,(hl)
+1965  CDAF B7                   or a
+1966  CDB0 C8                   ret z                           ; nothing visible
+1967  CDB1 47                   ld b,a
+1968  CDB2 23                   inc hl
+1969  CDB3 16 D2                ld d,high vtx
+1970  CDB5 0E 00                ld c,0
+1971  CDB7 7E           .so:    ld a,(hl)
+1972  CDB8 23                   inc hl
+1973  CDB9 C6 06                add a,6
+1974  CDBB 5F                   ld e,a
+1975  CDBC 1A                   ld a,(de)
+1976  CDBD B1                   or c
+1977  CDBE 4F                   ld c,a
+1978  CDBF 10 F6                djnz .so
+1979  CDC1 B7                   or a
+1980  CDC2 CA 42 CE             jp z,draw_silhouette
+1981  CDC5                      ; Otherwise clip and draw each visible face on its own.
+1982  CDC5 3A E1 D0             ld a,(bld_vis)
+1983  CDC8 4F                   ld c,a
+1984  CDC9                      ; An edge shared with a face drawn later is left to that face:
+1985  CDC9                      ; X faces skip their top edge if the roof shows and the vertical
+1986  CDC9                      ; edge shared with a visible Z face; Z faces skip the top edge.
+1987  CDC9 06 0F                ld b,$0F
+1988  CDCB CB 61                bit 4,c
+1989  CDCD 28 02                jr z,.m1
+1990  CDCF CB 90                res 2,b
+1991  CDD1 78           .m1:    ld a,b
+1992  CDD2 32 E6 D0             ld (bld_mz),a
+1993  CDD5 CB 59                bit 3,c
+1994  CDD7 28 02                jr z,.m2
+1995  CDD9 CB 88                res 1,b
+1996  CDDB CB 51        .m2:    bit 2,c
+1997  CDDD 28 02                jr z,.m3
+1998  CDDF CB 98                res 3,b
+1999  CDE1 78           .m3:    ld a,b
+2000  CDE2 32 E5 D0             ld (bld_mx),a
+2001  CDE5
+2002  CDE5 3A E1 D0             ld a,(bld_vis)
+2003  CDE8 CB 47                bit 0,a
+2004  CDEA 28 0C                jr z,.f1
+2005  CDEC 3A E5 D0             ld a,(bld_mx)
+2006  CDEF 32 DF D0             ld (df_mask),a
+2007  CDF2 21 35 D0             ld hl,face_nx
+2008  CDF5 CD 23 C7             call draw_face
+2009  CDF8 3A E1 D0     .f1:    ld a,(bld_vis)
+2010  CDFB CB 4F                bit 1,a
+2011  CDFD 28 0C                jr z,.f2
+2012  CDFF 3A E5 D0             ld a,(bld_mx)
+2013  CE02 32 DF D0             ld (df_mask),a
+2014  CE05 21 39 D0             ld hl,face_px
+2015  CE08 CD 23 C7             call draw_face
+2016  CE0B 3A E1 D0     .f2:    ld a,(bld_vis)
+2017  CE0E CB 57                bit 2,a
+2018  CE10 28 0C                jr z,.f3
+2019  CE12 3A E6 D0             ld a,(bld_mz)
+2020  CE15 32 DF D0             ld (df_mask),a
+2021  CE18 21 3D D0             ld hl,face_nz
+2022  CE1B CD 23 C7             call draw_face
+2023  CE1E 3A E1 D0     .f3:    ld a,(bld_vis)
+2024  CE21 CB 5F                bit 3,a
+2025  CE23 28 0C                jr z,.f4
+2026  CE25 3A E6 D0             ld a,(bld_mz)
+2027  CE28 32 DF D0             ld (df_mask),a
+2028  CE2B 21 41 D0             ld hl,face_pz
+2029  CE2E CD 23 C7             call draw_face
+2030  CE31 3A E1 D0     .f4:    ld a,(bld_vis)
+2031  CE34 CB 67                bit 4,a
+2032  CE36 C8                   ret z
+2033  CE37 3E 0F                ld a,$0F
+2034  CE39 32 DF D0             ld (df_mask),a
+2035  CE3C 21 45 D0             ld hl,face_top
+2036  CE3F C3 23 C7             jp draw_face
+2037  CE42
+2038  CE42              ;------------------------------------------------------------------------------
+2039  CE42              ; Draw the current building from its silhouette (all corners on screen):
+2040  CE42              ; one convex fill of the outline, then the outline, then interior edges.
+2041  CE42              ;------------------------------------------------------------------------------
+2042  CE42              draw_silhouette:
+2043  CE42 2A E2 D0             ld hl,(sil_ptr)
+2044  CE45 7E                   ld a,(hl)
+2045  CE46 23                   inc hl
+2046  CE47 32 BC D1             ld (p2n),a
+2047  CE4A DD 6F                ld ixl,a
+2048  CE4C 11 80 D2             ld de,p2buf
+2049  CE4F 06 D2                ld b,high vtx
+2050  CE51 7E           .sv:    ld a,(hl)
+2051  CE52 23                   inc hl
+2052  CE53 C6 07                add a,7
+2053  CE55 4F                   ld c,a
+2054  CE56 0A                   ld a,(bc)
+2055  CE57 12                   ld (de),a                       ; sx
+2056  CE58 1C                   inc e
+2057  CE59 0C                   inc c
+2058  CE5A 0A                   ld a,(bc)
+2059  CE5B 12                   ld (de),a                       ; sy
+2060  CE5C 1C                   inc e
+2061  CE5D 3E 01                ld a,1
+2062  CE5F 12                   ld (de),a                       ; outline this edge
+2063  CE60 1C                   inc e
+2064  CE61 1C                   inc e
+2065  CE62 DD 2D                dec ixl
+2066  CE64 20 EB                jr nz,.sv
+2067  CE66 3A 80 D2             ld a,(p2buf)                    ; close the polygon
+2068  CE69 12                   ld (de),a
+2069  CE6A 1C                   inc e
+2070  CE6B 3A 81 D2             ld a,(p2buf+1)
+2071  CE6E 12                   ld (de),a
+2072  CE6F CD 87 C8             call fill_poly
+2073  CE72 3E FF                ld a,EDGE_COL
+2074  CE74 32 C0 D1             ld (line_col),a
+2075  CE77 CD C5 C9             call outline_poly
+2076  CE7A 3A E1 D0             ld a,(bld_vis)
+2077  CE7D 87                   add a,a
+2078  CE7E 87                   add a,a
+2079  CE7F 87                   add a,a
+2080  CE80 21 51 DD             ld hl,inner_tab
+2081  CE83 ED 31                add hl,a
+2082  CE85 7E                   ld a,(hl)
+2083  CE86 B7                   or a
+2084  CE87 C8                   ret z
+2085  CE88 32 E4 D0             ld (sil_cnt),a
+2086  CE8B 23                   inc hl
+2087  CE8C 7E           .ie:    ld a,(hl)
+2088  CE8D 23                   inc hl
+2089  CE8E 4E                   ld c,(hl)
+2090  CE8F 23                   inc hl
+2091  CE90 E5                   push hl
+2092  CE91 C6 07                add a,7
+2093  CE93 6F                   ld l,a
+2094  CE94 26 D2                ld h,high vtx
+2095  CE96 7E                   ld a,(hl)
+2096  CE97 2C                   inc l
+2097  CE98 66                   ld h,(hl)
+2098  CE99 6F                   ld l,a                          ; H = y0, L = x0
+2099  CE9A 79                   ld a,c
+2100  CE9B C6 07                add a,7
+2101  CE9D 5F                   ld e,a
+2102  CE9E 16 D2                ld d,high vtx
+2103  CEA0 1A                   ld a,(de)
+2104  CEA1 4F                   ld c,a
+2105  CEA2 1C                   inc e
+2106  CEA3 1A                   ld a,(de)
+2107  CEA4 57                   ld d,a                          ; D = y1
+2108  CEA5 59                   ld e,c                          ; E = x1
+2109  CEA6 CD EC C9             call draw_line
+2110  CEA9 E1                   pop hl
+2111  CEAA 3A E4 D0             ld a,(sil_cnt)
+2112  CEAD 3D                   dec a
+2113  CEAE 32 E4 D0             ld (sil_cnt),a
+2114  CEB1 20 D9                jr nz,.ie
+2115  CEB3 C9                   ret
+2116  CEB4
+2117  CEB4              ; Yaw rotation of (t_dx, t_dz):  Z1 = dx sinY + dz cosY -> t_z1
+2118  CEB4              ;                               X  = dx cosY - dz sinY -> HL
+2119  CEB4              rot_yaw:
+2120  CEB4 2A B7 D0             ld hl,(t_dx)
+2121  CEB7 ED 5B 61 D0          ld de,(sin_y)
+2122  CEBB CD C6 C3             call fmul
+2123  CEBE E5                   push hl
+2124  CEBF 2A B9 D0             ld hl,(t_dz)
+2125  CEC2 ED 5B 63 D0          ld de,(cos_y)
+2126  CEC6 CD C6 C3             call fmul
+2127  CEC9 D1                   pop de
+2128  CECA 19                   add hl,de
+2129  CECB 22 BB D0             ld (t_z1),hl
+2130  CECE 2A B9 D0             ld hl,(t_dz)
+2131  CED1 ED 5B 61 D0          ld de,(sin_y)
+2132  CED5 CD C6 C3             call fmul
+2133  CED8 E5                   push hl
+2134  CED9 2A B7 D0             ld hl,(t_dx)
+2135  CEDC ED 5B 63 D0          ld de,(cos_y)
+2136  CEE0 CD C6 C3             call fmul
+2137  CEE3 D1                   pop de
+2138  CEE4 B7                   or a
+2139  CEE5 ED 52                sbc hl,de
+2140  CEE7 C9                   ret
+2141  CEE8
+2142  CEE8              ; Pitch rotation of a ground point at t_z1:
+2143  CEE8              ;   HL = Y = yb - Z1 sinP     DE = Z = zb + Z1 cosP
+2144  CEE8              rot_pitch:
+2145  CEE8 2A BB D0             ld hl,(t_z1)
+2146  CEEB ED 5B 65 D0          ld de,(sin_p)
+2147  CEEF CD C6 C3             call fmul
+2148  CEF2 EB                   ex de,hl
+2149  CEF3 2A 69 D0             ld hl,(yb)
+2150  CEF6 B7                   or a
+2151  CEF7 ED 52                sbc hl,de
+2152  CEF9 E5                   push hl
+2153  CEFA 2A BB D0             ld hl,(t_z1)
+2154  CEFD ED 5B 67 D0          ld de,(cos_p)
+2155  CF01 CD C6 C3             call fmul
+2156  CF04 ED 5B 6B D0          ld de,(zb)
+2157  CF08 19                   add hl,de
+2158  CF09 EB                   ex de,hl
+2159  CF0A E1                   pop hl
+2160  CF0B C9                   ret
+2161  CF0C
+2162  CF0C              ;==============================================================================
+2163  CF0C              ; Street intersection markers - one dot per grid corner near the camera
+2164  CF0C              ;==============================================================================
+2165  CF0C              draw_dots:
+2166  CF0C 3A A8 D0             ld a,(cz)
+2167  CF0F D6 05                sub DOT_R
+2168  CF11 32 C8 D0             ld (dot_j),a
+2169  CF14 3E 0C                ld a,2*DOT_R+2
+2170  CF16 32 C9 D0             ld (dot_rows),a
+2171  CF19 3A C8 D0     .row:   ld a,(dot_j)
+2172  CF1C FE 21                cp 33
+2173  CF1E 30 58                jr nc,.nrow
+2174  CF20                      ; first corner of the row by full rotation, then step along x:
+2175  CF20                      ; +256 world units in x adds exactly (cosY, sinY) to (X, Z1)
+2176  CF20 3A A7 D0             ld a,(cx)
+2177  CF23 D6 05                sub DOT_R
+2178  CF25 32 C7 D0             ld (dot_i),a
+2179  CF28 67                   ld h,a
+2180  CF29 2E 00                ld l,0
+2181  CF2B ED 5B 4A D0          ld de,(cam_x+1)
+2182  CF2F B7                   or a
+2183  CF30 ED 52                sbc hl,de
+2184  CF32 22 B7 D0             ld (t_dx),hl
+2185  CF35 3A C8 D0             ld a,(dot_j)
+2186  CF38 67                   ld h,a
+2187  CF39 2E 00                ld l,0
+2188  CF3B ED 5B 4D D0          ld de,(cam_z+1)
+2189  CF3F B7                   or a
+2190  CF40 ED 52                sbc hl,de
+2191  CF42 22 B9 D0             ld (t_dz),hl
+2192  CF45 CD B4 CE             call rot_yaw
+2193  CF48 22 BD D0             ld (t_x),hl
+2194  CF4B 3E 0C                ld a,2*DOT_R+2
+2195  CF4D 32 CA D0             ld (dot_cols),a
+2196  CF50 3A C7 D0     .col:   ld a,(dot_i)
+2197  CF53 FE 21                cp 33
+2198  CF55 DC 83 CF             call c,plot_dot
+2199  CF58 2A BD D0             ld hl,(t_x)
+2200  CF5B ED 5B 63 D0          ld de,(cos_y)
+2201  CF5F 19                   add hl,de
+2202  CF60 22 BD D0             ld (t_x),hl
+2203  CF63 2A BB D0             ld hl,(t_z1)
+2204  CF66 ED 5B 61 D0          ld de,(sin_y)
+2205  CF6A 19                   add hl,de
+2206  CF6B 22 BB D0             ld (t_z1),hl
+2207  CF6E 21 C7 D0             ld hl,dot_i
+2208  CF71 34                   inc (hl)
+2209  CF72 21 CA D0             ld hl,dot_cols
+2210  CF75 35                   dec (hl)
+2211  CF76 20 D8                jr nz,.col
+2212  CF78 21 C8 D0     .nrow:  ld hl,dot_j
+2213  CF7B 34                   inc (hl)
+2214  CF7C 21 C9 D0             ld hl,dot_rows
+2215  CF7F 35                   dec (hl)
+2216  CF80 20 97                jr nz,.row
+2217  CF82 C9                   ret
+2218  CF83
+2219  CF83              ; Plot the ground point (t_x, t_z1)
+2220  CF83              plot_dot:
+2221  CF83 2A BD D0             ld hl,(t_x)
+2222  CF86 22 CB D0             ld (tmpv+0),hl
+2223  CF89 CD C1 C3             call abs_hl
+2224  CF8C ED 5B 99 D0          ld de,(cull_c)
+2225  CF90 CD C6 C3             call fmul
+2226  CF93 ED 5B BB D0          ld de,(t_z1)
+2227  CF97 B7                   or a
+2228  CF98 ED 52                sbc hl,de
+2229  CF9A F0                   ret p                           ; outside horizontal frustum / behind
+2230  CF9B CD E8 CE             call rot_pitch
+2231  CF9E 22 CD D0             ld (tmpv+2),hl
+2232  CFA1 ED 53 CF D0          ld (tmpv+4),de
+2233  CFA5 21 CB D0             ld hl,tmpv
+2234  CFA8 CD 3B C5             call calc_oc
+2235  CFAB B7                   or a
+2236  CFAC C0                   ret nz
+2237  CFAD 21 CB D0             ld hl,tmpv
+2238  CFB0 CD 5A C4             call project
+2239  CFB3 61                   ld h,c
+2240  CFB4 6F                   ld l,a
+2241  CFB5 36 B6                ld (hl),DOT_COL
+2242  CFB7 C9                   ret
+2243  CFB8
+2244  CFB8              ;==============================================================================
+2245  CFB8              ; HUD: gunsight, speed bar (bottom left), altitude bar (right)
+2246  CFB8              ;==============================================================================
+2247  CFB8              draw_hud:
+2248  CFB8 3E 1C                ld a,HUD_COL
+2249  CFBA 32 C0 D1             ld (line_col),a
+2250  CFBD 21 7A 60             ld hl,96*256+122
+2251  CFC0 11 7D 60             ld de,96*256+125
+2252  CFC3 CD EC C9             call draw_line
+2253  CFC6 21 83 60             ld hl,96*256+131
+2254  CFC9 11 86 60             ld de,96*256+134
+2255  CFCC CD EC C9             call draw_line
+2256  CFCF 21 80 5A             ld hl,90*256+128
+2257  CFD2 11 80 5D             ld de,93*256+128
+2258  CFD5 CD EC C9             call draw_line
+2259  CFD8 21 80 63             ld hl,99*256+128
+2260  CFDB 11 80 66             ld de,102*256+128
+2261  CFDE CD EC C9             call draw_line
+2262  CFE1
+2263  CFE1                      ; speed
+2264  CFE1 3A 5B D0             ld a,(speed)
+2265  CFE4 B7                   or a
+2266  CFE5 28 24                jr z,.alt
+2267  CFE7 0E 1C                ld c,HUD_COL
+2268  CFE9 CB 7F                bit 7,a
+2269  CFEB 28 04                jr z,.sp
+2270  CFED ED 44                neg
+2271  CFEF 0E E0                ld c,HUD_WARN
+2272  CFF1 87           .sp:    add a,a
+2273  CFF2 C6 08                add a,8
+2274  CFF4 5F                   ld e,a
+2275  CFF5 79                   ld a,c
+2276  CFF6 32 C0 D1             ld (line_col),a
+2277  CFF9 D5                   push de
+2278  CFFA 21 08 BA             ld hl,186*256+8
+2279  CFFD 16 BA                ld d,186
+2280  CFFF CD EC C9             call draw_line
+2281  D002 D1                   pop de
+2282  D003 21 08 BB             ld hl,187*256+8
+2283  D006 16 BB                ld d,187
+2284  D008 CD EC C9             call draw_line
+2285  D00B
+2286  D00B                      ; altitude: 1 pixel per 8 units
+2287  D00B 3E 1C        .alt:   ld a,HUD_COL
+2288  D00D 32 C0 D1             ld (line_col),a
+2289  D010 2A 4F D0             ld hl,(cam_y)
+2290  D013 CB 3C                srl h
+2291  D015 CB 1D                rr l
+2292  D017 CB 3C                srl h
+2293  D019 CB 1D                rr l
+2294  D01B CB 3C                srl h
+2295  D01D CB 1D                rr l
+2296  D01F 3E BA                ld a,186
+2297  D021 95                   sub l
+2298  D022 57                   ld d,a
+2299  D023 D5                   push de
+2300  D024 1E F8                ld e,248
+2301  D026 21 F8 BA             ld hl,186*256+248
+2302  D029 CD EC C9             call draw_line
+2303  D02C D1                   pop de
+2304  D02D 1E F9                ld e,249
+2305  D02F 21 F9 BA             ld hl,186*256+249
+2306  D032 C3 EC C9             jp draw_line
+2307  D035
+2308  D035              ;==============================================================================
+2309  D035              ; Data
+2310  D035              ;==============================================================================
+2311  D035              ; Faces as vertex offsets (index*16); vertex index = x + 2*z + 4*top.
+2312  D035              ; Side faces list bottom edge first, then the z1/x1 vertical, top, z0/x0.
+2313  D035 00 20 60 40  face_nx:  db 0*16,2*16,6*16,4*16
+2314  D039 10 30 70 50  face_px:  db 1*16,3*16,7*16,5*16
+2315  D03D 00 10 50 40  face_nz:  db 0*16,1*16,5*16,4*16
+2316  D041 20 30 70 60  face_pz:  db 2*16,3*16,7*16,6*16
+2317  D045 40 50 70 60  face_top: db 4*16,5*16,7*16,6*16
+2318  D049
+2319  D049              ; --- player state ---
+2320  D049 00 80 08     cam_x:      db 0, $80, $08              ; frac, integer lo, hi  (x = 2176)
+2321  D04C 00 80 03     cam_z:      db 0, $80, $03              ; z = 896, on boulevard x=8
+2322  D04F 64 00        cam_y:      dw 100
+2323  D051 00 00 00...  old_pos:    ds 8
+2324  D059 00           yaw:        db 0
+2325  D05A 00           pitch:      db 0
+2326  D05B 00           speed:      db 0
+2327  D05C 00           keys1:      db 0
+2328  D05D 00           keys2:      db 0
+2329  D05E
+2330  D05E 09           front_bank: db L2_BANK_A                ; must stay adjacent (word access)
+2331  D05F 0C           back_bank:  db L2_BANK_B
+2332  D060 60           horizon:    db 96
+2333  D061
+2334  D061              ; --- view ---
+2335  D061 00 00        sin_y:      dw 0
+2336  D063 00 00        cos_y:      dw 0
+2337  D065 00 00        sin_p:      dw 0
+2338  D067 00 00        cos_p:      dw 0
+2339  D069 00 00        yb:         dw 0
+2340  D06B 00 00        zb:         dw 0
+2341  D06D 00 00 00...  vecs0:      ds 16
+2342  D07D 00 00 00...  vecs1:      ds 16
+2343  D08D 00 00 00...  cur_vx:     ds 6
+2344  D093 00 00 00...  cur_vz:     ds 6
+2345  D099 00 00        cull_c:     dw 0
+2346  D09B 00 00 00 00  vy_vec:     dw 0,0,0
+2346  D09F 00 00
+2347  D0A1 00 00        mv_s:       dw 0
+2348  D0A3 00 00        mv_c:       dw 0
+2349  D0A5 00 00        mv_n:       dw 0
+2350  D0A7
+2351  D0A7              ; --- building ---
+2352  D0A7 00           cx:         db 0
+2353  D0A8 00           cz:         db 0
+2354  D0A9 00           cell_i:     db 0
+2355  D0AA 00           cell_j:     db 0
+2356  D0AB 00 00        bld_h:      dw 0
+2357  D0AD 00 00        bld_vecs:   dw 0
+2358  D0AF 00 00        bld_x0:     dw 0
+2359  D0B1 00 00        bld_x1:     dw 0
+2360  D0B3 00 00        bld_z0:     dw 0
+2361  D0B5 00 00        bld_z1:     dw 0
+2362  D0B7 00 00        t_dx:       dw 0
+2363  D0B9 00 00        t_dz:       dw 0
+2364  D0BB 00 00        t_z1:       dw 0
+2365  D0BD 00 00        t_x:        dw 0
+2366  D0BF 00 00        row_x:      dw 0
+2367  D0C1 00 00        row_z1:     dw 0
+2368  D0C3 00           bld_used:   db 0
+2369  D0C4 00 00        bld_r:      dw 0
+2370  D0C6 00           and_oc:     db 0
+2371  D0C7 00           dot_i:      db 0
+2372  D0C8 00           dot_j:      db 0
+2373  D0C9 00           dot_rows:   db 0
+2374  D0CA 00           dot_cols:   db 0
+2375  D0CB 00 00 00...  tmpv:       ds 8
+2376  D0D3
+2377  D0D3              ; --- projection ---
+2378  D0D3 00 00        pj_x:       dw 0
+2379  D0D5 00 00        pj_y:       dw 0
+2380  D0D7 00           pj_sh:      db 0
+2381  D0D8 00 00        pj_r:       dw 0
+2382  D0DA 00           pj_sx:      db 0
+2383  D0DB 00           mf_sign:    db 0
+2384  D0DC
+2385  D0DC              ; --- clipping ---
+2386  D0DC 00 00        df_ptr:     dw 0
+2387  D0DE 00           df_or:      db 0
+2388  D0DF 00           df_mask:    db 0
+2389  D0E0 00           df_m:       db 0
+2390  D0E1 00           bld_vis:    db 0
+2391  D0E2 00 00        sil_ptr:    dw 0
+2392  D0E4 00           sil_cnt:    db 0
+2393  D0E5 00           bld_mx:     db 0
+2394  D0E6 00           bld_mz:     db 0
+2395  D0E7 00           clip_n:     db 0
+2396  D0E8 00           clip_on:    db 0
+2397  D0E9 00           clip_cnt:   db 0
+2398  D0EA 00           clip_plane: db 0
+2399  D0EB 00 00        clip_src:   dw 0
+2400  D0ED 00 00        clip_dst:   dw 0
+2401  D0EF 00 00        clip_s:     dw 0
+2402  D0F1 00 00        clip_e:     dw 0
+2403  D0F3 00 00        clip_ds:    dw 0
+2404  D0F5 00 00        clip_de:    dw 0
+2405  D0F7 00           clip_if:    db 0
+2406  D0F8 00 00        ci_a:       dw 0
+2407  D0FA 00 00        ci_t:       dw 0
+2408  D0FC 00 00 00...  clipA:      ds 8*12
+2409  D15C 00 00 00...  clipB:      ds 8*12
+2410  D1BC
+2411  D1BC              ; --- polygon ---
+2412  D1BC 00           p2n:        db 0
+2413  D1BD 00           fy0:        db 0
+2414  D1BE 00           fy1:        db 0
+2415  D1BF 00           fe_cnt:     db 0
+2416  D1C0 00           line_col:   db 0
+2417  D1C1 00 00        saved_sp:   dw 0
+2418  D1C3
+2419  D1C3              ;------------------------------------------------------------------------------
+2420  D1C3              ; Page aligned blocks
+2421  D1C3              ;------------------------------------------------------------------------------
+2422  D1C3 00 00 00...          ALIGN 256
+2423  D200 00 00 00...  vtx:        ds 8*16                     ; X,Y,Z,oc,sx,sy + pad
+2424  D280 00 00 00...  p2buf:      ds 4*16                     ; x,y,edge flag,pad
+2425  D2C0
+2426  D2C0 00 00 00...          ALIGN 256
+2427  D300              ; Unrolled span writer: entry = push_end - pairs
+2428  D300              push_blk:
+2429  D300                      REPT 128
+2430  D300 D5          >        push de
+2430  D301 D5          >        push de
+2430  D302 D5          >        push de
+2430  D303 D5          >        push de
+2430  D304 D5          >        push de
+2430  D305 D5          >        push de
+2430  D306 D5          >        push de
+2430  D307 D5          >        push de
+2430  D308 D5          >        push de
+2430  D309 D5          >        push de
+2430  D30A D5          >        push de
+2430  D30B D5          >        push de
+2430  D30C D5          >        push de
+2430  D30D D5          >        push de
+2430  D30E D5          >        push de
+2430  D30F D5          >        push de
+2430  D310 D5          >        push de
+2430  D311 D5          >        push de
+2430  D312 D5          >        push de
+2430  D313 D5          >        push de
+2430  D314 D5          >        push de
+2430  D315 D5          >        push de
+2430  D316 D5          >        push de
+2430  D317 D5          >        push de
+2430  D318 D5          >        push de
+2430  D319 D5          >        push de
+2430  D31A D5          >        push de
+2430  D31B D5          >        push de
+2430  D31C D5          >        push de
+2430  D31D D5          >        push de
+2430  D31E D5          >        push de
+2430  D31F D5          >        push de
+2430  D320 D5          >        push de
+2430  D321 D5          >        push de
+2430  D322 D5          >        push de
+2430  D323 D5          >        push de
+2430  D324 D5          >        push de
+2430  D325 D5          >        push de
+2430  D326 D5          >        push de
+2430  D327 D5          >        push de
+2430  D328 D5          >        push de
+2430  D329 D5          >        push de
+2430  D32A D5          >        push de
+2430  D32B D5          >        push de
+2430  D32C D5          >        push de
+2430  D32D D5          >        push de
+2430  D32E D5          >        push de
+2430  D32F D5          >        push de
+2430  D330 D5          >        push de
+2430  D331 D5          >        push de
+2430  D332 D5          >        push de
+2430  D333 D5          >        push de
+2430  D334 D5          >        push de
+2430  D335 D5          >        push de
+2430  D336 D5          >        push de
+2430  D337 D5          >        push de
+2430  D338 D5          >        push de
+2430  D339 D5          >        push de
+2430  D33A D5          >        push de
+2430  D33B D5          >        push de
+2430  D33C D5          >        push de
+2430  D33D D5          >        push de
+2430  D33E D5          >        push de
+2430  D33F D5          >        push de
+2430  D340 D5          >        push de
+2430  D341 D5          >        push de
+2430  D342 D5          >        push de
+2430  D343 D5          >        push de
+2430  D344 D5          >        push de
+2430  D345 D5          >        push de
+2430  D346 D5          >        push de
+2430  D347 D5          >        push de
+2430  D348 D5          >        push de
+2430  D349 D5          >        push de
+2430  D34A D5          >        push de
+2430  D34B D5          >        push de
+2430  D34C D5          >        push de
+2430  D34D D5          >        push de
+2430  D34E D5          >        push de
+2430  D34F D5          >        push de
+2430  D350 D5          >        push de
+2430  D351 D5          >        push de
+2430  D352 D5          >        push de
+2430  D353 D5          >        push de
+2430  D354 D5          >        push de
+2430  D355 D5          >        push de
+2430  D356 D5          >        push de
+2430  D357 D5          >        push de
+2430  D358 D5          >        push de
+2430  D359 D5          >        push de
+2430  D35A D5          >        push de
+2430  D35B D5          >        push de
+2430  D35C D5          >        push de
+2430  D35D D5          >        push de
+2430  D35E D5          >        push de
+2430  D35F D5          >        push de
+2430  D360 D5          >        push de
+2430  D361 D5          >        push de
+2430  D362 D5          >        push de
+2430  D363 D5          >        push de
+2430  D364 D5          >        push de
+2430  D365 D5          >        push de
+2430  D366 D5          >        push de
+2430  D367 D5          >        push de
+2430  D368 D5          >        push de
+2430  D369 D5          >        push de
+2430  D36A D5          >        push de
+2430  D36B D5          >        push de
+2430  D36C D5          >        push de
+2430  D36D D5          >        push de
+2430  D36E D5          >        push de
+2430  D36F D5          >        push de
+2430  D370 D5          >        push de
+2430  D371 D5          >        push de
+2430  D372 D5          >        push de
+2430  D373 D5          >        push de
+2430  D374 D5          >        push de
+2430  D375 D5          >        push de
+2430  D376 D5          >        push de
+2430  D377 D5          >        push de
+2430  D378 D5          >        push de
+2430  D379 D5          >        push de
+2430  D37A D5          >        push de
+2430  D37B D5          >        push de
+2430  D37C D5          >        push de
+2430  D37D D5          >        push de
+2430  D37E D5          >        push de
+2430  D37F D5          >        push de
+2431  D380                      ENDR
+2432  D380              push_end:
+2433  D380 78                   ld a,b
+2434  D381 04                   inc b
+2435  D382 DD BD                cp ixl
+2436  D384 C2 7E C9             jp nz,fs_loop
+2437  D387 ED 7B C1 D1          ld sp,(saved_sp)
+2438  D38B C9                   ret
+2439  D38C
+2440  D38C 00 00 00...          ALIGN 256
+2441  D400 00 00 00...  TA:         ds 256                      ; x of downward edges per row
+2442  D500 00 00 00...  TB:         ds 256                      ; x of upward edges per row
+2443  D600
+2444  D600                      INCLUDE "layer2_cls.asm"         ; zxnDMA equates + fill command block
+# file opened: layer2_cls.asm
+   1+ D600
+   2+ D600              IO_DATAGEAR_DMA_PORT 		            EQU $6B
+   3+ D600              DMA_WRO_BLOCK_PORTA_A2B_XFR  equ $7D
+   4+ D600              DMA_WRO_BLOCK_PORTA_B2A_XFR  equ $79
+   5+ D600              DMA_WR1_P1FIXED_MEMORY       equ $24
+   6+ D600              DMA_WR1_P1DEC_MEMORY         equ $04
+   7+ D600              DMA_WR1_P1INC_MEMORY         equ $14
+   8+ D600              DMA_WR2_P2FIXED_MEMORY       equ $20
+   9+ D600              DMA_WR2_P2DEC_MEMORY         equ $00
+  10+ D600              DMA_WR2_P2INC_MEMORY         equ $10
+  11+ D600              DMA_WR4_CONT_MODE            equ $AD
+  12+ D600              DMA_WR4_BURST_MODE           equ $CD
+  13+ D600              DMA_RESET                    equ $c3
+  14+ D600              DMA_RESET_PORT_A_TIMING      equ $c7
+  15+ D600              DMA_RESET_PORT_B_TIMING      equ $cb
+  16+ D600              DMA_LOAD                     equ $cf
+  17+ D600              DMA_CONTINUE                 equ $d3
+  18+ D600              DMA_DISABLE_INTERUPTS        equ $af
+  19+ D600              DMA_ENABLE_INTERUPTS         equ $ab
+  20+ D600              DMA_RESET_DISABLE_INTERUPTS  equ $a3
+  21+ D600              DMA_ENABLE_AFTER_RETI        equ $b7
+  22+ D600              DMA_READ_STATUS_BYTE         equ $bf
+  23+ D600              DMA_REINIT_STATUS_BYTE       equ $8b
+  24+ D600              DMA_START_READ_SEQUENCE      equ $a7
+  25+ D600              DMA_FORCE_READY              equ $b3
+  26+ D600              DMA_STOP_AT_END		     equ $82
+  27+ D600              DMA_DISABLE                  equ $83
+  28+ D600              DMA_ENABLE                   equ $87
+  29+ D600              DMA_WRITE_REGISTER_COMMAND   equ $bb
+  30+ D600              DMA_BURST                    equ $cd
+  31+ D600              DMA_CONTINUOUS               equ $ad
+  32+ D600              ZXN_DMA_PORT                 equ $6b
+  33+ D600
+  34+ D600 00           l2_cls_byte	            DB 0
+  35+ D601              ; ">DMA Command BLOCK"
+  36+ D601
+  37+ D601 83 C3 C7 CB  l2_fill                 DB DMA_DISABLE,  DMA_RESET, DMA_RESET_PORT_A_TIMING, DMA_RESET_PORT_B_TIMING ,DMA_WRO_BLOCK_PORTA_A2B_XFR
+  37+ D605 7D
+  38+ D606 00 D6        l2_fill_astrt           DW l2_cls_byte
+  39+ D608 00 C0        l2_fill_length          DB $00,$C0
+  40+ D60A 24 10 AD                             DB DMA_WR1_P1FIXED_MEMORY ,DMA_WR2_P2INC_MEMORY ,DMA_WR4_CONT_MODE
+  41+ D60D 00 00        l2_fill_bstrt           DB $00,$00
+  42+ D60F 82 CF B3 87                          DB DMA_STOP_AT_END, DMA_LOAD, DMA_FORCE_READY, DMA_ENABLE
+  43+ D613              l2_fill_cmd_len	        EQU $ - l2_fill
+  44+ D613
+  45+ D613
+  46+ D613              ; ">l2_cls_dma_bank sets a bank to"
+  47+ D613              l2_cls
+  48+ D613 32 00 D6     .set_colour:            ld (l2_cls_byte),a
+  49+ D616 21 01 D6     .write_dma:             ld hl, l2_fill
+  50+ D619 06 12                                ld b, l2_fill_cmd_len
+  51+ D61B 0E 6B                                ld	c,IO_DATAGEAR_DMA_PORT
+  52+ D61D ED B3                                otir
+  53+ D61F C9                                   ret
+  54+ D620
+# file closed: layer2_cls.asm
+2445  D620
+2446  D620                      INCLUDE "tables.inc"
+# file opened: tables.inc
+   1+ D620              ; ---- generated by gentables.py - do not edit ----
+   2+ D620
+   3+ D620 00 00 00...          ALIGN 256
+   4+ D700              sin_lo:
+   5+ D700 00 06 0D 13          db $00,$06,$0D,$13,$19,$1F,$26,$2C,$32,$38,$3E,$44,$4A,$50,$56,$5C
+   5+ D704 19 1F 26 2C
+   5+ D708 32 38 3E 44
+   5+ D70C 4A 50 56 5C
+   6+ D710 62 68 6D 73          db $62,$68,$6D,$73,$79,$7E,$84,$89,$8E,$93,$98,$9D,$A2,$A7,$AC,$B1
+   6+ D714 79 7E 84 89
+   6+ D718 8E 93 98 9D
+   6+ D71C A2 A7 AC B1
+   7+ D720 B5 B9 BE C2          db $B5,$B9,$BE,$C2,$C6,$CA,$CE,$D1,$D5,$D8,$DC,$DF,$E2,$E5,$E7,$EA
+   7+ D724 C6 CA CE D1
+   7+ D728 D5 D8 DC DF
+   7+ D72C E2 E5 E7 EA
+   8+ D730 ED EF F1 F3          db $ED,$EF,$F1,$F3,$F5,$F7,$F8,$FA,$FB,$FC,$FD,$FE,$FF,$FF,$00,$00
+   8+ D734 F5 F7 F8 FA
+   8+ D738 FB FC FD FE
+   8+ D73C FF FF 00 00
+   9+ D740 00 00 00 FF          db $00,$00,$00,$FF,$FF,$FE,$FD,$FC,$FB,$FA,$F8,$F7,$F5,$F3,$F1,$EF
+   9+ D744 FF FE FD FC
+   9+ D748 FB FA F8 F7
+   9+ D74C F5 F3 F1 EF
+  10+ D750 ED EA E7 E5          db $ED,$EA,$E7,$E5,$E2,$DF,$DC,$D8,$D5,$D1,$CE,$CA,$C6,$C2,$BE,$B9
+  10+ D754 E2 DF DC D8
+  10+ D758 D5 D1 CE CA
+  10+ D75C C6 C2 BE B9
+  11+ D760 B5 B1 AC A7          db $B5,$B1,$AC,$A7,$A2,$9D,$98,$93,$8E,$89,$84,$7E,$79,$73,$6D,$68
+  11+ D764 A2 9D 98 93
+  11+ D768 8E 89 84 7E
+  11+ D76C 79 73 6D 68
+  12+ D770 62 5C 56 50          db $62,$5C,$56,$50,$4A,$44,$3E,$38,$32,$2C,$26,$1F,$19,$13,$0D,$06
+  12+ D774 4A 44 3E 38
+  12+ D778 32 2C 26 1F
+  12+ D77C 19 13 0D 06
+  13+ D780 00 FA F3 ED          db $00,$FA,$F3,$ED,$E7,$E1,$DA,$D4,$CE,$C8,$C2,$BC,$B6,$B0,$AA,$A4
+  13+ D784 E7 E1 DA D4
+  13+ D788 CE C8 C2 BC
+  13+ D78C B6 B0 AA A4
+  14+ D790 9E 98 93 8D          db $9E,$98,$93,$8D,$87,$82,$7C,$77,$72,$6D,$68,$63,$5E,$59,$54,$4F
+  14+ D794 87 82 7C 77
+  14+ D798 72 6D 68 63
+  14+ D79C 5E 59 54 4F
+  15+ D7A0 4B 47 42 3E          db $4B,$47,$42,$3E,$3A,$36,$32,$2F,$2B,$28,$24,$21,$1E,$1B,$19,$16
+  15+ D7A4 3A 36 32 2F
+  15+ D7A8 2B 28 24 21
+  15+ D7AC 1E 1B 19 16
+  16+ D7B0 13 11 0F 0D          db $13,$11,$0F,$0D,$0B,$09,$08,$06,$05,$04,$03,$02,$01,$01,$00,$00
+  16+ D7B4 0B 09 08 06
+  16+ D7B8 05 04 03 02
+  16+ D7BC 01 01 00 00
+  17+ D7C0 00 00 00 01          db $00,$00,$00,$01,$01,$02,$03,$04,$05,$06,$08,$09,$0B,$0D,$0F,$11
+  17+ D7C4 01 02 03 04
+  17+ D7C8 05 06 08 09
+  17+ D7CC 0B 0D 0F 11
+  18+ D7D0 13 16 19 1B          db $13,$16,$19,$1B,$1E,$21,$24,$28,$2B,$2F,$32,$36,$3A,$3E,$42,$47
+  18+ D7D4 1E 21 24 28
+  18+ D7D8 2B 2F 32 36
+  18+ D7DC 3A 3E 42 47
+  19+ D7E0 4B 4F 54 59          db $4B,$4F,$54,$59,$5E,$63,$68,$6D,$72,$77,$7C,$82,$87,$8D,$93,$98
+  19+ D7E4 5E 63 68 6D
+  19+ D7E8 72 77 7C 82
+  19+ D7EC 87 8D 93 98
+  20+ D7F0 9E A4 AA B0          db $9E,$A4,$AA,$B0,$B6,$BC,$C2,$C8,$CE,$D4,$DA,$E1,$E7,$ED,$F3,$FA
+  20+ D7F4 B6 BC C2 C8
+  20+ D7F8 CE D4 DA E1
+  20+ D7FC E7 ED F3 FA
+  21+ D800
+  22+ D800              sin_hi:
+  23+ D800 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  23+ D804 00 00 00 00
+  23+ D808 00 00 00 00
+  23+ D80C 00 00 00 00
+  24+ D810 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  24+ D814 00 00 00 00
+  24+ D818 00 00 00 00
+  24+ D81C 00 00 00 00
+  25+ D820 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  25+ D824 00 00 00 00
+  25+ D828 00 00 00 00
+  25+ D82C 00 00 00 00
+  26+ D830 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01,$01
+  26+ D834 00 00 00 00
+  26+ D838 00 00 00 00
+  26+ D83C 00 00 01 01
+  27+ D840 01 01 01 00          db $01,$01,$01,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  27+ D844 00 00 00 00
+  27+ D848 00 00 00 00
+  27+ D84C 00 00 00 00
+  28+ D850 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  28+ D854 00 00 00 00
+  28+ D858 00 00 00 00
+  28+ D85C 00 00 00 00
+  29+ D860 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  29+ D864 00 00 00 00
+  29+ D868 00 00 00 00
+  29+ D86C 00 00 00 00
+  30+ D870 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+  30+ D874 00 00 00 00
+  30+ D878 00 00 00 00
+  30+ D87C 00 00 00 00
+  31+ D880 00 FF FF FF          db $00,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  31+ D884 FF FF FF FF
+  31+ D888 FF FF FF FF
+  31+ D88C FF FF FF FF
+  32+ D890 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  32+ D894 FF FF FF FF
+  32+ D898 FF FF FF FF
+  32+ D89C FF FF FF FF
+  33+ D8A0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  33+ D8A4 FF FF FF FF
+  33+ D8A8 FF FF FF FF
+  33+ D8AC FF FF FF FF
+  34+ D8B0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  34+ D8B4 FF FF FF FF
+  34+ D8B8 FF FF FF FF
+  34+ D8BC FF FF FF FF
+  35+ D8C0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  35+ D8C4 FF FF FF FF
+  35+ D8C8 FF FF FF FF
+  35+ D8CC FF FF FF FF
+  36+ D8D0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  36+ D8D4 FF FF FF FF
+  36+ D8D8 FF FF FF FF
+  36+ D8DC FF FF FF FF
+  37+ D8E0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  37+ D8E4 FF FF FF FF
+  37+ D8E8 FF FF FF FF
+  37+ D8EC FF FF FF FF
+  38+ D8F0 FF FF FF FF          db $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  38+ D8F4 FF FF FF FF
+  38+ D8F8 FF FF FF FF
+  38+ D8FC FF FF FF FF
+  39+ D900
+  40+ D900              rtab_lo:
+  41+ D900 FF 01 04 09          db $FF,$01,$04,$09,$10,$19,$23,$30,$3E,$4E,$60,$74,$8A,$A1,$BA,$D5
+  41+ D904 10 19 23 30
+  41+ D908 3E 4E 60 74
+  41+ D90C 8A A1 BA D5
+  42+ D910 F1 0F 2F 50          db $F1,$0F,$2F,$50,$73,$98,$BE,$E5,$0F,$39,$66,$93,$C3,$F3,$26,$59
+  42+ D914 73 98 BE E5
+  42+ D918 0F 39 66 93
+  42+ D91C C3 F3 26 59
+  43+ D920 8E C5 FC 36          db $8E,$C5,$FC,$36,$70,$AC,$E9,$28,$68,$A9,$EB,$2F,$74,$BA,$02,$4A
+  43+ D924 70 AC E9 28
+  43+ D928 68 A9 EB 2F
+  43+ D92C 74 BA 02 4A
+  44+ D930 94 DF 2C 79          db $94,$DF,$2C,$79,$C7,$17,$68,$BA,$0D,$61,$B7,$0D,$64,$BD,$17,$71
+  44+ D934 C7 17 68 BA
+  44+ D938 0D 61 B7 0D
+  44+ D93C 64 BD 17 71
+  45+ D940 CD 29 87 E6          db $CD,$29,$87,$E6,$46,$A6,$08,$6A,$CE,$33,$98,$FE,$66,$CE,$37,$A1
+  45+ D944 46 A6 08 6A
+  45+ D948 CE 33 98 FE
+  45+ D94C 66 CE 37 A1
+  46+ D950 0C 78 E5 52          db $0C,$78,$E5,$52,$C1,$30,$A0,$11,$83,$F6,$69,$DD,$52,$C8,$3F,$B6
+  46+ D954 C1 30 A0 11
+  46+ D958 83 F6 69 DD
+  46+ D95C 52 C8 3F B6
+  47+ D960 2F A8 21 9C          db $2F,$A8,$21,$9C,$17,$93,$10,$8D,$0B,$8A,$0A,$8A,$0B,$8D,$0F,$92
+  47+ D964 17 93 10 8D
+  47+ D968 0B 8A 0A 8A
+  47+ D96C 0B 8D 0F 92
+  48+ D970 16 9B 20 A6          db $16,$9B,$20,$A6,$2C,$B3,$3B,$C3,$4C,$D6,$60,$EB,$77,$03,$8F,$1D
+  48+ D974 2C B3 3B C3
+  48+ D978 4C D6 60 EB
+  48+ D97C 77 03 8F 1D
+  49+ D980 AB 39 C8 58          db $AB,$39,$C8,$58,$E8,$79,$0B,$9C,$2F,$C2,$56,$EA,$7F,$14,$AA,$40
+  49+ D984 E8 79 0B 9C
+  49+ D988 2F C2 56 EA
+  49+ D98C 7F 14 AA 40
+  50+ D990 D7 6E 06 9F          db $D7,$6E,$06,$9F,$38,$D1,$6B,$06,$A1,$3C,$D8,$74,$11,$AF,$4D,$EB
+  50+ D994 38 D1 6B 06
+  50+ D998 A1 3C D8 74
+  50+ D99C 11 AF 4D EB
+  51+ D9A0 8A 29 C9 69          db $8A,$29,$C9,$69,$0A,$AB,$4C,$EE,$91,$34,$D7,$7B,$1F,$C4,$69,$0E
+  51+ D9A4 0A AB 4C EE
+  51+ D9A8 91 34 D7 7B
+  51+ D9AC 1F C4 69 0E
+  52+ D9B0 B4 5A 01 A8          db $B4,$5A,$01,$A8,$50,$F8,$A0,$49,$F2,$9C,$46,$F0,$9B,$46,$F1,$9D
+  52+ D9B4 50 F8 A0 49
+  52+ D9B8 F2 9C 46 F0
+  52+ D9BC 9B 46 F1 9D
+  53+ D9C0 49 F6 A3 50          db $49,$F6,$A3,$50,$FE,$AC,$5A,$09,$B8,$68,$17,$C8,$78,$29,$DA,$8C
+  53+ D9C4 FE AC 5A 09
+  53+ D9C8 B8 68 17 C8
+  53+ D9CC 78 29 DA 8C
+  54+ D9D0 3E F0 A3 56          db $3E,$F0,$A3,$56,$09,$BC,$70,$24,$D9,$8E,$43,$F8,$AE,$64,$1B,$D2
+  54+ D9D4 09 BC 70 24
+  54+ D9D8 D9 8E 43 F8
+  54+ D9DC AE 64 1B D2
+  55+ D9E0 89 40 F8 AF          db $89,$40,$F8,$AF,$68,$20,$D9,$92,$4C,$05,$BF,$79,$34,$EF,$AA,$65
+  55+ D9E4 68 20 D9 92
+  55+ D9E8 4C 05 BF 79
+  55+ D9EC 34 EF AA 65
+  56+ D9F0 21 DD 99 56          db $21,$DD,$99,$56,$12,$CF,$8D,$4A,$08,$C6,$85,$43,$02,$C1,$81,$40
+  56+ D9F4 12 CF 8D 4A
+  56+ D9F8 08 C6 85 43
+  56+ D9FC 02 C1 81 40
+  57+ DA00
+  58+ DA00              rtab_hi:
+  59+ DA00 FF FF FE FD          db $FF,$FF,$FE,$FD,$FC,$FB,$FA,$F9,$F8,$F7,$F6,$F5,$F4,$F3,$F2,$F1
+  59+ DA04 FC FB FA F9
+  59+ DA08 F8 F7 F6 F5
+  59+ DA0C F4 F3 F2 F1
+  60+ DA10 F0 F0 EF EE          db $F0,$F0,$EF,$EE,$ED,$EC,$EB,$EA,$EA,$E9,$E8,$E7,$E6,$E5,$E5,$E4
+  60+ DA14 ED EC EB EA
+  60+ DA18 EA E9 E8 E7
+  60+ DA1C E6 E5 E5 E4
+  61+ DA20 E3 E2 E1 E1          db $E3,$E2,$E1,$E1,$E0,$DF,$DE,$DE,$DD,$DC,$DB,$DB,$DA,$D9,$D9,$D8
+  61+ DA24 E0 DF DE DE
+  61+ DA28 DD DC DB DB
+  61+ DA2C DA D9 D9 D8
+  62+ DA30 D7 D6 D6 D5          db $D7,$D6,$D6,$D5,$D4,$D4,$D3,$D2,$D2,$D1,$D0,$D0,$CF,$CE,$CE,$CD
+  62+ DA34 D4 D4 D3 D2
+  62+ DA38 D2 D1 D0 D0
+  62+ DA3C CF CE CE CD
+  63+ DA40 CC CC CB CA          db $CC,$CC,$CB,$CA,$CA,$C9,$C9,$C8,$C7,$C7,$C6,$C5,$C5,$C4,$C4,$C3
+  63+ DA44 CA C9 C9 C8
+  63+ DA48 C7 C7 C6 C5
+  63+ DA4C C5 C4 C4 C3
+  64+ DA50 C3 C2 C1 C1          db $C3,$C2,$C1,$C1,$C0,$C0,$BF,$BF,$BE,$BD,$BD,$BC,$BC,$BB,$BB,$BA
+  64+ DA54 C0 C0 BF BF
+  64+ DA58 BE BD BD BC
+  64+ DA5C BC BB BB BA
+  65+ DA60 BA B9 B9 B8          db $BA,$B9,$B9,$B8,$B8,$B7,$B7,$B6,$B6,$B5,$B5,$B4,$B4,$B3,$B3,$B2
+  65+ DA64 B8 B7 B7 B6
+  65+ DA68 B6 B5 B5 B4
+  65+ DA6C B4 B3 B3 B2
+  66+ DA70 B2 B1 B1 B0          db $B2,$B1,$B1,$B0,$B0,$AF,$AF,$AE,$AE,$AD,$AD,$AC,$AC,$AC,$AB,$AB
+  66+ DA74 B0 AF AF AE
+  66+ DA78 AE AD AD AC
+  66+ DA7C AC AC AB AB
+  67+ DA80 AA AA A9 A9          db $AA,$AA,$A9,$A9,$A8,$A8,$A8,$A7,$A7,$A6,$A6,$A5,$A5,$A5,$A4,$A4
+  67+ DA84 A8 A8 A8 A7
+  67+ DA88 A7 A6 A6 A5
+  67+ DA8C A5 A5 A4 A4
+  68+ DA90 A3 A3 A3 A2          db $A3,$A3,$A3,$A2,$A2,$A1,$A1,$A1,$A0,$A0,$9F,$9F,$9F,$9E,$9E,$9D
+  68+ DA94 A2 A1 A1 A1
+  68+ DA98 A0 A0 9F 9F
+  68+ DA9C 9F 9E 9E 9D
+  69+ DAA0 9D 9D 9C 9C          db $9D,$9D,$9C,$9C,$9C,$9B,$9B,$9A,$9A,$9A,$99,$99,$99,$98,$98,$98
+  69+ DAA4 9C 9B 9B 9A
+  69+ DAA8 9A 9A 99 99
+  69+ DAAC 99 98 98 98
+  70+ DAB0 97 97 97 96          db $97,$97,$97,$96,$96,$95,$95,$95,$94,$94,$94,$93,$93,$93,$92,$92
+  70+ DAB4 96 95 95 95
+  70+ DAB8 94 94 94 93
+  70+ DABC 93 93 92 92
+  71+ DAC0 92 91 91 91          db $92,$91,$91,$91,$90,$90,$90,$90,$8F,$8F,$8F,$8E,$8E,$8E,$8D,$8D
+  71+ DAC4 90 90 90 90
+  71+ DAC8 8F 8F 8F 8E
+  71+ DACC 8E 8E 8D 8D
+  72+ DAD0 8D 8C 8C 8C          db $8D,$8C,$8C,$8C,$8C,$8B,$8B,$8B,$8A,$8A,$8A,$89,$89,$89,$89,$88
+  72+ DAD4 8C 8B 8B 8B
+  72+ DAD8 8A 8A 8A 89
+  72+ DADC 89 89 89 88
+  73+ DAE0 88 88 87 87          db $88,$88,$87,$87,$87,$87,$86,$86,$86,$86,$85,$85,$85,$84,$84,$84
+  73+ DAE4 87 87 86 86
+  73+ DAE8 86 86 85 85
+  73+ DAEC 85 84 84 84
+  74+ DAF0 84 83 83 83          db $84,$83,$83,$83,$83,$82,$82,$82,$82,$81,$81,$81,$81,$80,$80,$80
+  74+ DAF4 83 82 82 82
+  74+ DAF8 82 81 81 81
+  74+ DAFC 81 80 80 80
+  75+ DB00
+  76+ DB00              lgtab:
+  77+ DB00 00 00 01 01          db $00,$00,$01,$01,$02,$02,$02,$02,$03,$03,$03,$03,$03,$03,$03,$03
+  77+ DB04 02 02 02 02
+  77+ DB08 03 03 03 03
+  77+ DB0C 03 03 03 03
+  78+ DB10 04 04 04 04          db $04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04,$04
+  78+ DB14 04 04 04 04
+  78+ DB18 04 04 04 04
+  78+ DB1C 04 04 04 04
+  79+ DB20 05 05 05 05          db $05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05
+  79+ DB24 05 05 05 05
+  79+ DB28 05 05 05 05
+  79+ DB2C 05 05 05 05
+  80+ DB30 05 05 05 05          db $05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05,$05
+  80+ DB34 05 05 05 05
+  80+ DB38 05 05 05 05
+  80+ DB3C 05 05 05 05
+  81+ DB40 06 06 06 06          db $06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06
+  81+ DB44 06 06 06 06
+  81+ DB48 06 06 06 06
+  81+ DB4C 06 06 06 06
+  82+ DB50 06 06 06 06          db $06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06
+  82+ DB54 06 06 06 06
+  82+ DB58 06 06 06 06
+  82+ DB5C 06 06 06 06
+  83+ DB60 06 06 06 06          db $06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06
+  83+ DB64 06 06 06 06
+  83+ DB68 06 06 06 06
+  83+ DB6C 06 06 06 06
+  84+ DB70 06 06 06 06          db $06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06,$06
+  84+ DB74 06 06 06 06
+  84+ DB78 06 06 06 06
+  84+ DB7C 06 06 06 06
+  85+ DB80 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  85+ DB84 07 07 07 07
+  85+ DB88 07 07 07 07
+  85+ DB8C 07 07 07 07
+  86+ DB90 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  86+ DB94 07 07 07 07
+  86+ DB98 07 07 07 07
+  86+ DB9C 07 07 07 07
+  87+ DBA0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  87+ DBA4 07 07 07 07
+  87+ DBA8 07 07 07 07
+  87+ DBAC 07 07 07 07
+  88+ DBB0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  88+ DBB4 07 07 07 07
+  88+ DBB8 07 07 07 07
+  88+ DBBC 07 07 07 07
+  89+ DBC0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  89+ DBC4 07 07 07 07
+  89+ DBC8 07 07 07 07
+  89+ DBCC 07 07 07 07
+  90+ DBD0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  90+ DBD4 07 07 07 07
+  90+ DBD8 07 07 07 07
+  90+ DBDC 07 07 07 07
+  91+ DBE0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  91+ DBE4 07 07 07 07
+  91+ DBE8 07 07 07 07
+  91+ DBEC 07 07 07 07
+  92+ DBF0 07 07 07 07          db $07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07,$07
+  92+ DBF4 07 07 07 07
+  92+ DBF8 07 07 07 07
+  92+ DBFC 07 07 07 07
+  93+ DC00
+  94+ DC00              hztab:
+  95+ DC00 0A 0F 13 17          db $0A,$0F,$13,$17,$1C,$20,$23,$27,$2B,$2F,$32,$36,$39,$3D,$40,$43
+  95+ DC04 1C 20 23 27
+  95+ DC08 2B 2F 32 36
+  95+ DC0C 39 3D 40 43
+  96+ DC10 47 4A 4D 50          db $47,$4A,$4D,$50,$53,$57,$5A,$5D,$60,$63,$66,$69,$6D,$70,$73,$76
+  96+ DC14 53 57 5A 5D
+  96+ DC18 60 63 66 69
+  96+ DC1C 6D 70 73 76
+  97+ DC20 79 7D 80 83          db $79,$7D,$80,$83,$87,$8A,$8E,$91,$95,$99,$9D,$A0,$A4,$A9,$AD,$B1
+  97+ DC24 87 8A 8E 91
+  97+ DC28 95 99 9D A0
+  97+ DC2C A4 A9 AD B1
+  98+ DC30 B6                   db $B6
+  99+ DC31
+ 100+ DC31              sil_tab:
+ 101+ DC31 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 101+ DC35 00 00 00 00
+ 102+ DC39 04 00 20 60          db $04,$00,$20,$60,$40,$00,$00,$00
+ 102+ DC3D 40 00 00 00
+ 103+ DC41 04 10 30 70          db $04,$10,$30,$70,$50,$00,$00,$00
+ 103+ DC45 50 00 00 00
+ 104+ DC49 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 104+ DC4D 00 00 00 00
+ 105+ DC51 04 00 10 50          db $04,$00,$10,$50,$40,$00,$00,$00
+ 105+ DC55 40 00 00 00
+ 106+ DC59 06 00 10 50          db $06,$00,$10,$50,$40,$60,$20,$00
+ 106+ DC5D 40 60 20 00
+ 107+ DC61 06 00 10 30          db $06,$00,$10,$30,$70,$50,$40,$00
+ 107+ DC65 70 50 40 00
+ 108+ DC69 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 108+ DC6D 00 00 00 00
+ 109+ DC71 04 20 30 70          db $04,$20,$30,$70,$60,$00,$00,$00
+ 109+ DC75 60 00 00 00
+ 110+ DC79 06 00 20 30          db $06,$00,$20,$30,$70,$60,$40,$00
+ 110+ DC7D 70 60 40 00
+ 111+ DC81 06 10 30 20          db $06,$10,$30,$20,$60,$70,$50,$00
+ 111+ DC85 60 70 50 00
+ 112+ DC89 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 112+ DC8D 00 00 00 00
+ 113+ DC91 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 113+ DC95 00 00 00 00
+ 114+ DC99 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 114+ DC9D 00 00 00 00
+ 115+ DCA1 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 115+ DCA5 00 00 00 00
+ 116+ DCA9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 116+ DCAD 00 00 00 00
+ 117+ DCB1 04 40 50 70          db $04,$40,$50,$70,$60,$00,$00,$00
+ 117+ DCB5 60 00 00 00
+ 118+ DCB9 06 00 20 60          db $06,$00,$20,$60,$70,$50,$40,$00
+ 118+ DCBD 70 50 40 00
+ 119+ DCC1 06 10 30 70          db $06,$10,$30,$70,$60,$40,$50,$00
+ 119+ DCC5 60 40 50 00
+ 120+ DCC9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 120+ DCCD 00 00 00 00
+ 121+ DCD1 06 00 10 50          db $06,$00,$10,$50,$70,$60,$40,$00
+ 121+ DCD5 70 60 40 00
+ 122+ DCD9 06 00 10 50          db $06,$00,$10,$50,$70,$60,$20,$00
+ 122+ DCDD 70 60 20 00
+ 123+ DCE1 06 00 10 30          db $06,$00,$10,$30,$70,$60,$40,$00
+ 123+ DCE5 70 60 40 00
+ 124+ DCE9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 124+ DCED 00 00 00 00
+ 125+ DCF1 06 20 30 70          db $06,$20,$30,$70,$50,$40,$60,$00
+ 125+ DCF5 50 40 60 00
+ 126+ DCF9 06 00 20 30          db $06,$00,$20,$30,$70,$50,$40,$00
+ 126+ DCFD 70 50 40 00
+ 127+ DD01 06 10 30 20          db $06,$10,$30,$20,$60,$40,$50,$00
+ 127+ DD05 60 40 50 00
+ 128+ DD09 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 128+ DD0D 00 00 00 00
+ 129+ DD11 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 129+ DD15 00 00 00 00
+ 130+ DD19 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 130+ DD1D 00 00 00 00
+ 131+ DD21 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 131+ DD25 00 00 00 00
+ 132+ DD29 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 132+ DD2D 00 00 00 00
+ 133+ DD31
+ 134+ DD31              used_tab:
+ 135+ DD31 00 55 AA 00          db $00,$55,$AA,$00,$33,$77,$BB,$00,$CC,$DD,$EE,$00,$00,$00,$00,$00
+ 135+ DD35 33 77 BB 00
+ 135+ DD39 CC DD EE 00
+ 135+ DD3D 00 00 00 00
+ 136+ DD41 F0 F5 FA 00          db $F0,$F5,$FA,$00,$F3,$F7,$FB,$00,$FC,$FD,$FE,$00,$00,$00,$00,$00
+ 136+ DD45 F3 F7 FB 00
+ 136+ DD49 FC FD FE 00
+ 136+ DD4D 00 00 00 00
+ 137+ DD51
+ 138+ DD51              inner_tab:
+ 139+ DD51 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 139+ DD55 00 00 00 00
+ 140+ DD59 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 140+ DD5D 00 00 00 00
+ 141+ DD61 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 141+ DD65 00 00 00 00
+ 142+ DD69 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 142+ DD6D 00 00 00 00
+ 143+ DD71 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 143+ DD75 00 00 00 00
+ 144+ DD79 01 00 40 00          db $01,$00,$40,$00,$00,$00,$00,$00
+ 144+ DD7D 00 00 00 00
+ 145+ DD81 01 10 50 00          db $01,$10,$50,$00,$00,$00,$00,$00
+ 145+ DD85 00 00 00 00
+ 146+ DD89 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 146+ DD8D 00 00 00 00
+ 147+ DD91 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 147+ DD95 00 00 00 00
+ 148+ DD99 01 20 60 00          db $01,$20,$60,$00,$00,$00,$00,$00
+ 148+ DD9D 00 00 00 00
+ 149+ DDA1 01 30 70 00          db $01,$30,$70,$00,$00,$00,$00,$00
+ 149+ DDA5 00 00 00 00
+ 150+ DDA9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 150+ DDAD 00 00 00 00
+ 151+ DDB1 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 151+ DDB5 00 00 00 00
+ 152+ DDB9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 152+ DDBD 00 00 00 00
+ 153+ DDC1 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 153+ DDC5 00 00 00 00
+ 154+ DDC9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 154+ DDCD 00 00 00 00
+ 155+ DDD1 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 155+ DDD5 00 00 00 00
+ 156+ DDD9 01 40 60 00          db $01,$40,$60,$00,$00,$00,$00,$00
+ 156+ DDDD 00 00 00 00
+ 157+ DDE1 01 50 70 00          db $01,$50,$70,$00,$00,$00,$00,$00
+ 157+ DDE5 00 00 00 00
+ 158+ DDE9 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 158+ DDED 00 00 00 00
+ 159+ DDF1 01 40 50 00          db $01,$40,$50,$00,$00,$00,$00,$00
+ 159+ DDF5 00 00 00 00
+ 160+ DDF9 03 00 40 40          db $03,$00,$40,$40,$50,$40,$60,$00
+ 160+ DDFD 50 40 60 00
+ 161+ DE01 03 10 50 40          db $03,$10,$50,$40,$50,$50,$70,$00
+ 161+ DE05 50 50 70 00
+ 162+ DE09 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 162+ DE0D 00 00 00 00
+ 163+ DE11 01 60 70 00          db $01,$60,$70,$00,$00,$00,$00,$00
+ 163+ DE15 00 00 00 00
+ 164+ DE19 03 20 60 40          db $03,$20,$60,$40,$60,$60,$70,$00
+ 164+ DE1D 60 60 70 00
+ 165+ DE21 03 30 70 50          db $03,$30,$70,$50,$70,$60,$70,$00
+ 165+ DE25 70 60 70 00
+ 166+ DE29 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 166+ DE2D 00 00 00 00
+ 167+ DE31 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 167+ DE35 00 00 00 00
+ 168+ DE39 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 168+ DE3D 00 00 00 00
+ 169+ DE41 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 169+ DE45 00 00 00 00
+ 170+ DE49 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00
+ 170+ DE4D 00 00 00 00
+ 171+ DE51
+ 172+ DE51              htab:
+ 173+ DE51 00 00 28 00          dw $0000,$0028,$0050,$0078,$00A0,$00C8,$00F0,$0118
+ 173+ DE55 50 00 78 00
+ 173+ DE59 A0 00 C8 00
+ 173+ DE5D F0 00 18 01
+ 174+ DE61 40 01 68 01          dw $0140,$0168,$0190,$01B8,$01E0,$0208,$0230,$0258
+ 174+ DE65 90 01 B8 01
+ 174+ DE69 E0 01 08 02
+ 174+ DE6D 30 02 58 02
+ 175+ DE71
+ 176+ DE71              city_map:
+ 177+ DE71 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+ 177+ DE75 00 00 00 00
+ 177+ DE79 00 00 00 00
+ 177+ DE7D 00 00 00 00
+ 177+ DE81 00 00 00 00
+ 177+ DE85 00 00 00 00
+ 177+ DE89 00 00 00 00
+ 177+ DE8D 00 00 00 00
+ 178+ DE91 00 04 04 02          db $00,$04,$04,$02,$03,$02,$03,$03,$00,$03,$03,$04,$02,$02,$14,$14,$00,$02,$02,$02,$01,$12,$00,$01,$00,$12,$04,$11,$13,$00,$00,$01
+ 178+ DE95 03 02 03 03
+ 178+ DE99 00 03 03 04
+ 178+ DE9D 02 02 14 14
+ 178+ DEA1 00 02 02 02
+ 178+ DEA5 01 12 00 01
+ 178+ DEA9 00 12 04 11
+ 178+ DEAD 13 00 00 01
+ 179+ DEB1 00 04 01 01          db $00,$04,$01,$01,$03,$02,$04,$02,$00,$13,$03,$01,$02,$03,$03,$02,$00,$01,$00,$00,$02,$11,$01,$11,$00,$00,$00,$02,$12,$03,$03,$03
+ 179+ DEB5 03 02 04 02
+ 179+ DEB9 00 13 03 01
+ 179+ DEBD 02 03 03 02
+ 179+ DEC1 00 01 00 00
+ 179+ DEC5 02 11 01 11
+ 179+ DEC9 00 00 00 02
+ 179+ DECD 12 03 03 03
+ 180+ DED1 00 13 13 04          db $00,$13,$13,$04,$01,$03,$04,$04,$00,$11,$00,$03,$11,$14,$14,$00,$00,$12,$13,$01,$11,$14,$01,$03,$00,$03,$11,$13,$00,$03,$02,$03
+ 180+ DED5 01 03 04 04
+ 180+ DED9 00 11 00 03
+ 180+ DEDD 11 14 14 00
+ 180+ DEE1 00 12 13 01
+ 180+ DEE5 11 14 01 03
+ 180+ DEE9 00 03 11 13
+ 180+ DEED 00 03 02 03
+ 181+ DEF1 00 11 11 03          db $00,$11,$11,$03,$00,$11,$00,$03,$00,$01,$03,$01,$02,$02,$12,$11,$00,$13,$03,$03,$00,$14,$04,$13,$00,$01,$04,$01,$00,$04,$04,$00
+ 181+ DEF5 00 11 00 03
+ 181+ DEF9 00 01 03 01
+ 181+ DEFD 02 02 12 11
+ 181+ DF01 00 13 03 03
+ 181+ DF05 00 14 04 13
+ 181+ DF09 00 01 04 01
+ 181+ DF0D 00 04 04 00
+ 182+ DF11 00 01 13 00          db $00,$01,$13,$00,$01,$04,$03,$12,$00,$00,$04,$04,$02,$03,$03,$04,$00,$04,$02,$03,$04,$14,$13,$14,$00,$02,$03,$03,$01,$14,$02,$04
+ 182+ DF15 01 04 03 12
+ 182+ DF19 00 00 04 04
+ 182+ DF1D 02 03 03 04
+ 182+ DF21 00 04 02 03
+ 182+ DF25 04 14 13 14
+ 182+ DF29 00 02 03 03
+ 182+ DF2D 01 14 02 04
+ 183+ DF31 00 01 04 01          db $00,$01,$04,$01,$00,$04,$02,$01,$00,$04,$01,$04,$00,$03,$04,$03,$00,$01,$03,$05,$11,$04,$12,$04,$00,$04,$02,$14,$00,$03,$12,$13
+ 183+ DF35 00 04 02 01
+ 183+ DF39 00 04 01 04
+ 183+ DF3D 00 03 04 03
+ 183+ DF41 00 01 03 05
+ 183+ DF45 11 04 12 04
+ 183+ DF49 00 04 02 14
+ 183+ DF4D 00 03 12 13
+ 184+ DF51 00 03 02 01          db $00,$03,$02,$01,$12,$13,$04,$01,$00,$03,$01,$02,$12,$12,$00,$15,$00,$16,$05,$00,$04,$04,$03,$01,$00,$14,$02,$11,$03,$12,$02,$13
+ 184+ DF55 12 13 04 01
+ 184+ DF59 00 03 01 02
+ 184+ DF5D 12 12 00 15
+ 184+ DF61 00 16 05 00
+ 184+ DF65 04 04 03 01
+ 184+ DF69 00 14 02 11
+ 184+ DF6D 03 12 02 13
+ 185+ DF71 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+ 185+ DF75 00 00 00 00
+ 185+ DF79 00 00 00 00
+ 185+ DF7D 00 00 00 00
+ 185+ DF81 00 00 00 00
+ 185+ DF85 00 00 00 00
+ 185+ DF89 00 00 00 00
+ 185+ DF8D 00 00 00 00
+ 186+ DF91 00 12 01 04          db $00,$12,$01,$04,$03,$01,$12,$03,$00,$14,$03,$05,$02,$15,$04,$02,$00,$13,$13,$04,$04,$01,$00,$12,$00,$02,$03,$01,$02,$11,$04,$04
+ 186+ DF95 03 01 12 03
+ 186+ DF99 00 14 03 05
+ 186+ DF9D 02 15 04 02
+ 186+ DFA1 00 13 13 04
+ 186+ DFA5 04 01 00 12
+ 186+ DFA9 00 02 03 01
+ 186+ DFAD 02 11 04 04
+ 187+ DFB1 00 02 01 12          db $00,$02,$01,$12,$01,$02,$13,$02,$00,$01,$11,$03,$03,$03,$03,$15,$00,$06,$07,$15,$03,$03,$03,$03,$00,$01,$14,$03,$02,$04,$13,$02
+ 187+ DFB5 01 02 13 02
+ 187+ DFB9 00 01 11 03
+ 187+ DFBD 03 03 03 15
+ 187+ DFC1 00 06 07 15
+ 187+ DFC5 03 03 03 03
+ 187+ DFC9 00 01 14 03
+ 187+ DFCD 02 04 13 02
+ 188+ DFD1 00 03 03 04          db $00,$03,$03,$04,$01,$04,$01,$02,$00,$05,$01,$05,$05,$04,$16,$14,$00,$06,$05,$00,$05,$05,$14,$01,$00,$04,$03,$03,$02,$14,$04,$02
+ 188+ DFD5 01 04 01 02
+ 188+ DFD9 00 05 01 05
+ 188+ DFDD 05 04 16 14
+ 188+ DFE1 00 06 05 00
+ 188+ DFE5 05 05 14 01
+ 188+ DFE9 00 04 03 03
+ 188+ DFED 02 14 04 02
+ 189+ DFF1 00 02 13 04          db $00,$02,$13,$04,$02,$01,$14,$00,$00,$04,$04,$04,$03,$16,$03,$00,$00,$05,$15,$14,$05,$03,$16,$06,$00,$03,$01,$04,$12,$14,$11,$03
+ 189+ DFF5 02 01 14 00
+ 189+ DFF9 00 04 04 04
+ 189+ DFFD 03 16 03 00
+ 189+ E001 00 05 15 14
+ 189+ E005 05 03 16 06
+ 189+ E009 00 03 01 04
+ 189+ E00D 12 14 11 03
+ 190+ E011 00 01 03 04          db $00,$01,$03,$04,$01,$01,$02,$01,$00,$15,$06,$04,$06,$03,$05,$02,$00,$06,$06,$04,$02,$04,$00,$06,$00,$03,$02,$02,$03,$01,$03,$01
+ 190+ E015 01 01 02 01
+ 190+ E019 00 15 06 04
+ 190+ E01D 06 03 05 02
+ 190+ E021 00 06 06 04
+ 190+ E025 02 04 00 06
+ 190+ E029 00 03 02 02
+ 190+ E02D 03 01 03 01
+ 191+ E031 00 04 02 03          db $00,$04,$02,$03,$00,$04,$00,$04,$00,$00,$11,$12,$02,$02,$18,$19,$00,$19,$06,$06,$13,$05,$06,$05,$00,$13,$04,$04,$01,$01,$04,$01
+ 191+ E035 00 04 00 04
+ 191+ E039 00 00 11 12
+ 191+ E03D 02 02 18 19
+ 191+ E041 00 19 06 06
+ 191+ E045 13 05 06 05
+ 191+ E049 00 13 04 04
+ 191+ E04D 01 01 04 01
+ 192+ E051 00 00 01 04          db $00,$00,$01,$04,$02,$04,$00,$14,$00,$04,$05,$07,$06,$03,$04,$1A,$00,$00,$03,$04,$03,$06,$05,$05,$00,$02,$03,$12,$00,$00,$03,$04
+ 192+ E055 02 04 00 14
+ 192+ E059 00 04 05 07
+ 192+ E05D 06 03 04 1A
+ 192+ E061 00 00 03 04
+ 192+ E065 03 06 05 05
+ 192+ E069 00 02 03 12
+ 192+ E06D 00 00 03 04
+ 193+ E071 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+ 193+ E075 00 00 00 00
+ 193+ E079 00 00 00 00
+ 193+ E07D 00 00 00 00
+ 193+ E081 00 00 00 00
+ 193+ E085 00 00 00 00
+ 193+ E089 00 00 00 00
+ 193+ E08D 00 00 00 00
+ 194+ E091 00 04 00 11          db $00,$04,$00,$11,$01,$11,$05,$14,$00,$07,$06,$03,$07,$15,$19,$02,$00,$02,$03,$15,$18,$04,$04,$04,$00,$14,$01,$00,$01,$04,$13,$02
+ 194+ E095 01 11 05 14
+ 194+ E099 00 07 06 03
+ 194+ E09D 07 15 19 02
+ 194+ E0A1 00 02 03 15
+ 194+ E0A5 18 04 04 04
+ 194+ E0A9 00 14 01 00
+ 194+ E0AD 01 04 13 02
+ 195+ E0B1 00 02 04 02          db $00,$02,$04,$02,$03,$02,$14,$04,$00,$04,$04,$05,$04,$06,$15,$18,$00,$02,$14,$00,$05,$18,$03,$04,$00,$00,$03,$13,$13,$02,$02,$01
+ 195+ E0B5 03 02 14 04
+ 195+ E0B9 00 04 04 05
+ 195+ E0BD 04 06 15 18
+ 195+ E0C1 00 02 14 00
+ 195+ E0C5 05 18 03 04
+ 195+ E0C9 00 00 03 13
+ 195+ E0CD 13 02 02 01
+ 196+ E0D1 00 02 02 03          db $00,$02,$02,$03,$00,$03,$12,$03,$00,$11,$04,$02,$00,$18,$15,$06,$00,$05,$03,$01,$03,$06,$05,$00,$00,$05,$02,$00,$12,$02,$04,$00
+ 196+ E0D5 00 03 12 03
+ 196+ E0D9 00 11 04 02
+ 196+ E0DD 00 18 15 06
+ 196+ E0E1 00 05 03 01
+ 196+ E0E5 03 06 05 00
+ 196+ E0E9 00 05 02 00
+ 196+ E0ED 12 02 04 00
+ 197+ E0F1 00 00 12 00          db $00,$00,$12,$00,$12,$04,$00,$02,$00,$14,$04,$03,$07,$07,$14,$18,$00,$06,$05,$01,$05,$02,$06,$03,$00,$14,$01,$12,$03,$01,$00,$01
+ 197+ E0F5 12 04 00 02
+ 197+ E0F9 00 14 04 03
+ 197+ E0FD 07 07 14 18
+ 197+ E101 00 06 05 01
+ 197+ E105 05 02 06 03
+ 197+ E109 00 14 01 12
+ 197+ E10D 03 01 00 01
+ 198+ E111 00 02 01 14          db $00,$02,$01,$14,$03,$12,$04,$04,$00,$01,$04,$05,$00,$03,$03,$05,$00,$07,$15,$03,$03,$15,$13,$03,$00,$00,$00,$03,$01,$02,$12,$03
+ 198+ E115 03 12 04 04
+ 198+ E119 00 01 04 05
+ 198+ E11D 00 03 03 05
+ 198+ E121 00 07 15 03
+ 198+ E125 03 15 13 03
+ 198+ E129 00 00 00 03
+ 198+ E12D 01 02 12 03
+ 199+ E131 00 11 12 02          db $00,$11,$12,$02,$02,$02,$04,$01,$00,$03,$13,$06,$02,$00,$06,$04,$00,$06,$00,$13,$14,$02,$04,$03,$00,$03,$01,$03,$04,$03,$13,$02
+ 199+ E135 02 02 04 01
+ 199+ E139 00 03 13 06
+ 199+ E13D 02 00 06 04
+ 199+ E141 00 06 00 13
+ 199+ E145 14 02 04 03
+ 199+ E149 00 03 01 03
+ 199+ E14D 04 03 13 02
+ 200+ E151 00 12 03 03          db $00,$12,$03,$03,$11,$13,$04,$01,$00,$12,$05,$14,$14,$01,$02,$06,$00,$06,$04,$12,$05,$05,$00,$04,$00,$00,$03,$04,$03,$03,$03,$02
+ 200+ E155 11 13 04 01
+ 200+ E159 00 12 05 14
+ 200+ E15D 14 01 02 06
+ 200+ E161 00 06 04 12
+ 200+ E165 05 05 00 04
+ 200+ E169 00 00 03 04
+ 200+ E16D 03 03 03 02
+ 201+ E171 00 00 00 00          db $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+ 201+ E175 00 00 00 00
+ 201+ E179 00 00 00 00
+ 201+ E17D 00 00 00 00
+ 201+ E181 00 00 00 00
+ 201+ E185 00 00 00 00
+ 201+ E189 00 00 00 00
+ 201+ E18D 00 00 00 00
+ 202+ E191 00 01 14 00          db $00,$01,$14,$00,$01,$03,$00,$11,$00,$02,$04,$04,$04,$03,$05,$05,$00,$03,$00,$05,$14,$01,$02,$01,$00,$03,$04,$01,$11,$00,$01,$02
+ 202+ E195 01 03 00 11
+ 202+ E199 00 02 04 04
+ 202+ E19D 04 03 05 05
+ 202+ E1A1 00 03 00 05
+ 202+ E1A5 14 01 02 01
+ 202+ E1A9 00 03 04 01
+ 202+ E1AD 11 00 01 02
+ 203+ E1B1 00 14 03 00          db $00,$14,$03,$00,$02,$01,$04,$04,$00,$01,$01,$02,$11,$12,$04,$00,$00,$14,$01,$03,$00,$03,$14,$02,$00,$11,$03,$13,$02,$01,$01,$02
+ 203+ E1B5 02 01 04 04
+ 203+ E1B9 00 01 01 02
+ 203+ E1BD 11 12 04 00
+ 203+ E1C1 00 14 01 03
+ 203+ E1C5 00 03 14 02
+ 203+ E1C9 00 11 03 13
+ 203+ E1CD 02 01 01 02
+ 204+ E1D1 00 03 00 01          db $00,$03,$00,$01,$01,$12,$00,$02,$00,$04,$14,$00,$12,$03,$02,$04,$00,$13,$04,$00,$00,$04,$04,$02,$00,$01,$01,$00,$01,$02,$12,$01
+ 204+ E1D5 01 12 00 02
+ 204+ E1D9 00 04 14 00
+ 204+ E1DD 12 03 02 04
+ 204+ E1E1 00 13 04 00
+ 204+ E1E5 00 04 04 02
+ 204+ E1E9 00 01 01 00
+ 204+ E1ED 01 02 12 01
+ 205+ E1F1 00 04 13 03          db $00,$04,$13,$03,$02,$03,$02,$04,$00,$14,$03,$14,$11,$02,$00,$02,$00,$04,$00,$03,$00,$02,$03,$00,$00,$13,$04,$01,$02,$01,$11,$04
+ 205+ E1F5 02 03 02 04
+ 205+ E1F9 00 14 03 14
+ 205+ E1FD 11 02 00 02
+ 205+ E201 00 04 00 03
+ 205+ E205 00 02 03 00
+ 205+ E209 00 13 04 01
+ 205+ E20D 02 01 11 04
+ 206+ E211 00 02 04 04          db $00,$02,$04,$04,$00,$14,$02,$00,$00,$04,$01,$11,$03,$11,$14,$03,$00,$01,$04,$02,$12,$04,$01,$02,$00,$03,$00,$01,$03,$02,$12,$04
+ 206+ E215 00 14 02 00
+ 206+ E219 00 04 01 11
+ 206+ E21D 03 11 14 03
+ 206+ E221 00 01 04 02
+ 206+ E225 12 04 01 02
+ 206+ E229 00 03 00 01
+ 206+ E22D 03 02 12 04
+ 207+ E231 00 13 03 04          db $00,$13,$03,$04,$03,$12,$03,$00,$00,$11,$01,$04,$00,$11,$04,$02,$00,$00,$02,$00,$03,$02,$04,$13,$00,$12,$04,$13,$02,$04,$01,$03
+ 207+ E235 03 12 03 00
+ 207+ E239 00 11 01 04
+ 207+ E23D 00 11 04 02
+ 207+ E241 00 00 02 00
+ 207+ E245 03 02 04 13
+ 207+ E249 00 12 04 13
+ 207+ E24D 02 04 01 03
+ 208+ E251 00 03 01 01          db $00,$03,$01,$01,$03,$13,$12,$04,$00,$14,$01,$01,$04,$04,$03,$13,$00,$02,$14,$11,$01,$03,$14,$03,$00,$14,$03,$03,$14,$02,$00,$03
+ 208+ E255 03 13 12 04
+ 208+ E259 00 14 01 01
+ 208+ E25D 04 04 03 13
+ 208+ E261 00 02 14 11
+ 208+ E265 01 03 14 03
+ 208+ E269 00 14 03 03
+ 208+ E26D 14 02 00 03
+ 209+ E271
+# file closed: tables.inc
+2447  E271
+2448  E271 00 00 00...              ds 256
+2449  E371              stack_top:
+2450  E371
+2451  E371                      DISPLAY "Code+data end: ",/A,$
+2452  E371                      ASSERT $ <= $10000
+2453  E371
+2454  E371              ;------------------------------------------------------------------------------
+2455  E371                      SAVENEX OPEN "zpolice.nex", start, stack_top
+2456  E371                      SAVENEX CORE 3,0,0
+2457  E371                      SAVENEX CFG 0
+2458  E371                      SAVENEX AUTO
+2459  E371                      SAVENEX CLOSE
+2460  E371
+# file closed: zpolice.asm
