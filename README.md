@@ -2,8 +2,9 @@
 
 A 3D vector graphics flight game for the ZX Spectrum Next, written in Z80N
 assembler. You fly a VTOL craft around a city of 32×32 blocks, in the spirit
-of *Sky Ranger*. Buildings are drawn as white vectors over solid black faces,
-with true hidden line removal, on Layer 2 at 256×192 with 256 colours.
+of *Sky Ranger*. Buildings are drawn as white vectors over solid faces, each
+building in its own shaded colour, with true hidden line removal, on Layer 2 at
+256×192 with 256 colours.
 
 ![boulevard](docs/boulevard.png) ![turning](docs/turning.png) ![overhead](docs/overhead.png)
 
@@ -40,14 +41,27 @@ for a hovering VTOL, and height is set with T/G. The HUD shows a gunsight, a
 speed bar (bottom left, red when reversing) and an altitude bar (right). If
 you fly into a building the craft stops and the border flashes red.
 
+### FPS counter
+The frame rate is shown as `nn FPS` in the top left of the ULA screen,
+which sits above Layer 2 (layer priority S-U-L, NextReg `$15`). ULA paper
+palette entries 16 and 24 are set to the global transparency colour `$E3`,
+so only the white text covers the 3D view. Interrupts stay off because the
+span filler borrows SP, so time comes from the raster instead:
+* `vtick` reads the video line (NextReg `$1E/$1F`) and counts a new 50 Hz
+  frame each time the line number goes backwards. It runs between the
+  main-loop stages and once per building, so it is sampled more often than
+  once per display frame.
+* Every 50 display frames (one second), the number of frames rendered is
+  shown.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `zpolice.asm` | the game (one source file) |
-| `gentables.py` | generates `tables.inc`: sine, reciprocal, log2, horizon, silhouette tables and the city map |
-| `tools/nexsim.py` | small headless Z80N emulator used for testing: dumps every flipped frame to PNG and counts T-states per routine |
+| `gentables.py` | generates `tables.inc`: sine, reciprocal, log2, horizon and used-corner tables, the city map, the per-cell colour map and the Layer 2 palette |
 | `layer2_cls.asm` | zxnDMA equates and the fill command block used by `clear_screen` |
+| `tools/nexsim.py` | small headless Z80N emulator used for testing: dumps every flipped frame to PNG and counts T-states per routine |
 | `build.bat` | build script |
 
 ## Memory map
@@ -55,12 +69,15 @@ you fly into a building the craft stops and the border flashes red.
 ```
 $0000-$BFFF  Layer 2 back buffer, MMU slots 0-5 (6 x 8K pages)
              pixel address = y*256 + x  ->  H = y, L = x
-$C000-$FFFF  code, tables, variables, stack   (bank 0, ~9K used)
+$C000-$FFFF  code, tables, variables, stack   (bank 0, ~10K used)
 ```
 
-Two 48K Layer 2 buffers (16K banks 9-11 and 12-14) are double buffered.
-Each frame the back buffer is paged into the bottom 48K, drawn, and then
-shown by writing NextReg `$12` during the vertical blank. With the screen at
+Two 48K Layer 2 buffers (16K banks 9-11 and 12-14) are double buffered with
+the hardware shadow register. NextReg `$12` is the active (displayed) bank
+and NextReg `$13` is the shadow bank. Each frame the shadow bank, read back
+from `$13`, is paged into the bottom 48K and drawn. During the vertical blank
+`l2_flip` swaps the two registers, so the registers themselves record which
+buffer is which. With the screen at
 `$0000` a pixel is just `ld h,y : ld l,x : ld (hl),c`, with no address
 arithmetic. The ROM is never needed, so interrupts stay disabled. That also
 lets the fillers use the stack pointer as a fast write pointer.
@@ -126,22 +143,22 @@ with no depth sort. The view covers ±`VIEW_R` cells.
   outcode (near, left, right, top, bottom) and a projection. A building whose
   corners are all outside one plane is rejected.
 
-### 4. Hidden line removal
-Each building is painted as **solid black faces with white edges**. The
-painter's order from step 2 means nearer buildings overwrite both the fills
-and the lines of those behind. There are two paths:
+### 4. Hidden surface and line removal, and shading
+Each visible face of a building is filled in its own shade and, when
+`DRAW_LINES` is defined, outlined in white. The painter's order from step 2
+means nearer buildings overwrite both the fills and the lines of those
+behind.
 
-* **Silhouette path (building wholly on screen):**
-  * A table indexed by the visible-face mask gives the silhouette as a 4–6
-    vertex cycle, plus 0–3 interior edges.
-  * The silhouette is filled once (a convex polygon) and outlined, then the
-    interior edges are drawn as lines.
-  * The table is generated from the box's edge and face adjacency: an edge
-    with one visible neighbour face is on the silhouette, an edge with two is
-    interior.
-  * One fill per building replaces two or three overlapping face fills.
-* **Clip path (building crosses the frustum):**
-  * Each visible face is clipped in 3D against 5 planes with
+* **Shading:** each building has a colour family (see Tuning).
+  * The roof uses the lighter shade.
+  * When two sides are visible, the one the camera sees more squarely (the
+    camera is further from its plane) uses the base colour, and the other
+    the darker shade.
+  * With one side visible, that side uses the base colour.
+* **Faces fully on screen:** fill and outline straight from the cached
+  projected corners.
+* **Faces crossing the frustum:**
+  * Each such face is clipped in 3D against 5 planes with
     Sutherland–Hodgman. The planes are near `Z=16`, `X=±Z` (90° horizontal
     field of view) and `Y=±0.75Z`.
   * Intersection parameters use a 32/16 fixed-point divide, and new points
@@ -149,8 +166,8 @@ and the lines of those behind. There are two paths:
   * Every vertex carries an "edge is real" flag. Edges created along a clip
     plane are filled but not outlined, so the screen border never gets a
     false line.
-  * Edges shared between faces are outlined only once, using per-face edge
-    masks.
+* **Shared edges:** edges shared between faces are outlined only once,
+  using per-face edge masks.
 
 ### 5. Rasterisation (8-bit, on screen only)
 * **Convex fill:**
@@ -164,33 +181,55 @@ and the lines of those behind. There are two paths:
   * Short spans are written two pixels per `PUSH DE`, by pointing SP at the
     right end of the span and jumping into an unrolled block of 128 pushes.
   * Spans of `DMA_SPAN_MIN` (20) pixels or more go to the zxnDMA. The clear
-    leaves it configured (fixed source byte = fill colour, length high byte
-    0), so each span reloads only length, destination, LOAD and ENABLE:
-    7 `OUT`s, about 150 T plus 2 T per pixel, against about 90 T plus 5.5 T
-    per pixel for `PUSH`.
+    leaves it configured with the length high byte at 0, and `fill_poly`
+    puts the building colour in the fixed source byte. Each span then
+    reloads only length, destination, LOAD and ENABLE: 7 `OUT`s, about
+    150 T plus 2 T per pixel, against about 90 T plus 5.5 T per pixel for
+    `PUSH`.
 * **Lines:** Bresenham with self-modified `INC/DEC L` and `INC/DEC H`
   steps, which works because a pixel address is just `H = y, L = x`.
 
 ### Performance
 Measured with `tools/nexsim.py` (pure T-state count at 28 MHz, no memory
-contention) over the scripted flights above: **1.8–2.9 M T-states per frame,
-about 10–15 fps**. The emulator costs DMA transfers at 2 T per byte (set
-with the `DMA_T` environment variable), which makes the clear about 0.1 M
-per frame. Draw
-distance is the main lever: at `VIEW_R` = 5 it is about 14–18 fps, and at
-`VIEW_R` = 7 about 9–11 fps. Real hardware adds some wait states at 28 MHz.
-Movement is per frame, so game speed follows frame rate.
+contention, raster derived from T-states) over the scripted flights above.
+With per-face shading and `WAIT_FOR_VBLANK`, each frame takes 4–5 display
+frames: **about 10–12.5 fps**. The emulator costs DMA transfers at 2 T per
+byte (set with the `DMA_T` environment variable), which makes the clear
+about 0.1 M per frame. Draw distance is the main lever (`VIEW_R`). Real
+hardware adds some wait states at 28 MHz. Movement is per frame, so game speed follows frame rate.
 
 ## Tuning
 
 Constants at the top of `zpolice.asm`: `VIEW_R` (draw distance), `NEAR`,
 `PMAX` (pitch limit, must match `gentables.py`), speeds and rates, the colours
-(Layer 2 RRRGGGBB) and the two building footprints. `PMAX` is kept at 24
-(≈34°). At that limit no point behind the camera's horizontal plane can ever
-be in view, which the culling relies on.
+(Layer 2 RRRGGGBB), `DMA_SPAN_MIN` and the two building footprints. `PMAX` is
+kept at 24 (≈34°). At that limit no point behind the camera's horizontal
+plane can ever be in view, which the culling relies on.
 
 The city layout, heights and tower placement come from `gentables.py`
 (seeded random, with every 8th row and column left open as a boulevard).
+
+Each grid cell also has a colour code in `city_col`, which is stored right
+after `city_map` so a cell's colour is its map byte + 1024 (an `ASSERT`
+checks this). Roads and open cells hold `GROUND_COL`, and buildings hold a
+seeded random colour family.
+
+**Palette:** Layer 2 uses a custom 9-bit palette (`l2_palette`), loaded at
+start-up through NextRegs `$43/$40/$44`. It has 64 colour families of four
+entries each:
+
+| Entry | Use |
+|-------|-----|
+| `family*4 + 0` | darker side (`SHADE_DARK`) |
+| `family*4 + 1` | side facing the player, the base colour (`SHADE_FACE`) |
+| `family*4 + 2` | lighter roof (`SHADE_ROOF`) |
+| `family*4 + 3` | fixed colours: sky 3, ground 7, edges 11, HUD 15, warning 19, ground dots 23; black otherwise |
+
+A face's colour is therefore just `family | shade`, with no lookup table.
+`gentables.py` derives the shades from a random base colour (dark ≈ 68%,
+roof 35% towards white). It avoids any shade that would match the
+transparent colour `$E3`, and emits `ASSERT`s that keep the fixed indices
+in step with `zpolice.asm`.
 
 ## Testing headless
 

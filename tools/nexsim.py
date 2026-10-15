@@ -3,7 +3,8 @@
 Runs the NEX, captures every Layer 2 buffer flip (NextReg $12 write) to PNG,
 and reports approximate T-states per frame. Only what the game needs is
 modelled: 8K MMU paging, NextReg writes/reads, keyboard port $FE, raster
-line read ($1E/$1F always reports line 192 so vsync waits return at once).
+line read ($1E/$1F is derived from the T-state count, so vsync waits and
+raster timing behave as on hardware).
 
 usage: python tools/nexsim.py zpolice.nex outdir frames [keyscript]
   keyscript: comma list of "frame:keys", keys from QWERTASDFG held from that
@@ -33,6 +34,11 @@ KEYROWS = {  # half-row address byte -> keys bits 0..4
 DMA_T_PER_BYTE = int(os.environ.get("DMA_T", "2"))
 
 
+# Video timing at 28MHz, 50Hz: 312 lines of 1792 T (raster from T-states).
+T_PER_LINE = 1792
+LINES_PER_FRAME = 312
+
+
 class Halt(Exception):
     pass
 
@@ -54,6 +60,8 @@ class Cpu:
         self.keys = set()
         self.on_flip = None
         self.iff = 0
+        self.palettes = {}              # sel -> {index: 9-bit RGB333}
+        self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
                     "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
 
@@ -112,6 +120,19 @@ class Cpu:
         self.nextreg[reg] = val
         if 0x50 <= reg <= 0x57:
             self._map(reg - 0x50, val)
+        elif reg == 0x40:
+            self.pal_idx, self.pal_phase = val, 0
+        elif reg == 0x41 or (reg == 0x44 and self.pal_phase == 1):
+            if reg == 0x41:
+                rgb = (val << 1) | (1 if val & 3 else 0)
+            else:
+                rgb = (self.pal_hi << 1) | (val & 1)
+            sel = (self.nextreg.get(0x43, 0) >> 4) & 7
+            self.palettes.setdefault(sel, {})[self.pal_idx] = rgb
+            self.pal_idx = (self.pal_idx + 1) & 0xFF
+            self.pal_phase = 0
+        elif reg == 0x44:
+            self.pal_hi, self.pal_phase = val, 1
         elif reg == 0x12 and self.on_flip:
             self.on_flip(val)
 
@@ -127,10 +148,11 @@ class Cpu:
                             v &= ~(1 << bit)
             return v | 0xE0
         if port == 0x253B:
+            line = (self.t // T_PER_LINE) % LINES_PER_FRAME
             if self.nr_sel == 0x1E:
-                return 0
+                return line >> 8
             if self.nr_sel == 0x1F:
-                return 192
+                return line & 0xFF
             return self.nextreg.get(self.nr_sel, 0)
         return 0xFF
 
@@ -779,10 +801,22 @@ def write_png(path, bank, cpu):
     w, h = 256, 192
     raw = bytearray()
     buf = b"".join(bytes(cpu.page(bank * 2 + i)) for i in range(6))
+    ula = bytes(cpu.page(10))           # bank 5: ULA screen
+    ula_on = (cpu.nextreg.get(0x15, 0) >> 2) & 7 in (2, 4, 5)   # ULA above L2
+    l2pal = cpu.palettes.get(1, {})     # Layer 2 first palette
+    ink = {(y, x) for y in range(192) for x in range(256) if ula_on and
+           ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7))}
     for y in range(h):
         raw.append(0)
         for x in range(w):
             c = buf[y * 256 + x]
+            if c in l2pal:
+                v9 = 0x1FF if (y, x) in ink else l2pal[c]
+                rr, gg, bb = v9 >> 6, (v9 >> 3) & 7, v9 & 7
+                raw += bytes((rr * 255 // 7, gg * 255 // 7, bb * 255 // 7))
+                continue
+            if ula_on and ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7)):
+                c = 0xFF                # ULA ink drawn over Layer 2
             rr = (c >> 5) & 7
             gg = (c >> 2) & 7
             b2 = c & 3

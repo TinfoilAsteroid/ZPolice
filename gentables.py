@@ -2,6 +2,7 @@
 
 All trig is S7.8 fixed point (1.0 == 256). Angles are 8-bit (256 == 360 deg).
 """
+import colorsys
 import math
 import random
 
@@ -50,54 +51,10 @@ for p in range(-PMAX, PMAX + 1):
     hz.append(max(0, min(192, round(y))))
 emit_bytes("hztab", hz)
 
-# Box silhouettes. Vertex index = x + 2*z + 4*top. For every combination of
-# visible faces (bit0 -X, bit1 +X, bit2 -Z, bit3 +Z, bit4 top) list the
-# silhouette as a vertex cycle (edges with exactly one visible neighbour
-# face; the bottom is never visible) and the interior edges (two visible
-# neighbours). Offsets are index*16 to match the vtx[] layout.
-FACES = {  # bit -> vertex set
-    0: {0, 2, 6, 4}, 1: {1, 3, 7, 5}, 2: {0, 1, 5, 4}, 3: {2, 3, 7, 6},
-    4: {4, 5, 7, 6}, 5: {0, 1, 3, 2},  # 5 = bottom
-}
-EDGES = [(a, b) for a in range(8) for b in range(a + 1, 8)
-         if bin(a ^ b).count("1") == 1]
-sil_tab, inner_tab = [], []
-for vis in range(32):
-    sil_edges, inner = [], []
-    for a, b in EDGES:
-        adj = [f for f, vs in FACES.items() if a in vs and b in vs]
-        nvis = sum(1 for f in adj if f < 5 and vis >> f & 1)
-        if nvis == 1:
-            sil_edges.append((a, b))
-        elif nvis == 2:
-            inner.append((a, b))
-    cycle = []
-    if sil_edges:
-        nbr = {}
-        for a, b in sil_edges:
-            nbr.setdefault(a, []).append(b)
-            nbr.setdefault(b, []).append(a)
-        if all(len(v) == 2 for v in nbr.values()) and len(nbr) == len(sil_edges):
-            cycle = [sil_edges[0][0]]
-            prev = None
-            while True:
-                cur = cycle[-1]
-                nxt = [n for n in nbr[cur] if n != prev][0]
-                if nxt == cycle[0]:
-                    break
-                prev = cur
-                cycle.append(nxt)
-            if len(cycle) != len(nbr):
-                cycle = []
-    # opposite faces can't both face the camera: impossible view, draw nothing
-    if (vis & 3) == 3 or (vis & 12) == 12 or not cycle:
-        cycle, inner = [], []
-    assert len(cycle) <= 6 and len(inner) <= 3
-    row = [len(cycle)] + [v * 16 for v in cycle]
-    sil_tab += row + [0] * (8 - len(row))
-    row = [len(inner)] + [v * 16 for e in inner for v in e]
-    inner_tab += row + [0] * (8 - len(row))
-emit_bytes("sil_tab", sil_tab, per_line=8)
+# Box faces. Vertex index = x + 2*z + 4*top; face bits as in zpolice.asm
+# (bit0 -X, bit1 +X, bit2 -Z, bit3 +Z, bit4 top).
+FACES = {0: {0, 2, 6, 4}, 1: {1, 3, 7, 5}, 2: {0, 1, 5, 4}, 3: {2, 3, 7, 6},
+         4: {4, 5, 7, 6}}
 # corners used by the visible faces (bit n = vertex n)
 used = []
 for vis in range(32):
@@ -109,7 +66,6 @@ for vis in range(32):
                     m |= 1 << v
     used.append(m)
 emit_bytes("used_tab", used)
-emit_bytes("inner_tab", inner_tab, per_line=8)
 
 # Building height per level (level 0 = no building).
 emit_words("htab", [lvl * 40 for lvl in range(16)])
@@ -129,6 +85,72 @@ for j in range(GRID):
         tower = lvl >= 8 or rng.random() < 0.25
         city.append(lvl | (0x10 if tower else 0))
 emit_bytes("city_map", city, per_line=32)
+
+# Layer 2 palette (9-bit RGB333), 256 entries in families of four:
+#   family*4 + 0  darker side   (side turned away from the player)
+#   family*4 + 1  facing side   (the base colour)
+#   family*4 + 2  roof          (lighter)
+#   family*4 + 3  fixed colours below, otherwise unused (black)
+# so a face colour is (family*4) | shade with no lookup table.
+FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
+    3: ("SKY_COL", (0, 0, 3)),
+    7: ("GROUND_COL", (0, 2, 0)),
+    11: ("EDGE_COL", (7, 7, 7)),
+    15: ("HUD_COL", (0, 7, 0)),
+    19: ("HUD_WARN", (7, 0, 0)),
+    23: ("DOT_COL", (5, 5, 5)),
+}
+TRANSPARENT = (7, 0, 3)            # RGB of $E3 (top 8 bits) -> never use
+
+def q(x):
+    return max(0, min(7, int(round(x * 7))))
+
+def is_transparent(c):
+    r, g, b = c
+    return r == 7 and g == 0 and b >> 1 == 3
+
+prng = random.Random(4242)
+pal = [(0, 0, 0)] * 256
+for fam in range(64):
+    while True:
+        h = (fam * 0.618034 + prng.random() * 0.05) % 1.0
+        sat = 0.35 + 0.4 * prng.random()
+        val = 0.55 + 0.25 * prng.random()
+        base = colorsys.hsv_to_rgb(h, sat, val)
+        face = tuple(q(c) for c in base)
+        dark = tuple(q(c * 0.68) for c in base)
+        roof = tuple(q(c + (1 - c) * 0.35) for c in base)
+        if len({dark, face, roof}) == 3 and not any(map(is_transparent, (dark, face, roof))):
+            break
+    pal[fam * 4:fam * 4 + 3] = [dark, face, roof]
+for idx, (_, rgb) in FIXED.items():
+    pal[idx] = rgb
+# City colours, one byte per grid cell, stored straight after city_map so a
+# cell's colour is at its map byte + 1024: buildings hold a random colour
+# family (family*4, shade bits clear); roads/open cells hold GROUND_COL.
+crng = random.Random(2084)
+lines.append("city_col:")
+for j in range(GRID):
+    row = ["GROUND_COL" if city[j * GRID + i] == 0 else f"${crng.randrange(64) * 4:02X}"
+           for i in range(GRID)]
+    lines.append("        db " + ",".join(row))
+lines.append("")
+
+# palette goes after city_col (city_col must directly follow city_map)
+pal_lines = []
+pal_lines.append("; Layer 2 palette: NextReg $44 byte pairs (RRRGGGBB, low blue bit)")
+pal_lines.append("l2_palette:")
+for k in range(0, 256, 8):
+    bs = []
+    for r, g, b in pal[k:k + 8]:
+        bs += [f"${(r << 5) | (g << 2) | (b >> 1):02X}", f"${b & 1:02X}"]
+    pal_lines.append("        db " + ",".join(bs))
+pal_lines.append("")
+for idx, (name, _) in FIXED.items():
+    pal_lines.append(f"        ASSERT {name} == {idx}")
+pal_lines.append("")
+
+lines += pal_lines
 
 with open(OUT, "w") as f:
     f.write("\n".join(lines) + "\n")

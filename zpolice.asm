@@ -5,13 +5,12 @@
 ;  Maths: world positions are 16-bit integers (one city cell = 256 units),
 ;         trig values are S7.8 fixed point (1.0 = $0100).
 ;  Hidden line removal: painter's algorithm. Buildings are walked over the
-;  grid far-to-near (no sort needed). Each building is filled solid and then
-;  outlined, so nearer buildings overwrite the lines of those behind them:
-;    - wholly on screen: its silhouette (table driven from the visible face
-;      set) is filled once, outlined, and the interior edges drawn as lines
-;    - crossing the view frustum: each visible face is clipped in 3D
-;      (Sutherland-Hodgman, 5 planes), filled and outlined separately
-;  Rasterisation then only ever sees on-screen 8-bit coordinates.
+;  grid far-to-near (no sort needed). Each visible face is filled in its
+;  shade (roof lighter, side turned away darker) and optionally outlined, so
+;  nearer buildings overwrite those behind them. Faces with every corner on
+;  screen use cached projections; faces crossing the view frustum are
+;  clipped in 3D (Sutherland-Hodgman, 5 planes). Rasterisation then only
+;  ever sees on-screen 8-bit coordinates.
 ;
 ;  Controls: Q/A speed up/down   W stop      S/F turn left/right
 ;            E/D nose down/up    T/G climb/descend
@@ -25,6 +24,19 @@
         SLDOPT COMMENT WPMEM, LOGPOINT, ASSERTION
         CSPECTMAP zpolice.map
         OPT --zxnext=cspect --syntax=a --reversepop
+;------------------------------------------------------------------------------
+; Build options
+;------------------------------------------------------------------------------
+; DRAW_LINES: outline building faces with EDGE_COL vectors.  Comment it out for solid-colour buildings only; the HUD
+; is always drawn.  Can also be set from the command line: -DDRAW_LINES
+        ;DEFINE DRAW_LINES
+
+; WAIT_FOR_VBLANK: wait for the raster to leave the display area before
+; flipping the Layer 2 buffers (no tearing).  Comment it out to flip as soon
+; as a frame is drawn: faster, but the flip may tear mid-screen.
+; Command line: -DWAIT_FOR_VBLANK
+        DEFINE WAIT_FOR_VBLANK
+
 ;------------------------------------------------------------------------------
 ; Tuning constants
 ;------------------------------------------------------------------------------
@@ -49,13 +61,17 @@ INSET1          equ 80          ; tower footprint
 SIZE1           equ 96
 
 ; Layer 2 colours (RRRGGGBB). Avoid $E3 (global transparency).
-SKY_COL         equ $01
-GROUND_COL      equ $08
-FILL_COL        equ $00
-EDGE_COL        equ $FF
-DOT_COL         equ $B6
-HUD_COL         equ $1C
-HUD_WARN        equ $E0
+; Layer 2 uses a custom palette (l2_palette from gentables.py) arranged in
+; families of four: family*4 + SHADE_*.  The +3 slots hold the fixed colours.
+SKY_COL         equ 3
+GROUND_COL      equ 7
+EDGE_COL        equ 11
+HUD_COL         equ 15
+HUD_WARN        equ 19
+DOT_COL         equ 23
+SHADE_DARK      equ 0           ; side turned away from the player
+SHADE_FACE      equ 1           ; side facing the player (base colour)
+SHADE_ROOF      equ 2           ; roof, lighter
 
 L2_BANK_A       equ 9           ; 16K banks 9-11
 L2_BANK_B       equ 12          ; 16K banks 12-14
@@ -118,7 +134,7 @@ start:
         nextreg $07,3                   ; 28MHz
         nextreg $70,0                   ; Layer 2 256x192 mode
         nextreg $14,$E3                 ; global transparency colour
-        nextreg $15,%00000000           ; sprites off, priority S L U
+        nextreg $15,%00001000           ; sprites off, priority S U L (ULA over L2)
         nextreg $16,0                   ; Layer 2 scroll X
         nextreg $17,0                   ; Layer 2 scroll Y
         nextreg $1C,%00000001           ; reset L2 clip index
@@ -132,6 +148,19 @@ start:
         ld a,%00000010                  ; Layer 2 visible, no write paging
         out (c),a
 
+        ; load the shaded Layer 2 palette (first L2 palette, 9-bit entries)
+        nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
+        nextreg $40,0
+        ld hl,l2_palette
+        ld b,0                          ; 256 entries
+.pal:   ld a,(hl)
+        inc hl
+        nextreg $44,a                   ; RRRGGGBB
+        ld a,(hl)
+        inc hl
+        nextreg $44,a                   ; low blue bit
+        djnz .pal
+
         ; clear both buffers once
         ld a,96
         ld (horizon),a
@@ -141,11 +170,9 @@ start:
         ld a,L2_BANK_B
         call map_bank
         call clear_screen
-        ld a,L2_BANK_A
-        nextreg $12,a
-        ld (front_bank),a
-        ld a,L2_BANK_B
-        ld (back_bank),a
+        nextreg $12,L2_BANK_A           ; Layer 2 active (displayed) bank
+        nextreg $13,L2_BANK_B           ; Layer 2 shadow bank (drawn into)
+        call ula_init                   ; transparent ULA overlay for the FPS
 
 ;==============================================================================
 ; Main loop
@@ -153,22 +180,185 @@ start:
 main_loop:
         call update_player
         call setup_frame
-        ld a,(back_bank)
-        call map_bank
+        call map_shadow
+        call vtick
         call clear_screen
+        call vtick
         call draw_dots
-        call draw_city
+        call vtick
+        call draw_city                  ; also calls vtick once per building
         call draw_hud
+    IFDEF WAIT_FOR_VBLANK
         call wait_vblank
-        ; flip
-        ld a,(back_bank)
-        nextreg $12,a
-        ld hl,(front_bank)              ; L = front, H = back
-        ld a,l
-        ld l,h
-        ld h,a
-        ld (front_bank),hl
+    ENDIF
+        call l2_flip
+        call fps_tick                   ; may page the ULA screen into $4000
         jp main_loop
+
+;==============================================================================
+; Frames per second, shown on the ULA layer above Layer 2.
+;
+; Interrupts stay off (the span filler borrows SP), so time is taken from the
+; raster: vtick reads the current video line and counts a new 50Hz video
+; frame whenever the line number has gone backwards.  It must be called at
+; least once per video frame (~560K T at 28MHz); the main loop and draw_cell
+; do that.  Every 50 video frames (1 second) the number of frames rendered
+; becomes the FPS figure.
+;==============================================================================
+vtick:
+        ld bc,$243B
+        ld a,$1E
+        out (c),a
+        inc b
+        in d,(c)                        ; line MSB
+        dec b
+        ld a,$1F
+        out (c),a
+        inc b
+        in e,(c)                        ; line LSB
+        dec b
+        ld a,$1E
+        out (c),a
+        inc b
+        in a,(c)
+        cp d
+        jr nz,vtick                     ; MSB changed mid-read: try again
+        and 1
+        ld d,a                          ; DE = video line 0..311
+        ld hl,(fps_line)
+        ld (fps_line),de
+        or a
+        sbc hl,de                       ; previous - current
+        ret c
+        ret z
+        ld hl,fps_vframes               ; line went backwards: new frame
+        inc (hl)
+        ret
+
+; Once per rendered frame, after the flip
+fps_tick:
+        call vtick
+        ld hl,fps_count
+        inc (hl)
+        ld a,(fps_vframes)
+        cp 50
+        ret c
+        sub 50
+        ld (fps_vframes),a
+        ld a,(fps_count)
+        ld (fps_value),a
+        xor a
+        ld (fps_count),a
+        ; fall through
+
+; Print "nn FPS" at the top left of the ULA screen
+fps_draw:
+        nextreg $52,10                  ; ULA screen (bank 5) at $4000;
+                                        ; map_shadow restores slot 2
+        ld a,(fps_value)
+        cp 100
+        jr c,.ok
+        ld a,99
+.ok:    ld c,0
+.ten:   cp 10
+        jr c,.unit
+        sub 10
+        inc c
+        jr .ten
+.unit:  push af                         ; units
+        ld a,c
+        or a
+        jr nz,.t
+        ld a,GLYPH_SPACE                ; no leading zero
+.t:     ld e,0
+        call print_glyph
+        pop af
+        ld e,1
+        call print_glyph
+        ld a,GLYPH_SPACE
+        ld e,2
+        call print_glyph
+        ld a,GLYPH_F
+        ld e,3
+        call print_glyph
+        ld a,GLYPH_P
+        ld e,4
+        call print_glyph
+        ld a,GLYPH_S
+        ld e,5
+        jp print_glyph
+
+; A = glyph, E = character column on ULA row 0 (ULA screen paged at $4000)
+print_glyph:
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld bc,font
+        add hl,bc
+        ld d,$40
+        ld b,8
+.l:     ld a,(hl)
+        ld (de),a
+        inc hl
+        inc d                           ; next pixel line of the cell
+        djnz .l
+        ret
+
+; Clear the ULA screen to paper, white ink, and make paper transparent so
+; only the text shows over Layer 2.
+ula_init:
+        nextreg $52,10
+        ld hl,$4000
+        ld de,$4001
+        ld bc,$1800-1
+        ld (hl),0
+        ldir                            ; bitmap: all paper
+        ld hl,$5800
+        ld de,$5801
+        ld bc,$300-1
+        ld (hl),%01000111               ; bright, paper 0, ink 7
+        ldir
+        nextreg $43,%00000000           ; edit ULA palette 1
+        nextreg $40,16                  ; paper 0
+        nextreg $41,$E3                 ; = global transparency colour
+        nextreg $40,24                  ; bright paper 0
+        nextreg $41,$E3
+        jp fps_draw
+
+;------------------------------------------------------------------------------
+; Layer 2 double buffering with the hardware shadow register.
+;   NextReg $12 = active bank (on screen), NextReg $13 = shadow bank.
+; The game always draws into the shadow bank; l2_flip swaps the two during
+; vertical blank, so the registers themselves record which buffer is which.
+;------------------------------------------------------------------------------
+
+; A = NextReg number -> A = its value
+read_nextreg:
+        ld bc,$243B
+        out (c),a
+        inc b
+        in a,(c)
+        ret
+
+; Page the shadow Layer 2 buffer into $0000-$BFFF for drawing
+map_shadow:
+        ld a,$13
+        call read_nextreg
+        jr map_bank
+
+; Show the shadow buffer and make the old active buffer the new shadow
+l2_flip:
+        ld a,$12
+        call read_nextreg
+        ld e,a                          ; old active
+        ld a,$13
+        call read_nextreg
+        nextreg $12,a                   ; shadow -> active
+        ld a,e
+        nextreg $13,a                   ; old active -> shadow
+        ret
 
 ;------------------------------------------------------------------------------
 ; Map the 48K Layer 2 buffer starting at 16K bank A into $0000-$BFFF
@@ -1305,10 +1495,14 @@ draw_face:
         inc hl
         ld a,(p2buf+1)
         ld (hl),a
+    IFDEF DRAW_LINES
         call fill_poly
         ld a,EDGE_COL
         ld (line_col),a
         jp outline_poly
+    ELSE
+        jp fill_poly                    ; solid faces only
+    ENDIF
 
 ;==============================================================================
 ; Convex polygon fill from p2buf (8-bit screen coords).
@@ -1371,8 +1565,10 @@ fill_poly:
         dec (hl)
         jr nz,.ed
 
-        ld d,FILL_COL
-        ld e,FILL_COL
+        ld a,(face_col)                 ; shaded colour of this face
+        ld (l2_cls_byte),a              ; DMA source byte for long spans
+        ld d,a
+        ld e,a                          ; PUSH pair for short spans
         jp fill_spans
 
 ; Walk an edge (D=xa, E=ya) -> (B=xb, C=yb), yb > ya, into table page A.
@@ -1517,7 +1713,7 @@ fs_loop:
         ld h,high push_end
         jp (hl)
 
-        ; Long span: zxnDMA from the fixed FILL_COL byte (port A) to HL.
+        ; Long span: zxnDMA from the fixed colour byte (port A) to HL.
         ; Everything but length and destination was set up by clear_screen.
 .dma:   inc a
         jr z,.push                      ; 256 wide: length needs the high byte
@@ -1644,12 +1840,10 @@ clear_screen:
         ld c,0
         ld a,GROUND_COL
         call dma_fill
-        ; Leave the DMA ready for fill_spans: the source byte becomes the
-        ; building fill colour and the length high byte 0, so each span only
-        ; reloads length low, destination, LOAD and ENABLE.
-.spans: ld a,FILL_COL
-        ld (l2_cls_byte),a
-        ld a,DMA_WR0_LEN_HI
+        ; Leave the DMA ready for fill_spans: length high byte 0, so each span
+        ; only reloads length low, destination, LOAD and ENABLE.  fill_poly
+        ; puts each building's colour in the source byte l2_cls_byte.
+.spans: ld a,DMA_WR0_LEN_HI
         out (IO_DATAGEAR_DMA_PORT),a
         xor a
         out (IO_DATAGEAR_DMA_PORT),a
@@ -1771,6 +1965,7 @@ try_cell:
         ld a,(cell_i)
         cp 32
         ret nc
+        call vtick                      ; keep the FPS clock sampling
         ; fall through
 
 ;------------------------------------------------------------------------------
@@ -1793,6 +1988,14 @@ draw_cell:
         or a
         ret z
         ld c,a
+        inc h
+        inc h
+        inc h
+        inc h                           ; +1024 -> city_col
+        ld a,(hl)
+        and %11111100
+        ld (bld_col),a                  ; colour family (shade bits clear)
+        ld a,c
         call bld_height
         ld (bld_h),hl
         call bld_dims                   ; B = inset, E = size
@@ -1952,34 +2155,55 @@ draw_cell:
         or a
         ret nz
 
+        ; Shading: the roof is lighter; of the visible sides, the one the
+        ; camera sees most squarely (furthest from its plane) is the base
+        ; colour and the other is darker.
+        ld a,(bld_col)
+        or SHADE_ROOF
+        ld (col_top),a
+        ld a,(bld_col)
+        or SHADE_FACE
+        ld (col_x),a
+        ld (col_z),a
         ld a,(bld_vis)
-        ; Fast path: if every silhouette corner is on screen, fill the box
-        ; silhouette once and draw the interior edges as plain lines.
-        add a,a
-        add a,a
-        add a,a
-        ld hl,sil_tab
-        add hl,a
-        ld (sil_ptr),hl
-        ld a,(hl)
-        or a
-        ret z                           ; nothing visible
-        ld b,a
-        inc hl
-        ld d,high vtx
-        ld c,0
-.so:    ld a,(hl)
-        inc hl
-        add a,6
-        ld e,a
-        ld a,(de)
-        or c
-        ld c,a
-        djnz .so
-        or a
-        jp z,draw_silhouette
-        ; Otherwise clip and draw each visible face on its own.
+        and %00000011
+        jr z,.shd                       ; only a Z side (or none)
         ld a,(bld_vis)
+        and %00001100
+        jr z,.shd                       ; only an X side
+        ; both an X and a Z side: compare camera distances to the planes
+        ld hl,(bld_x0)
+        ld de,(cam_x+1)
+        or a
+        sbc hl,de                       ; x0 - camX  (> 0 when -X visible)
+        ld a,(bld_vis)
+        rra
+        jr c,.dx
+        ld hl,(cam_x+1)
+        ld de,(bld_x1)
+        or a
+        sbc hl,de                       ; camX - x1
+.dx:    push hl
+        ld hl,(bld_z0)
+        ld de,(cam_z+1)
+        or a
+        sbc hl,de                       ; z0 - camZ
+        ld a,(bld_vis)
+        bit 2,a
+        jr nz,.dz
+        ld hl,(cam_z+1)
+        ld de,(bld_z1)
+        or a
+        sbc hl,de                       ; camZ - z1
+.dz:    pop de                          ; DE = X distance, HL = Z distance
+        or a
+        sbc hl,de
+        ld a,(bld_col)                  ; SHADE_DARK = 0
+        jr c,.zdark                     ; Z side is further round: darker
+        ld (col_x),a
+        jr .shd
+.zdark: ld (col_z),a
+.shd:   ld a,(bld_vis)
         ld c,a
         ; An edge shared with a face drawn later is left to that face:
         ; X faces skip their top edge if the roof shows and the vertical
@@ -2004,6 +2228,8 @@ draw_cell:
         jr z,.f1
         ld a,(bld_mx)
         ld (df_mask),a
+        ld a,(col_x)
+        ld (face_col),a
         ld hl,face_nx
         call draw_face
 .f1:    ld a,(bld_vis)
@@ -2011,6 +2237,8 @@ draw_cell:
         jr z,.f2
         ld a,(bld_mx)
         ld (df_mask),a
+        ld a,(col_x)
+        ld (face_col),a
         ld hl,face_px
         call draw_face
 .f2:    ld a,(bld_vis)
@@ -2018,6 +2246,8 @@ draw_cell:
         jr z,.f3
         ld a,(bld_mz)
         ld (df_mask),a
+        ld a,(col_z)
+        ld (face_col),a
         ld hl,face_nz
         call draw_face
 .f3:    ld a,(bld_vis)
@@ -2025,6 +2255,8 @@ draw_cell:
         jr z,.f4
         ld a,(bld_mz)
         ld (df_mask),a
+        ld a,(col_z)
+        ld (face_col),a
         ld hl,face_pz
         call draw_face
 .f4:    ld a,(bld_vis)
@@ -2032,87 +2264,10 @@ draw_cell:
         ret z
         ld a,$0F
         ld (df_mask),a
+        ld a,(col_top)
+        ld (face_col),a
         ld hl,face_top
         jp draw_face
-
-;------------------------------------------------------------------------------
-; Draw the current building from its silhouette (all corners on screen):
-; one convex fill of the outline, then the outline, then interior edges.
-;------------------------------------------------------------------------------
-draw_silhouette:
-        ld hl,(sil_ptr)
-        ld a,(hl)
-        inc hl
-        ld (p2n),a
-        ld ixl,a
-        ld de,p2buf
-        ld b,high vtx
-.sv:    ld a,(hl)
-        inc hl
-        add a,7
-        ld c,a
-        ld a,(bc)
-        ld (de),a                       ; sx
-        inc e
-        inc c
-        ld a,(bc)
-        ld (de),a                       ; sy
-        inc e
-        ld a,1
-        ld (de),a                       ; outline this edge
-        inc e
-        inc e
-        dec ixl
-        jr nz,.sv
-        ld a,(p2buf)                    ; close the polygon
-        ld (de),a
-        inc e
-        ld a,(p2buf+1)
-        ld (de),a
-        call fill_poly
-        ld a,EDGE_COL
-        ld (line_col),a
-        call outline_poly
-        ld a,(bld_vis)
-        add a,a
-        add a,a
-        add a,a
-        ld hl,inner_tab
-        add hl,a
-        ld a,(hl)
-        or a
-        ret z
-        ld (sil_cnt),a
-        inc hl
-.ie:    ld a,(hl)
-        inc hl
-        ld c,(hl)
-        inc hl
-        push hl
-        add a,7
-        ld l,a
-        ld h,high vtx
-        ld a,(hl)
-        inc l
-        ld h,(hl)
-        ld l,a                          ; H = y0, L = x0
-        ld a,c
-        add a,7
-        ld e,a
-        ld d,high vtx
-        ld a,(de)
-        ld c,a
-        inc e
-        ld a,(de)
-        ld d,a                          ; D = y1
-        ld e,c                          ; E = x1
-        call draw_line
-        pop hl
-        ld a,(sil_cnt)
-        dec a
-        ld (sil_cnt),a
-        jr nz,.ie
-        ret
 
 ; Yaw rotation of (t_dx, t_dz):  Z1 = dx sinY + dz cosY -> t_z1
 ;                               X  = dx cosY - dz sinY -> HL
@@ -2327,8 +2482,6 @@ speed:      db 0
 keys1:      db 0
 keys2:      db 0
 
-front_bank: db L2_BANK_A                ; must stay adjacent (word access)
-back_bank:  db L2_BANK_B
 horizon:    db 96
 
 ; --- view ---
@@ -2354,6 +2507,11 @@ cz:         db 0
 cell_i:     db 0
 cell_j:     db 0
 bld_h:      dw 0
+bld_col:    db 0
+col_x:      db 0
+col_z:      db 0
+col_top:    db 0
+face_col:   db 0
 bld_vecs:   dw 0
 bld_x0:     dw 0
 bld_x1:     dw 0
@@ -2388,8 +2546,6 @@ df_or:      db 0
 df_mask:    db 0
 df_m:       db 0
 bld_vis:    db 0
-sil_ptr:    dw 0
-sil_cnt:    db 0
 bld_mx:     db 0
 bld_mz:     db 0
 clip_n:     db 0
@@ -2415,6 +2571,33 @@ fy1:        db 0
 fe_cnt:     db 0
 line_col:   db 0
 saved_sp:   dw 0
+
+; --- fps ---
+fps_line:   dw 0
+fps_vframes: db 0
+fps_count:  db 0
+fps_value:  db 0
+
+; 8x8 glyphs: digits 0-9, then F, P, S, space
+GLYPH_F     equ 10
+GLYPH_P     equ 11
+GLYPH_S     equ 12
+GLYPH_SPACE equ 13
+font:
+        db $00,$3C,$46,$4A,$52,$62,$3C,$00     ; 0
+        db $00,$18,$28,$08,$08,$08,$3E,$00     ; 1
+        db $00,$3C,$42,$02,$3C,$40,$7E,$00     ; 2
+        db $00,$3C,$42,$0C,$02,$42,$3C,$00     ; 3
+        db $00,$08,$18,$28,$48,$7E,$08,$00     ; 4
+        db $00,$7E,$40,$7C,$02,$42,$3C,$00     ; 5
+        db $00,$3C,$40,$7C,$42,$42,$3C,$00     ; 6
+        db $00,$7E,$02,$04,$08,$10,$10,$00     ; 7
+        db $00,$3C,$42,$3C,$42,$42,$3C,$00     ; 8
+        db $00,$3C,$42,$42,$3E,$02,$3C,$00     ; 9
+        db $00,$7E,$40,$7C,$40,$40,$40,$00     ; F
+        db $00,$7C,$42,$42,$7C,$40,$40,$00     ; P
+        db $00,$3C,$40,$3C,$02,$42,$3C,$00     ; S
+        db $00,$00,$00,$00,$00,$00,$00,$00     ; space
 
 ;------------------------------------------------------------------------------
 ; Page aligned blocks
@@ -2450,6 +2633,7 @@ stack_top:
 
         DISPLAY "Code+data end: ",/A,$
         ASSERT $ <= $10000
+        ASSERT city_col == city_map + 1024   ; draw_cell reaches colours via +1024
 
 ;------------------------------------------------------------------------------
         SAVENEX OPEN "zpolice.nex", start, stack_top
