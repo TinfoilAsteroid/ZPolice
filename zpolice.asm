@@ -76,22 +76,26 @@
 ;------------------------------------------------------------------------------
 ; Tuning constants
 ;------------------------------------------------------------------------------
-; Scale: one map tile (cell) is 10 m x 10 m = 256 world units, so
-; 1 m = 25.6 units and 1 unit = 3.9 cm.  The city is 64 x 64 tiles = 640 m.
+; Scale: one map tile (cell) is 20 m x 20 m = 256 world units, and one
+; height unit (building heights, the ceiling, the pad) is 10 m = 128 world
+; units.  World units are the same size on every axis, so 1 m = 12.8 units
+; and 1 unit = 7.8 cm.  The city is 64 x 64 tiles = 1280 m.
 ; Speeds are per rendered frame, so real speed depends on the frame rate
 ; (figures below are at 14 fps).
 GRID            equ 64          ; the city is GRID x GRID tiles (gentables.py)
-TILE_M          equ 10          ; metres per tile (reference scale)
+TILE_M          equ 20          ; metres per tile (reference scale)
 TILE_UNITS      equ 256         ; world units per tile
-NEAR            equ 16          ; near clip plane: 0.6 m
-VIEW_R          equ 6           ; buildings drawn within +/- 6 tiles (60 m)
+HEIGHT_M        equ 10          ; metres per height unit
+HEIGHT_UNITS    equ 128         ; world units per height unit
+NEAR            equ 16          ; near clip plane: 1.25 m
+VIEW_R          equ 6           ; buildings drawn within +/- 6 tiles (120 m)
 DOT_R           equ 5           ; street intersection markers radius (tiles)
 PMAX            equ 24          ; pitch limit (256 = 360 deg) - match gentables.py
-SPEED_MAX       equ 56          ; units/frame: 2.2 m/frame, ~31 m/s (110 km/h)
-SPEED_MIN       equ -12         ; reverse: 0.47 m/frame, ~6.6 m/s
+SPEED_MAX       equ 28          ; units/frame: 2.2 m/frame, ~31 m/s (110 km/h)
+SPEED_MIN       equ -6          ; reverse: 0.47 m/frame, ~6.6 m/s
 YAW_RATE        equ $0180       ; turn per frame, 8.8 fixed (1.5 units;
                                 ; 256 units = 360 degrees)
-CLIMB_RATE      equ 8           ; units/frame: 0.31 m/frame, ~4.4 m/s
+CLIMB_RATE      equ 4           ; units/frame: 0.31 m/frame, ~4.4 m/s
 ; Pitch damper: with neither E nor D held, the nose eases back to level.
 ; Every PDAMP_FRAMES frames the 8.8 pitch moves towards 0 by
 ; max(PDAMP_MIN, |pitch| * PDAMP_K) in 1/256ths of a pitch unit, i.e. by a
@@ -99,14 +103,22 @@ CLIMB_RATE      equ 8           ; units/frame: 0.31 m/frame, ~4.4 m/s
 PDAMP_FRAMES    equ 1           ; frames between damping steps
 PDAMP_K         equ 43          ; 43/256: about 1/6 of the pitch per step
 PDAMP_MIN       equ 32          ; smallest step, 1/8 unit, so it reaches 0
-MIN_Y           equ 16          ; lowest flight: 0.6 m
-MAX_Y           equ 3*128       ; ceiling 1.5 tiles: 15 m
-BLD_MAX_H       equ 7*256       ; tallest building 7.0 tiles: 70 m (htab level
-                                ; 15, gentables.py; 4.7 m per level)
+MIN_Y           equ 8           ; lowest flight: 0.6 m
+MAX_Y           equ 3*HEIGHT_UNITS/2  ; ceiling 1.5 height units: 15 m
+BLD_MAX_H       equ 7*HEIGHT_UNITS  ; tallest building 7.0 height units: 70 m
+                                ; (htab level 15, gentables.py; 4.7 m a level)
 WORLD_MIN       equ 64
 WORLD_MAX       equ GRID*256-64
 DMA_SPAN_MIN    equ 20          ; spans this wide or wider are filled by DMA
-COLL_M          equ 24          ; collision margin around buildings: 0.94 m
+; The VTOL (the player's craft): 10 m long by 3 m wide.  Its position
+; (cam_x, cam_z, the camera) is its centre; the hit box against buildings is
+; that rectangle turned to the heading (vtol_ground), and the camera stays
+; COLL_H above any roof under it.
+VTOL_LEN_M      equ 10
+VTOL_WID_M      equ 3
+VTOL_HL         equ VTOL_LEN_M*TILE_UNITS/(TILE_M*2)  ; half length: 64 units
+VTOL_HW         equ VTOL_WID_M*TILE_UNITS/(TILE_M*2)  ; half width: 19 units
+COLL_H          equ 12          ; clearance above a roof: 0.94 m
 
 ; Weapons: 5 slots, 2 bytes each (type, ammo) in wpn_slots.  Slot 0 is the
 ; centre gun; slots 1-4 are the wing pylon hard points (limited ammo).
@@ -122,13 +134,13 @@ WPN_NONE        equ 0           ; empty slot / nothing fitted
 WPN_GUN         equ 1           ; machine gun (centre slot)
 WPN_LASER       equ 2           ; pulse laser (centre slot)
 WPN_CHAIN       equ 3           ; chain gun (centre slot)
-WPN_ROCKETS     equ 4           ; unguided rocket pod (placeholder)
+WPN_ROCKETS     equ 4           ; unguided rocket pod (wing pylons)
 WPN_MISSILE     equ 5           ; guided missile (placeholder)
 WPN_BOMB        equ 6           ; bomb (placeholder)
 
 ; Machine gun rounds: NBULLETS records of BREC bytes in `bullets`
 NBULLETS        equ 24          ; rounds in flight (the chain gun needs most)
-BREC            equ 25
+BREC            equ 27
 B_STATE         equ 0           ; 0 free, 1 in flight, 2 hit (shown, then freed),
                                 ; 3 laser beam; bit 7: fresh (fired this frame)
 B_X             equ 1           ; position, world units
@@ -143,10 +155,13 @@ B_PY            equ 17          ; to the position; the muzzle on its first)
 B_PZ            equ 19
 B_TDX           equ 21          ; path distance between x / z cell boundaries
 B_TDZ           equ 23          ; (0 = not worked out yet)
+B_DMG           equ 25          ; damage to a zombie it hits directly
+B_KIND          equ 26          ; 0 = round or beam, BK_ROCKET = rocket
+BK_ROCKET       equ 1
 NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
 BULLET_MS       equ 500         ; muzzle velocity, m/s
-BULLET_STEP     equ BULLET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 914 units/frame
-GUN_DY          equ -13         ; muzzle 0.5 m below the camera
+BULLET_STEP     equ BULLET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 457 units/frame
+GUN_DY          equ -6          ; muzzle 0.5 m below the camera
 GUN_INTERVAL    equ 4           ; machine gun: frames between rounds
 ; Chain gun: 4x the machine gun's rate, one round every CHAIN_INTERVAL
 ; frames.  Each round's heading and climb are turned by a random
@@ -160,18 +175,40 @@ CHAIN_DEV       equ 9           ; spread: 9/256 rad = 2.01 degrees
 ; first thing it meets, at most LASER_RANGE away.
 LASER_ON        equ 3           ; beam frames
 LASER_COOL      equ 8           ; cool-down frames
-LASER_RANGE     equ 1536        ; 60 m (the draw distance)
-ZHIT_R          equ 6           ; zombie hit box: 0.5 m wide (half 6.4 units)
-ZHIT_H          equ 51          ; and 2 m tall
+LASER_RANGE     equ 1536        ; 120 m (the draw distance)
+ZHIT_R          equ 3           ; zombie hit box: 0.5 m wide (half 3.2 units)
+ZHIT_H          equ 26          ; and 2 m tall
+
+; Damage, in hit points (zombies: ZHP / ZHP_FAST in zombie.asm; the base
+; tiles TERRACE_HP / PAD_HP; humans HUMAN_HP)
+GUN_DMG         equ 4           ; machine gun, per round
+CHAIN_DMG       equ 2           ; chain gun, per round
+LASER_DMG       equ 1           ; pulse laser, per beam frame on a target
+
+; Rocket pod (WPN_ROCKETS, on a wing pylon): ROCKET_SHOTS rockets, one every
+; ROCKET_INTERVAL frames while SPACE is held, flying straight along the view
+; direction at 150 m/s.  Where one hits anything (a building, the ground, a
+; zombie) it bursts: BLAST_DMG to every zombie, human and base tile within
+; BLAST_R on each of the x, y and z axes (a box, not a sphere: cheaper, and
+; near enough).  A direct hit does no extra damage.
+ROCKET_SHOTS    equ 12          ; a full pod
+ROCKET_MS       equ 150         ; m/s
+ROCKET_STEP     equ ROCKET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 137 units/frame
+ROCKET_INTERVAL equ 7           ; frames between rockets (0.5 s)
+ROCKET_LEN      equ 13          ; drawn 1 m long (white),
+ROCKET_TRAIL    equ 19          ; then a yellow trail to 1.5 m behind it
+BLAST_R         equ 64          ; 5 m
+BLAST_DMG       equ 20
 
 ; Humans to rescue (human.asm)
 HUMAN_MAX       equ 20          ; room for this many
 HUMANS_INIT     equ 5           ; placed at start
 PASSENGER_MAX   equ 5           ; the craft carries this many
-RESCUE_R        equ 512         ; 2.0 tiles (20 m): a landed craft this close
-HUMAN_ROOF_MAX  equ MAX_Y-TILE_UNITS  ; humans aren't placed on roofs taller
-                                ; than the ceiling - 1.0 tile
-HUMAN_RUN       equ TILE_UNITS*10/(TILE_M*NOMINAL_FPS)  ; 10 m/s: 18 units/frame
+RESCUE_R        equ 512         ; 2.0 tiles (40 m): a landed craft this close
+HUMAN_ROOF_MAX  equ MAX_Y-HEIGHT_UNITS  ; humans aren't placed on roofs
+                                ; taller than the ceiling - 1.0 height unit
+HUMAN_RUN       equ TILE_UNITS*10/(TILE_M*NOMINAL_FPS)  ; 10 m/s: 9 units/frame
+HUMAN_HP        equ 10          ; hit points (a rocket blast kills)
 DISEMBARK       equ NOMINAL_FPS ; landed on the base pad: one off a second
 
 ; Zombie burst: a killed zombie sprays NPART_BURST particles for PART_LIFE
@@ -182,8 +219,8 @@ NPART           equ 40          ; pool: room for 4 bursts at once
 NPART_BURST     equ 10
 PART_LIFE       equ 8
 PREC            equ 10
-PART_Y          equ 26          ; bursts from 1 m up
-PART_GRAV       equ 2           ; vy lost per frame (they arc up and fall)
+PART_Y          equ 13          ; bursts from 1 m up
+PART_GRAV       equ 1           ; vy lost per frame (they arc up and fall)
 
 ; The level a new game starts on.  Normally 1; DEBUG: 20, to test the
 ; zombies' attacks on the base (junction bias 48 + 2 * level = 88%).
@@ -193,7 +230,7 @@ START_LEVEL     equ 20
 ZBIAS_BASE      equ 48          ; junction bias towards the pad, percent:
 ZBIAS_STEP      equ 2           ; 48 + 2 * level (50% on level 1),
 ZBIAS_MAX       equ 95          ; at most 95%
-ATTACK_R        equ 26          ; a zombie attacks a base tile from 0.1 tile
+ATTACK_R        equ 26          ; a zombie attacks a base tile from 0.1 tile (2 m)
 ZHIT_FRAMES     equ 5           ; one hit every 5 frames, 1 damage each
 TERRACE_HP      equ 100         ; hit points of each green terrace tile
 PAD_HP          equ 200         ; and of the landing pad (destroyed: game over)
@@ -211,6 +248,8 @@ EDGE_COL        equ 11
 HUD_COL         equ 15
 HUD_WARN        equ 19
 DOT_COL         equ 23
+ROCKET_COL      equ EDGE_COL    ; rockets: white streak,
+TRAIL_COL       equ BULLET_COL  ; yellow trail
 BULLET_COL      equ 31
 LASER_COL       equ 35
 MAP_BG          equ 39
@@ -221,6 +260,8 @@ MAP_ZOMBIE_MID  equ 51          ; zombie blip shades (bright = MAP_ZOMBIE)
 MAP_ZOMBIE_DARK equ 55
 MAP_ZOMBIE_ATK  equ HUD_WARN    ; a zombie attacking the base: red
 ZOMBIE_COL      equ 27
+PANEL_L2        equ 91          ; the ULA panel colour, on Layer 2 (compass)
+GAUGE_AMBER     equ 95          ; ground height gauge (Layer 2)
 PART_COL0       equ 59          ; zombie burst particles: age 1 (bright) ..
 PART_COL1       equ 63
 PART_COL2       equ 67
@@ -241,26 +282,33 @@ ULA_ATTR        equ $9800
 
 ; ULA palette indices used by the panel (custom colours set in ula_init)
 P_PANEL         equ 1           ; paper: panel background
-P_EMPTY         equ 2           ; paper: empty part of a gauge
 C_WARN          equ 3           ; ink/paper: red (reversing)
 C_OK            equ 4           ; ink/paper: green
-C_GRN           equ 6           ; ink/paper: amber (ground height gauge)
 C_YEL           equ 2           ; ink: yellow (weapon slot flash)
 C_BLUE          equ 5           ; ink: light blue (empty weapon slot)
 ATTR_PANEL      equ P_PANEL<<3 | 7
-ATTR_EMPTY      equ P_EMPTY<<3 | 7
 
-; Gauges: 7 attribute cells = 56 pixels, starting at character column 5
-GAUGE_COL       equ 5
-GAUGE_CELLS     equ 7
-GAUGE_W         equ GAUGE_CELLS*8   ; 56 pixels
+; Gauges: vertical bars on Layer 2 behind transparent ULA cells, filled
+; from the bottom, pixel rows GAUGE_TOP..GAUGE_TOP+GAUGE_H-1 (character rows
+; 17-22), labelled on character row 23.  Speed ("S") is 8 pixels wide at
+; character column SPD_GCOL; altitude and ground height ("A") share the cell
+; column ALT_GCOL, 4 pixels each.
+GAUGE_TOP       equ 136
+GAUGE_H         equ 48
+GAUGE_LROW      equ 23              ; label row
+SPD_GCOL        equ 1
+ALT_GCOL        equ 3
+PAX_COL         equ 5               ; passengers: first character column
+; Compass: a 32x8 strip at pixel (COMP_X, COMP_Y) in a 2-pixel frame, on
+; Layer 2 behind transparent ULA cells (columns 15-20, character rows 19-20)
+COMP_X          equ 128
+COMP_Y          equ 156
+COMP_BGX        equ 120             ; its 48x16 background patch
+COMP_BGY        equ 152
 PAX_ROW         equ 17              ; passengers aboard (pixel row 136), and
 WPN_LBL         equ 11              ; the weapon slots: "WPN:" at this column,
 WPN_COL         equ 15              ; slot digits 1-5 from this one
 WFLASH          equ 5               ; empty slot requested: flash frames
-SPD_ROW         equ 19              ; character rows (pixel rows 152, 168, 184)
-ALT_ROW         equ 21
-GRN_ROW         equ 23
 
 ; City map on the right of the panel: 32x32 cells at 2x2 pixels = 64x64,
 ; pixel columns MAP_X..MAP_X+63, rows 128..191.  North (+Z) is up.
@@ -285,6 +333,8 @@ PAGE_MENU       equ 8           ; menu.asm: main menu
 PAGE_OCC0       equ 6           ; $4000: occlusion buffer, draw list and
                                 ; building records (slot 2)
 PAGE_OCC1       equ 7           ; $6000: city_col, the cell colours (slot 3)
+PAGE_SPR0       equ 9           ; sprite_data.asm: sprite pattern bank 0
+                                ; (more banks: the next free pages)
 
 
 ; zxnDMA WR0 (transfer A->B) with only the length low / high byte following
@@ -355,7 +405,8 @@ start:
         nextreg $07,3                   ; 28MHz
         nextreg $70,0                   ; Layer 2 256x192 mode
         nextreg $14,$E3                 ; global transparency colour
-        nextreg $15,%00001000           ; sprites off, priority S U L (ULA over L2)
+        nextreg $15,%00001000           ; priority S U L (ULA over L2); sprites
+                                        ; off until sprites_init
         nextreg $16,0                   ; Layer 2 scroll X
         nextreg $17,0                   ; Layer 2 scroll Y
         nextreg $1C,%00000001           ; reset L2 clip index
@@ -391,6 +442,7 @@ start:
         call kbd_double_off             ; NextReg $68 bit 4 = KBD_STOP_DOUBLING
         nextreg $57,PAGE_HUD
         call ula_palette                ; ULA inks and papers (menu and HUD)
+        call sprites_init               ; (sprites.asm) on, all hidden
         nextreg $57,PAGE_MENU
         jp main_menu                    ; (menu.asm) -> newGame
 
@@ -613,17 +665,110 @@ cam_cell_ptr:
         add hl,de
         ret
 
-; HL = the height the craft rests at over the cell it is in: MIN_Y on the
-; road, or just clear of the roof (the collision margin) on a building
+; HL = the height the VTOL rests at: MIN_Y when its whole footprint is over
+; road, or just clear (COLL_H) of the highest roof under it
 floor_y:
-        call cam_cell_ptr
-        ld a,(hl)
-        or a
+        call vtol_ground
         ld hl,MIN_Y
         ret z
-        call bld_height
-        ld de,COLL_M+1
+        ld hl,(vg_max)
+        ld de,COLL_H+1
         add hl,de
+        ret
+
+; The VTOL's footprint: the corners and the long-side midpoints of its
+; VTOL_HL x VTOL_HW (half size) rectangle, turned to the heading, round
+; (cam_x, cam_z).  The rectangle is smaller than a tile, so these six points
+; find every cell it overlaps (to within a tile corner nicking a long side).
+; HL = vg_max = the highest ground under them; Z if all road (0).
+vtol_ground:
+        ld a,(yaw)                      ; forward (sin, cos), right (cos, -sin)
+        call get_sin
+        ld (vg_sin),hl
+        ld a,(yaw)
+        add a,64
+        call get_sin
+        ld (vg_cos),hl
+        ex de,hl
+        ld hl,VTOL_HL
+        call fmul
+        ld (vg_fz),hl                   ; nose offset z = HL cos
+        ld de,(vg_cos)
+        ld hl,VTOL_HW
+        call fmul
+        ld (vg_rx),hl                   ; side offset x = HW cos
+        ld de,(vg_sin)
+        ld hl,VTOL_HL
+        call fmul
+        ld (vg_fx),hl                   ; nose offset x = HL sin
+        ld de,(vg_sin)
+        ld hl,VTOL_HW
+        call fmul
+        call neg_hl
+        ld (vg_rz),hl                   ; side offset z = -HW sin
+        ld hl,0
+        ld (vg_max),hl
+        ld hl,(vg_fx)                   ; nose: the front corners
+        ld de,(vg_fz)
+        call .side
+        ld hl,0                         ; the long-side midpoints
+        ld de,0
+        call .side
+        ld hl,(vg_fx)                   ; tail: the back corners
+        call neg_hl
+        push hl
+        ld hl,(vg_fz)
+        call neg_hl
+        ex de,hl
+        pop hl
+        call .side
+        ld hl,(vg_max)
+        ld a,h
+        or l
+        ret
+; HL, DE = an offset along the length (x, z): the points it +- the side offset
+.side:  push hl
+        push de
+        ld bc,(vg_rx)
+        add hl,bc
+        ex de,hl
+        ld bc,(vg_rz)
+        add hl,bc
+        ex de,hl
+        call .pt
+        pop de
+        pop hl
+        ld bc,(vg_rx)
+        or a
+        sbc hl,bc
+        ex de,hl
+        ld bc,(vg_rz)
+        or a
+        sbc hl,bc
+        ex de,hl
+; HL, DE = offset (x, z) from the centre: vg_max = max(vg_max, its ground)
+.pt:    ld bc,(cam_x+1)
+        add hl,bc
+        ld a,h                          ; column
+        ex de,hl
+        ld bc,(cam_z+1)
+        add hl,bc
+        ld l,h                          ; row
+        ld h,0
+        ROWOFS
+        add hl,a
+        ld de,city_map
+        add hl,de
+        ld a,(hl)
+        or a
+        ret z                           ; road
+        call bld_height
+        ld de,(vg_max)
+        or a
+        sbc hl,de
+        ret c                           ; lower than the highest so far
+        add hl,de
+        ld (vg_max),hl
         ret
 
 ; A = map byte -> HL = height in world units (levels 0-15, PAD_CODE = the
@@ -866,17 +1011,24 @@ wflash_t:   ds 1                        ; frames of yellow/blue flash left
 level:      db START_LEVEL              ; current level (newGame: START_LEVEL)
 game_over:  db 0                        ; 1: the landing pad was destroyed
 salvage_points: dw 0                    ; salvage points, 16-bit (newGame: 0)
+vg_sin:     dw 0                        ; vtol_ground: heading sin, cos,
+vg_cos:     dw 0
+vg_fx:      dw 0                        ; nose offset (x, z),
+vg_fz:      dw 0
+vg_rx:      dw 0                        ; side offset (x, z),
+vg_rz:      dw 0
+vg_max:     dw 0                        ; and the highest ground found
 
 ; The start of a game: copied over cam_x .. wflash_t by newGame
 start_state:
             db 0, $80, PAD_X            ; cam_x: landed on the base pad
             db 0, $80, PAD_Z            ; cam_z  (gentables.py)
-            dw PAD_H+COLL_M+1           ; cam_y: resting on it
+            dw PAD_H+COLL_H+1           ; cam_y: resting on it
             db 0, BASE_YAW              ; yaw: facing the city centre
             db 0, 0                     ; pitch: level
             db 0                        ; speed
             db WPN_GUN, AMMO_INF        ; slot 0: centre gun, infinite
-            db WPN_NONE, 0              ; 1: left outer pylon
+            db WPN_ROCKETS, ROCKET_SHOTS  ; 1: left outer pylon: rocket pod
             db WPN_NONE, 0              ; 2: left inner pylon
             db WPN_NONE, 0              ; 3: right inner pylon
             db WPN_NONE, 0              ; 4: right outer pylon
@@ -961,7 +1113,12 @@ stack_top:
         DISPLAY "Map end:   ",/A,$
         INCLUDE "keys.asm"
         DISPLAY "Keys end:  ",/A,$
+        INCLUDE "sprites.asm"
+        DISPLAY "Sprites end:",/A,$
         ASSERT $ <= $8000
+
+; Sprite pattern banks, assembled at $0000 (loaded through slot 0)
+        INCLUDE "sprite_data.asm"
 
 ;------------------------------------------------------------------------------
         SAVENEX OPEN "zpolice.nex", start, stack_top

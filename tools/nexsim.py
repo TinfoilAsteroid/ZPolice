@@ -27,6 +27,12 @@ SZP = [(_i & FS) | (FZ if _i == 0 else 0) | PARITY[_i] for _i in range(256)]
 KEYROWS = {  # half-row address byte -> keys bits 0..4
     0xFB: "QWERT",
     0xFD: "ASDFG",
+    0x7F: " $MNB",                      # SPACE, SYM SHIFT, M, N, B
+    0xEF: "09876",
+    0xF7: "12345",
+    0xDF: "POIUY",
+    0xBF: "~LKJH",                      # ENTER, L, K, J, H
+    0xFE: "^ZXCV",                      # CAPS SHIFT, Z, X, C, V
 }
 
 
@@ -62,6 +68,11 @@ class Cpu:
         self.iff = 0
         self.palettes = {}              # sel -> {index: 9-bit RGB333}
         self.l2clip, self.l2clip_i = [0, 255, 0, 191], 0
+        self.border = 0
+        # hardware sprites: 128 x 5 attribute bytes, 16K pattern memory
+        self.spr_attr = [[0] * 5 for _ in range(128)]
+        self.spr_pat = bytearray(16384)
+        self.spr_slot = self.spr_abyte = self.spr_pidx = 0
         self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
                     "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
@@ -210,8 +221,29 @@ class Cpu:
         self.t += n * DMA_T_PER_BYTE
 
     def port_out(self, port, v):
+        if (port & 0xFF) == 0xFE:
+            self.border = v & 7
+            return
         if (port & 0xFF) == 0x6B:
             self.dma_write(v)
+            return
+        if port == 0x303B:              # sprite / pattern slot
+            self.spr_slot, self.spr_abyte = v & 0x7F, 0
+            self.spr_pidx = (v & 0x3F) * 256 + (128 if v & 0x80 else 0)
+            return
+        if (port & 0xFF) == 0x57:       # sprite attributes, auto-advancing
+            a = self.spr_attr[self.spr_slot]
+            a[self.spr_abyte] = v
+            self.spr_abyte += 1
+            if self.spr_abyte == 4 and not (a[3] & 0x40):
+                a[4] = 0                # 4-byte form: byte 4 is zero
+                self.spr_abyte = 5
+            if self.spr_abyte == 5:
+                self.spr_slot, self.spr_abyte = (self.spr_slot + 1) & 0x7F, 0
+            return
+        if (port & 0xFF) == 0x5B:       # sprite pattern bytes
+            self.spr_pat[self.spr_pidx] = v
+            self.spr_pidx = (self.spr_pidx + 1) & 0x3FFF
             return
         if port == 0x243B:
             self.nr_sel = v
@@ -826,10 +858,48 @@ def to9(c8):
 def write_png(path, bank, cpu):
     """Composite as the Next does with priority S-U-L: ULA pixel unless its
     colour is the global transparency ($E3), then Layer 2 inside its clip
-    window, else black."""
-    w, h = 256, 192
-    raw = bytearray()
-    buf = b"".join(bytes(cpu.page(bank * 2 + i)) for i in range(6))
+    window, else black.  Layer 2 256x192 is row-major; 320x256 is
+    column-major (pixel x*256+y) and covers the border area too, with the
+    ULA screen at (32,32).  Hardware sprites (8-bit patterns, mirrors,
+    rotation, scale, wrap at 512) are drawn on top when NextReg $15 bit 0 is
+    set; with bit 1 (over the border) the image is the full 320x256."""
+    mode320 = ((cpu.nextreg.get(0x70, 0) >> 4) & 3) == 1
+    nr15 = cpu.nextreg.get(0x15, 0)
+    full = mode320 or (nr15 & 3) == 3
+    w, h = (320, 256) if full else (256, 192)
+    ox, oy = (32, 32) if full else (0, 0)
+    spr = {}
+    if nr15 & 1:
+        spal = cpu.palettes.get(2, {})
+        strans = cpu.nextreg.get(0x4B, 0xE3)
+        for a in cpu.spr_attr:          # sprite 0 first: higher ones on top
+            if not a[3] & 0x80:
+                continue
+            ext = a[3] & 0x40
+            sx = a[0] | (a[2] & 1) << 8
+            sy = a[1] | ((a[4] & 1) << 8 if ext else 0)
+            pat = (a[3] & 0x3F) * 256
+            xs = 1 << ((a[4] >> 3) & 3) if ext else 1
+            ys = 1 << ((a[4] >> 1) & 3) if ext else 1
+            for py in range(16 * ys):
+                for px in range(16 * xs):
+                    u, v = px // xs, py // ys
+                    if a[2] & 2:        # rotate 90 clockwise, then mirror
+                        u, v = v, 15 - u
+                    if a[2] & 8:
+                        u = 15 - u
+                    if a[2] & 4:
+                        v = 15 - v
+                    c = cpu.spr_pat[pat + v * 16 + u]
+                    if c == strans:
+                        continue
+                    c = (c + (a[2] & 0xF0)) & 0xFF
+                    X, Y = (sx + px) & 511, (sy + py) & 511
+                    if not nr15 & 2 and not (32 <= X < 288 and 32 <= Y < 224):
+                        continue        # (clip window ignored otherwise)
+                    spr[(X, Y)] = spal.get(c, to9(c))
+    npages = 10 if mode320 else 6
+    buf = b"".join(bytes(cpu.page(bank * 2 + i)) for i in range(npages))
     ula = bytes(cpu.page(10)) + bytes(cpu.page(11))     # bank 5
     ula_above = (cpu.nextreg.get(0x15, 0) >> 2) & 7 in (2, 4, 5)
     l2pal = cpu.palettes.get(1, {})
@@ -839,19 +909,32 @@ def write_png(path, bank, cpu):
             upal[k] = v
     trans = cpu.nextreg.get(0x14, 0xE3)
     x1, x2, y1, y2 = cpu.l2clip
+    if mode320:
+        x1, x2 = x1 * 2, x2 * 2 + 1
+    raw = bytearray()
     for y in range(h):
         raw.append(0)
         for x in range(w):
-            a = ula[0x1800 + (y >> 3) * 32 + (x >> 3)]
-            bit = ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7))
-            bright = 8 if a & 0x40 else 0
-            v9 = upal[(a & 7) + bright] if bit else upal[16 + ((a >> 3) & 7) + bright]
+            ux, uy = x - ox, y - oy
+            if 0 <= ux < 256 and 0 <= uy < 192:
+                a = ula[0x1800 + (uy >> 3) * 32 + (ux >> 3)]
+                bit = ula[((uy & 0xC0) << 5) | ((uy & 7) << 8) | ((uy & 0x38) << 2) | (ux >> 3)] & (0x80 >> (ux & 7))
+                bright = 8 if a & 0x40 else 0
+                v9 = upal[(a & 7) + bright] if bit else upal[16 + ((a >> 3) & 7) + bright]
+            else:
+                v9 = upal[16 + cpu.border]          # border; transparent ->
+                if (v9 >> 1) == cpu.nextreg.get(0x14, 0xE3):  # the fallback
+                    v9 = to9(cpu.nextreg.get(0x4A, 0))       # colour ($4A)
             if not ula_above or (v9 >> 1) == trans:
-                if x1 <= x <= x2 and y1 <= y <= y2:
-                    c = buf[y * 256 + x]
+                lx, ly = (x, y) if mode320 else (ux, uy)
+                if x1 <= lx <= x2 and y1 <= ly <= y2 and (mode320 or (0 <= ux < 256 and 0 <= uy < 192)):
+                    c = buf[x * 256 + y] if mode320 else buf[uy * 256 + ux]
                     v9 = l2pal.get(c, to9(c))
-                else:
+                elif 0 <= ux < 256 and 0 <= uy < 192:
                     v9 = 0
+            sv = spr.get((x + 32 - ox, y + 32 - oy))
+            if sv is not None:
+                v9 = sv
             rr, gg, bb = v9 >> 6, (v9 >> 3) & 7, v9 & 7
             raw += bytes((rr * 255 // 7, gg * 255 // 7, bb * 255 // 7))
     def chunk(tag, d):

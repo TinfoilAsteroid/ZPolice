@@ -1,0 +1,2 @@
+== high (cam_y 380), yaw 32
+C:\Users\Richard\AppData\Local\Microsoft\WindowsApps\python.exe: can't open file 'H:\\OneDrive\\ZPolice\\hidden_cost.py': [Errno 2] No such file or directory

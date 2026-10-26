@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.asm": "sjasmplus",
+        "*.z80": "sjasmplus",
+        "*.a80": "sjasmplus",
+        "*.inc": "sjasmplus",
+        "*.list": "sjasmplus-list",
+        "*.lis": "sjasmplus-list"
+    }
+}
