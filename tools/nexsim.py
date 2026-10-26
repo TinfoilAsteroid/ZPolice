@@ -61,6 +61,7 @@ class Cpu:
         self.on_flip = None
         self.iff = 0
         self.palettes = {}              # sel -> {index: 9-bit RGB333}
+        self.l2clip, self.l2clip_i = [0, 255, 0, 191], 0
         self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
                     "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
@@ -120,6 +121,11 @@ class Cpu:
         self.nextreg[reg] = val
         if 0x50 <= reg <= 0x57:
             self._map(reg - 0x50, val)
+        elif reg == 0x18:
+            self.l2clip[self.l2clip_i] = val
+            self.l2clip_i = (self.l2clip_i + 1) & 3
+        elif reg == 0x1C and val & 1:
+            self.l2clip_i = 0
         elif reg == 0x40:
             self.pal_idx, self.pal_phase = val, 0
         elif reg == 0x41 or (reg == 0x44 and self.pal_phase == 1):
@@ -461,6 +467,16 @@ class Cpu:
             r[2], r[3] = v >> 8, v & 0xFF
             self.t += 8
             return
+        if op == 0x94:      # PIXELAD: HL = ULA address of pixel (D=y, E=x)
+            d, e = r[2], r[3]
+            v = 0x4000 | ((d & 0xC0) << 5) | ((d & 7) << 8) | ((d & 0x38) << 2) | (e >> 3)
+            r[4], r[5] = v >> 8, v & 0xFF
+            self.t += 8
+            return
+        if op == 0x95:      # SETAE: A = $80 >> (E & 7)
+            r[7] = 0x80 >> (r[3] & 7)
+            self.t += 8
+            return
         if op == 0x91:      # NEXTREG n,n
             reg = self.fetch()
             val = self.fetch()
@@ -797,30 +813,46 @@ def load_nex(cpu, path):
     cpu.pc, cpu.sp = pc, sp
 
 
+# Default ULA palette (8-bit RRRGGGBB): ink 0-7, bright ink 8-15,
+# paper 16-23, bright paper 24-31.
+ULA_DEFAULT = [0x00, 0x02, 0xA0, 0xA2, 0x14, 0x16, 0xB4, 0xB6,
+               0x00, 0x03, 0xE0, 0xE7, 0x1C, 0x1F, 0xFC, 0xFF] * 2
+
+
+def to9(c8):
+    return (c8 << 1) | (1 if c8 & 3 else 0)
+
+
 def write_png(path, bank, cpu):
+    """Composite as the Next does with priority S-U-L: ULA pixel unless its
+    colour is the global transparency ($E3), then Layer 2 inside its clip
+    window, else black."""
     w, h = 256, 192
     raw = bytearray()
     buf = b"".join(bytes(cpu.page(bank * 2 + i)) for i in range(6))
-    ula = bytes(cpu.page(10))           # bank 5: ULA screen
-    ula_on = (cpu.nextreg.get(0x15, 0) >> 2) & 7 in (2, 4, 5)   # ULA above L2
-    l2pal = cpu.palettes.get(1, {})     # Layer 2 first palette
-    ink = {(y, x) for y in range(192) for x in range(256) if ula_on and
-           ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7))}
+    ula = bytes(cpu.page(10)) + bytes(cpu.page(11))     # bank 5
+    ula_above = (cpu.nextreg.get(0x15, 0) >> 2) & 7 in (2, 4, 5)
+    l2pal = cpu.palettes.get(1, {})
+    upal = [to9(c) for c in ULA_DEFAULT]
+    for k, v in cpu.palettes.get(0, {}).items():
+        if k < 32:
+            upal[k] = v
+    trans = cpu.nextreg.get(0x14, 0xE3)
+    x1, x2, y1, y2 = cpu.l2clip
     for y in range(h):
         raw.append(0)
         for x in range(w):
-            c = buf[y * 256 + x]
-            if c in l2pal:
-                v9 = 0x1FF if (y, x) in ink else l2pal[c]
-                rr, gg, bb = v9 >> 6, (v9 >> 3) & 7, v9 & 7
-                raw += bytes((rr * 255 // 7, gg * 255 // 7, bb * 255 // 7))
-                continue
-            if ula_on and ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7)):
-                c = 0xFF                # ULA ink drawn over Layer 2
-            rr = (c >> 5) & 7
-            gg = (c >> 2) & 7
-            b2 = c & 3
-            bb = (b2 << 1) | (1 if b2 else 0)
+            a = ula[0x1800 + (y >> 3) * 32 + (x >> 3)]
+            bit = ula[((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2) | (x >> 3)] & (0x80 >> (x & 7))
+            bright = 8 if a & 0x40 else 0
+            v9 = upal[(a & 7) + bright] if bit else upal[16 + ((a >> 3) & 7) + bright]
+            if not ula_above or (v9 >> 1) == trans:
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    c = buf[y * 256 + x]
+                    v9 = l2pal.get(c, to9(c))
+                else:
+                    v9 = 0
+            rr, gg, bb = v9 >> 6, (v9 >> 3) & 7, v9 & 7
             raw += bytes((rr * 255 // 7, gg * 255 // 7, bb * 255 // 7))
     def chunk(tag, d):
         return struct.pack(">I", len(d)) + tag + d + struct.pack(">I", zlib.crc32(tag + d) & 0xFFFFFFFF)

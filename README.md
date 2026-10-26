@@ -4,7 +4,8 @@ A 3D vector graphics flight game for the ZX Spectrum Next, written in Z80N
 assembler. You fly a VTOL craft around a city of 32×32 blocks, in the spirit
 of *Sky Ranger*. Buildings are drawn as white vectors over solid faces, each
 building in its own shaded colour, with true hidden line removal, on Layer 2 at
-256×192 with 256 colours.
+256×192 with 256 colours. The 3D view uses the top two thirds of the screen
+(256×128), and the bottom third is an instrument panel.
 
 ![boulevard](docs/boulevard.png) ![turning](docs/turning.png) ![overhead](docs/overhead.png)
 
@@ -37,9 +38,42 @@ CSpect.exe -w3 -zxnext -s28 zpolice.nex
 | T   | climb           | G   | descend         |
 
 The craft moves horizontally along its heading. Pitch only aims the view, as
-for a hovering VTOL, and height is set with T/G. The HUD shows a gunsight, a
-speed bar (bottom left, red when reversing) and an altitude bar (right). If
+for a hovering VTOL, and height is set with T/G. A gunsight marks the
+centre of the view. The panel below has SPD and ALT gauges; the speed gauge
+turns red when reversing. If
 you fly into a building the craft stops and the border flashes red.
+
+### Instrument panel (ULA / Layer 1)
+The panel in rows 128–191 is drawn on the ULA, which is above Layer 2
+(priority S-U-L). The Layer 2 clip window is limited to the viewport (rows
+0–127), so Layer 2 never shows there.
+
+* **Fixed contents:** set up once by `ula_init`. That's a dark slate paper,
+  a green divider on the top pixel row, and the "SPD" and "ALT" labels.
+* **Gauges:** each is a row of 14 attribute cells (112 pixels), coloured
+  through ULA attributes.
+  * Full cells use the bar colour as paper: green, or red when reversing.
+  * The cell where the bar ends keeps the black "empty" paper and uses the
+    bar colour as ink, with that many pixels set, so the gauge still moves
+    one pixel at a time.
+  * `draw_hud` rewrites the 14 attributes and 14×8 bitmap bytes of each
+    gauge every frame.
+* **City map:** the right-hand 64×64 of the panel (columns 192–255) is a
+  map of the whole city, one 2×2 pixel block per grid cell, with north (+Z)
+  at the top.
+  * Buildings are solid white blocks on black paper, and roads are left
+    black. The map has no border.
+  * `map_init` draws it once, using the Z80N `PIXELAD`/`SETAE` instructions
+    for ULA pixel addressing.
+  * Each frame, `map_player` undoes the previous frame's XOR, then on
+    alternate frames XORs the pixel under the player (1 map pixel = 128
+    world units). The marker flashes and leaves the map intact.
+* **Paging:** the ULA screen (bank 5) stays mapped at `$8000` (slots 4–5),
+  so no paging is needed for the panel or the FPS text.
+* **ULA palette:** the custom entries are paper 0 = `$E3` (transparent, so
+  the viewport shows through above the panel), paper 1 = panel, paper 2 =
+  empty gauge, and paper/ink 3 = red, paper/ink 4 = green.
+* **Border:** the border flash on a collision uses colour 3 (red).
 
 ### FPS counter
 The frame rate is shown as `nn FPS` in the top left of the ULA screen,
@@ -67,15 +101,19 @@ span filler borrows SP, so time comes from the raster instead:
 ## Memory map
 
 ```
-$0000-$BFFF  Layer 2 back buffer, MMU slots 0-5 (6 x 8K pages)
-             pixel address = y*256 + x  ->  H = y, L = x
+$0000-$7FFF  Layer 2 back buffer viewport, MMU slots 0-3 (4 x 8K pages)
+             pixel address = y*256 + x  ->  H = y, L = x  (y 0..127)
+$8000-$BFFF  ULA screen, bank 5 (slots 4-5): bitmap $8000, attributes $9800
 $C000-$FFFF  code, tables, variables, stack   (bank 0, ~10K used)
 ```
 
-Two 48K Layer 2 buffers (16K banks 9-11 and 12-14) are double buffered with
-the hardware shadow register. NextReg `$12` is the active (displayed) bank
-and NextReg `$13` is the shadow bank. Each frame the shadow bank, read back
-from `$13`, is paged into the bottom 48K and drawn. During the vertical blank
+Layer 2 is clipped to the 128-row viewport, so each buffer only uses its
+first two 16K banks. Buffer A is banks 9–10 and buffer B is banks 11–12.
+Buffer A's hidden third bank is buffer B's first, so only four banks are used
+in total. The buffers are double buffered with the hardware shadow register:
+NextReg `$12` is the active (displayed) bank and NextReg `$13` the shadow
+bank. Each frame the shadow bank, read back from `$13`, is paged into
+`$0000–$7FFF` and drawn. During the vertical blank
 `l2_flip` swaps the two registers, so the registers themselves record which
 buffer is which. With the screen at
 `$0000` a pixel is just `ld h,y : ld l,x : ld (hl),c`, with no address
@@ -95,7 +133,7 @@ lets the fillers use the stack pointer as a fast write pointer.
   (256..511) with the Z80N barrel shifter, using a log2 table for the shift
   count. The same shift is applied to X and Y, which are then multiplied by a
   16-bit reciprocal `2^24/Zn` from a table. Because every vertex reaching
-  the projector is already inside the frustum, |X| ≤ Z and |Y| ≤ 0.75Z, so
+  the projector is already inside the frustum, |X| ≤ Z and |Y| ≤ 0.5Z, so
   the normalised values fit in 9 bits. The result is rounded and accurate to
   within half a pixel.
 
@@ -110,7 +148,9 @@ Everything is designed so that the expensive per-pixel stages only ever see
   footprints (block 176², tower 96²), so this is `R·(s,0,0)` and
   `R·(0,0,s)`, plus the offset from cell centre to footprint corner. Every
   building then gets its 8 corners from one transformed point and additions.
-* Look up the horizon row from a `96 + 128·tan(pitch)` table. Rows above it
+* **Viewport:** 256×128 at rows 0–127, centre row 64, so `sy = 64 − 128·Y/Z`
+  with a 90°×53° field of view.
+* Look up the horizon row from a `64 + 128·tan(pitch)` table. Rows above it
   are cleared to sky and rows below to ground by two zxnDMA fills. These
   reuse the command block from `layer2_cls.asm`, patching the destination and
   length, with a fixed source byte.
@@ -131,7 +171,7 @@ with no depth sort. The view covers ±`VIEW_R` cells.
   computed once per row segment. Stepping one cell in x adds exactly the raw
   `(cosY, sinY)` to `(X, Z1)`.
 * **Conservative frustum cull at any pitch:** a visible point satisfies
-  `|X|·c ≤ Z1`, where `c = cosP − 0.75|sinP|`. The building's bounding circle
+  `|X|·c ≤ Z1`, where `c = cosP − 0.5|sinP|`. The building's bounding circle
   is tested against this before any per-vertex work.
 * **Pitch and corners:** the corner is pitch-rotated (2 multiplies). The
   other 7 corners come from adding the precomputed edge vectors, and the
@@ -160,7 +200,7 @@ behind.
 * **Faces crossing the frustum:**
   * Each such face is clipped in 3D against 5 planes with
     Sutherland–Hodgman. The planes are near `Z=16`, `X=±Z` (90° horizontal
-    field of view) and `Y=±0.75Z`.
+    field of view) and `Y=±0.5Z` (the 128-row viewport).
   * Intersection parameters use a 32/16 fixed-point divide, and new points
     are snapped exactly onto the clip plane.
   * Every vertex carries an "edge is real" flag. Edges created along a clip

@@ -44,11 +44,12 @@ emit_bytes("rtab_hi", [r >> 8 for r in rt])
 # floor(log2(n)) for normalising Z with the barrel shifter (page aligned).
 emit_bytes("lgtab", [0] + [n.bit_length() - 1 for n in range(1, 256)])
 
-# Horizon screen row for each pitch: 96 + 128*tan(pitch), clamped to 0..192.
+# Horizon screen row for each pitch: 64 + 128*tan(pitch), clamped to 0..128
+# (the 3D viewport is the top 256x128 of the screen).
 hz = []
 for p in range(-PMAX, PMAX + 1):
-    y = 96 + 128 * math.tan(2 * math.pi * p / 256)
-    hz.append(max(0, min(192, round(y))))
+    y = 64 + 128 * math.tan(2 * math.pi * p / 256)
+    hz.append(max(0, min(128, round(y))))
 emit_bytes("hztab", hz)
 
 # Box faces. Vertex index = x + 2*z + 4*top; face bits as in zpolice.asm
