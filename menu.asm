@@ -1,5 +1,5 @@
 ;==============================================================================
-; Z-POLICE - main menu (8K page PAGE_MENU, runs at $E000)
+; Z-POLICE - main menu (8K page PAGE_MENU, runs at $C000 in slot 6)
 ;
 ; Shown after start-up.  Layer 2 is hidden and the menu is drawn on the ULA
 ; screen with opaque paper.  Every frame it advances the random number
@@ -17,6 +17,7 @@ MENU_ATTR       equ P_PANEL<<3 | 7          ; white on the panel colour
 MENU_TITLE      equ P_PANEL<<3 | C_YEL      ; yellow
 
 main_menu:
+        nextreg CODE_MMU,PAGE_KEYS      ; the keys at $E000 (this page: $C000)
         call menu_clear
         ld hl,menu_text                 ; title and options
 .txt:   ld a,(hl)

@@ -1,8 +1,9 @@
 ;==============================================================================
-; Z-POLICE - player page (8K page PAGE_PLAYER, runs at $E000)
+; Z-POLICE - player page (8K page PAGE_PLAYER, runs at $C000 in slot 6)
 ;
 ; Keyboard input, movement along the heading, world-edge clamping and
-; building collision.  Paged in by main_loop with nextreg $57,PAGE_PLAYER.
+; building collision.  Paged in by main_loop with nextreg LOGIC_MMU,
+; PAGE_PLAYER, with the keys page (key_held) in slot 7.
 ; Uses the resident helpers get_sin, fmul and bld_height; camera state (cam_x/z/y, yaw, pitch, speed) is shared and
 ; stays in zpolice.asm.
 ;==============================================================================

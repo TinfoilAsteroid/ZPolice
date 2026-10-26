@@ -1,7 +1,8 @@
 ;==============================================================================
-; Z-POLICE - weapons page (8K page PAGE_WEAPONS, runs at $E000)
+; Z-POLICE - weapons page (8K page PAGE_WEAPONS, runs at $C000 in slot 6)
 ;
-; Player weapons.  Paged in by main_loop with nextreg $57,PAGE_WEAPONS after
+; Player weapons.  Paged in by main_loop with nextreg LOGIC_MMU,PAGE_WEAPONS
+; (the keys page in slot 7) after
 ; the frame is set up (it uses sin_y/cos_y/sin_p/cos_p) and the zombies have
 ; moved.  Bullet state lives in the resident `bullets` table so that the city
 ; page can draw the tracers (draw_bullets).

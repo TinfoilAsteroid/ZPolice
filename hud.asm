@@ -3,7 +3,7 @@
 ;
 ; ULA (Layer 1) code: panel set-up, FPS text, speed/altitude gauges and the
 ; city map with the flashing player marker.  Paged in by main_loop with
-; nextreg $57,PAGE_HUD.  Shared variables live in zpolice.asm.
+; nextreg CODE_MMU,PAGE_HUD.  Shared variables live in zpolice.asm.
 ;==============================================================================
 
     IFDEF DRAW_FPS
@@ -184,9 +184,9 @@ compass_init:
 .a2:    ld (hl),0
         inc hl
         djnz .a2
-        ld a,L2_BANK_A*2
+        ld a,PAGE_L2_A
         call .buf
-        ld a,L2_BANK_B*2
+        ld a,PAGE_L2_B
 .buf:   ld (cp_base),a                  ; A = first page of a buffer
         ld hl,compass_bg
         ld c,COMP_BGY                   ; row
@@ -198,7 +198,7 @@ compass_init:
         ld b,a
         ld a,(cp_base)
         add a,b
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld a,c
         and 31
         ld d,a
@@ -233,7 +233,7 @@ draw_compass:
         ld e,a
         ld a,(seg_base)                 ; the back buffer's section
         add a,e
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld a,b
         and 31
         push bc
@@ -481,7 +481,7 @@ draw_gauges:
         ld e,a
         ld a,(seg_base)                 ; (the back buffer)
         add a,e
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld a,b
         and 31
         ld h,a

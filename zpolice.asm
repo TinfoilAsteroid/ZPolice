@@ -18,18 +18,22 @@
 ;            SPACE fire          1-5 select weapon slot
 ;            0 change the centre slot's weapon
 ;
-;  Source files: zpolice.asm (resident main code), city.asm (Layer 2 page),
-;  hud.asm (ULA HUD page), player.asm (input/movement page), map.asm (the
-;  city map, page 7), keys.asm (redefinable keys, page 7), menu.asm (main
-;  menu page).  These pages
-;  run at $E000, swapped by NextReg $57.  zombie.asm (zombies) stays mapped
-;  at $2000.
+;  Source files: zpolice.asm (resident main code), memory_bank_defs.asm
+;  (slots and pages).  Game logic pages, swapped into slot 6 at $C000:
+;  player.asm (input/movement), weapons.asm, menu.asm (main menu).  Core
+;  function pages, swapped into slot 7 at $E000: city.asm (Layer 2
+;  drawing), hud.asm (ULA HUD), keys.asm (redefinable keys), sprites.asm
+;  (hardware sprites).  Always mapped: zombie.asm at $2000, human.asm and
+;  map.asm (the city map) at $7000.
 ;
 ;  Memory while running:
 ;    $0000-$1FFF  Layer 2 back buffer, one 8K section at a time (slot 0)
 ;    $2000-$3FFF  zombie page (slot 1)
-;    $8000-$BFFF  ULA screen (bank 5, slots 4-5)
-;    $C000-$FFFF  code, tables, variables, stack (16K bank 0)
+;    $4000-$7FFF  occlusion data; cell colours, humans, map (slots 2-3)
+;    $8000-$9FFF  ULA screen (slot 4)
+;    $A000-$BFFF  resident code, tables, variables, stack (slot 5)
+;    $C000-$DFFF  game logic page (slot 6)
+;    $E000-$FFFF  core function page (slot 7)
 ;==============================================================================
 
         DEVICE ZXSPECTRUMNEXT
@@ -72,6 +76,8 @@
 ; screen y.  Comment it out to project every corner in full.
 ; Command line: -DLEVEL_FAST_PATH
         DEFINE LEVEL_FAST_PATH
+
+        INCLUDE "memory_bank_defs.asm"  ; MMU slots, registers, addresses, pages
 
 ;------------------------------------------------------------------------------
 ; Tuning constants
@@ -274,7 +280,7 @@ PART_COL7       equ 87          ; .. age 8 (dark); a step of 4 per age
 ; Screen split: the 3D viewport is Layer 2, top two thirds (256x128, rows
 ; 0-127).  The bottom third (rows 128-191) is an instrument panel drawn on the
 ; ULA (Layer 1), which sits above Layer 2.  The ULA screen (bank 5) stays
-; paged in at $8000 (slots 4-5): bitmap ULA_BMP, attributes ULA_ATTR.
+; paged in at $8000 (slot 4): bitmap ULA_BMP, attributes ULA_ATTR.
 VIEW_H          equ 128         ; viewport height
 VIEW_CY         equ 64          ; viewport centre row
 ULA_BMP         equ $8000
@@ -318,23 +324,7 @@ SHADE_DARK      equ 0           ; side turned away from the player
 SHADE_FACE      equ 1           ; side facing the player (base colour)
 SHADE_ROOF      equ 2           ; roof, lighter
 
-; Layer 2 is clipped to the 128-row viewport, so each buffer only uses its
-; first two 16K banks; the (hidden) third bank of buffer A is buffer B's first.
-L2_BANK_A       equ 9           ; 16K banks 9-11
-L2_BANK_B       equ 12          ; 16K banks 12-14
-
-; 8K pages for the two code pages swapped into slot 7 ($E000-$FFFF)
-PAGE_CITY       equ 1           ; city.asm: Layer 2 drawing
-PAGE_HUD        equ 2           ; hud.asm:  ULA (Layer 1) HUD
-PAGE_PLAYER     equ 3           ; player.asm: input, movement, collision
-PAGE_ZOMBIE     equ 5           ; zombie.asm: kept mapped at $2000 (slot 1)
-PAGE_WEAPONS    equ 4           ; weapons.asm: player weapons
-PAGE_MENU       equ 8           ; menu.asm: main menu
-PAGE_OCC0       equ 6           ; $4000: occlusion buffer, draw list and
-                                ; building records (slot 2)
-PAGE_OCC1       equ 7           ; $6000: city_col, the cell colours (slot 3)
-PAGE_SPR0       equ 9           ; sprite_data.asm: sprite pattern bank 0
-                                ; (more banks: the next free pages)
+; Layer 2 banks (L2_BANK_A / _B) and the 8K pages: memory_bank_defs.asm
 
 
 ; zxnDMA WR0 (transfer A->B) with only the length low / high byte following
@@ -394,7 +384,28 @@ OP_DEC_H        equ $25
         inc e
         ENDM
 
-        ORG $C000
+;==============================================================================
+; NEX entry: the loader leaves its default mapping (slot 6 = page 0, slot 5
+; = page 5), so the entry point is this stub in PAGE_BOOT at $C000.  It maps
+; the resident page into slot 5 and jumps to start.
+;==============================================================================
+        MMU BOOT_SLOT e, PAGE_BOOT, BOOT_ADDR
+        ORG BOOT_ADDR
+boot:
+        di
+        ld sp,boot_stack
+        nextreg MAIN_MMU,PAGE_MAIN
+        jp start
+            ds 16                       ; the loader's stack, until start
+boot_stack:
+
+        MMU MAIN_SLOT e, PAGE_MAIN, MAIN_ADDR
+        ORG MAIN_ADDR
+        ; the generated tables (gentables.py); the sine table is in its own
+        ; page (PAGE_SIN, slot 0), below
+        INCLUDE "htabs.asm"             ; hztab (horizon), htab (heights)
+        INCLUDE "city_map.asm"          ; city_map, base / wall constants
+        INCLUDE "l2_pallets.asm"        ; l2_palette
 
 ;==============================================================================
 ; Entry
@@ -402,25 +413,8 @@ OP_DEC_H        equ $25
 start:
         di
         ld sp,stack_top
-        nextreg $07,3                   ; 28MHz
-        nextreg $70,0                   ; Layer 2 256x192 mode
-        nextreg $14,$E3                 ; global transparency colour
-        nextreg $15,%00001000           ; priority S U L (ULA over L2); sprites
-                                        ; off until sprites_init
-        nextreg $16,0                   ; Layer 2 scroll X
-        nextreg $17,0                   ; Layer 2 scroll Y
-        nextreg $1C,%00000001           ; reset L2 clip index
-        nextreg $18,0                   ; Layer 2 clip: x 0..255,
-        nextreg $18,255
-        nextreg $18,0                   ; y 0..191: the viewport, and the
-        nextreg $18,191                 ; city map through the ULA panel
-        nextreg $54,10                  ; ULA screen (bank 5) at $8000
-        nextreg $55,11
-        nextreg $51,PAGE_ZOMBIE         ; zombie code/data stays at $2000
-        nextreg $52,PAGE_OCC0           ; occlusion data at $4000-$5FFF,
-        nextreg $53,PAGE_OCC1           ; city_col at $6000-$6FFF
-        xor a
-        out ($FE),a                     ; black border
+        nextreg CODE_MMU,PAGE_INIT      ; hardware set-up and memory map
+        call initgame                   ; (initialise.asm)
 
         ; load the shaded Layer 2 palette (first L2 palette, 9-bit entries)
         nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
@@ -439,11 +433,15 @@ start:
         ld l,a                          ; the menu stirs it every frame
         ld h,$A5
         ld (zseed),hl
+        nextreg CODE_MMU,PAGE_KEYS
         call kbd_double_off             ; NextReg $68 bit 4 = KBD_STOP_DOUBLING
-        nextreg $57,PAGE_HUD
+        nextreg CODE_MMU,PAGE_HUD
         call ula_palette                ; ULA inks and papers (menu and HUD)
+        nextreg CODE_MMU,PAGE_SPRITES
         call sprites_init               ; (sprites.asm) on, all hidden
-        nextreg $57,PAGE_MENU
+        nextreg CODE_MMU,PAGE_SPR0      ; sprite bank 0: the human status
+        call spr_load_bank              ; sprites (sprite_data.asm)
+        nextreg LOGIC_MMU,PAGE_MENU     ; (the menu pages the keys in)
         jp main_menu                    ; (menu.asm) -> newGame
 
 ;==============================================================================
@@ -470,17 +468,17 @@ newGame:
         ld hl,0
         ld (salvage_points),hl          ; no salvage yet
         call base_init                  ; the pad and terrace, at full strength
-        nextreg $57,PAGE_WEAPONS
+        nextreg LOGIC_MMU,PAGE_WEAPONS
         call weapons_reset
 
         ; clear both buffers
-        nextreg $57,PAGE_CITY
+        nextreg CODE_MMU,PAGE_CITY
         ld a,VIEW_CY
         ld (horizon),a
-        ld a,L2_BANK_A*2
+        ld a,PAGE_L2_A
         ld (seg_base),a
         call clear_screen
-        ld a,L2_BANK_B*2
+        ld a,PAGE_L2_B
         ld (seg_base),a
         call clear_screen
         nextreg $12,L2_BANK_A           ; Layer 2 active (displayed) bank
@@ -488,7 +486,7 @@ newGame:
         ld bc,$123B
         ld a,%00000010                  ; Layer 2 visible (the menu hid it)
         out (c),a
-        nextreg $57,PAGE_HUD
+        nextreg CODE_MMU,PAGE_HUD
         call ula_init                   ; ULA: FPS overlay, panel, city map
         call zombie_init                ; place the zombies on the streets
         call human_init                 ; and the humans to rescue
@@ -497,25 +495,26 @@ newGame:
 ; Main loop
 ;==============================================================================
 main_loop:
-        call kbd_scan                   ; all key banks (keys.asm, page 7)
-        nextreg $57,PAGE_PLAYER         ; input/movement code at $E000
+        nextreg CODE_MMU,PAGE_KEYS      ; keys at $E000, while the logic runs
+        call kbd_scan                   ; all key banks
+        nextreg LOGIC_MMU,PAGE_PLAYER   ; input/movement logic at $C000
         call update_player
         call setup_frame
         call zombie_update              ; walk the zombies (page at $2000)
-        nextreg $57,PAGE_WEAPONS        ; weapons code at $E000
+        nextreg LOGIC_MMU,PAGE_WEAPONS  ; weapons logic at $C000
         call update_weapons             ; fire, move rounds, hits
         call human_update               ; map dots, rescues (page at $7000)
         ld a,(game_over)
         or a
         jr z,.play
-        nextreg $57,PAGE_MENU           ; the pad is destroyed: game over
+        nextreg LOGIC_MMU,PAGE_MENU     ; the pad is destroyed: game over
         jp game_over_screen             ; (menu.asm) -> main menu
 .play:
         call map_shadow
     IFDEF DRAW_FPS
         call vtick
     ENDIF
-        nextreg $57,PAGE_CITY           ; Layer 2 drawing code at $E000
+        nextreg CODE_MMU,PAGE_CITY      ; Layer 2 drawing code at $E000
         call clear_screen
     IFDEF DRAW_FPS
         call vtick
@@ -528,7 +527,7 @@ main_loop:
         call draw_bullets               ; machine gun tracers
         call draw_particles             ; zombie bursts
         call draw_gunsight
-        nextreg $57,PAGE_HUD            ; ULA HUD code at $E000
+        nextreg CODE_MMU,PAGE_HUD       ; ULA HUD code at $E000
         call draw_hud
     IFDEF WAIT_FOR_VBLANK
         call wait_vblank
@@ -842,8 +841,11 @@ setup_frame:
         ld (horizon),a
         ret
 
-; A = angle -> HL = sin (S7.8)
+; A = angle -> HL = sin (S7.8).  Pages the sine table into slot 0 (PAGE_SIN):
+; call it only outside the Layer 2 drawing (it is: setup_frame, the player,
+; vtol_ground), never between a section's paging and its writes.
 get_sin:
+        nextreg SIN_MMU,PAGE_SIN        ; the table at $0000 (slot 0)
         ld l,a
         ld h,high sin_lo
         ld a,(hl)
@@ -1065,63 +1067,94 @@ fps_vframes: db 0
 fps_count:  db 0
 fps_value:  db 0
 
-        INCLUDE "tables.inc"            ; sine, horizon, heights, city map, palette
 
             ds 256                      ; stack (must stay resident)
 stack_top:
 
         DISPLAY "Main end:  ",/A,$
-        ASSERT $ <= $E000
+        ASSERT $ <= MAIN_ADDR+MEMBANK_SIZE
 
 ;==============================================================================
-; Paged code: both pages assemble at $E000 and are swapped into MMU slot 7
+; Core function pages: assembled at $E000, swapped into slot 7
 ;==============================================================================
-        MMU 7 e, PAGE_CITY, $E000
+        MMU CODE_SLOT e, PAGE_CITY, CODE_ADDR
+        ORG CODE_ADDR
         INCLUDE "city.asm"
         DISPLAY "City end:  ",/A,$
 
-        MMU 7 e, PAGE_HUD, $E000
+        MMU CODE_SLOT e, PAGE_HUD, CODE_ADDR
+        ORG CODE_ADDR
         INCLUDE "hud.asm"
         DISPLAY "HUD end:   ",/A,$
 
-        MMU 7 e, PAGE_PLAYER, $E000
+        MMU CODE_SLOT e, PAGE_KEYS, CODE_ADDR
+        ORG CODE_ADDR
+        INCLUDE "keys.asm"
+        DISPLAY "Keys end:  ",/A,$
+
+        MMU CODE_SLOT e, PAGE_SPRITES, CODE_ADDR
+        ORG CODE_ADDR
+        INCLUDE "sprites.asm"
+        DISPLAY "Sprites end:",/A,$
+
+        MMU CODE_SLOT e, PAGE_INIT, CODE_ADDR
+        ORG CODE_ADDR
+        INCLUDE "initialise.asm"
+        DISPLAY "Init end:  ",/A,$
+
+;==============================================================================
+; Game logic pages: assembled at $C000, swapped into slot 6.  They may call
+; the core page in slot 7 (main_loop has the keys there while they run).
+;==============================================================================
+        MMU LOGIC_SLOT e, PAGE_PLAYER, LOGIC_ADDR
+        ORG LOGIC_ADDR
         INCLUDE "player.asm"
         DISPLAY "Player end:",/A,$
 
-        MMU 7 e, PAGE_MENU, $E000
-        INCLUDE "menu.asm"
-        DISPLAY "Menu end:  ",/A,$
-
-        MMU 1 e, PAGE_ZOMBIE, $2000
-        ORG $2000
-        INCLUDE "zombie.asm"
-        DISPLAY "Zombie end:",/A,$
-
-        MMU 7 e, PAGE_WEAPONS, $E000
-        ORG $E000
+        MMU LOGIC_SLOT e, PAGE_WEAPONS, LOGIC_ADDR
+        ORG LOGIC_ADDR
         INCLUDE "weapons.asm"
         DISPLAY "Weapons end:",/A,$
 
-        MMU 3 e, PAGE_OCC1, $6000       ; cell colours, kept mapped at $6000
-        ORG $6000
+        MMU LOGIC_SLOT e, PAGE_MENU, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "menu.asm"
+        DISPLAY "Menu end:  ",/A,$
+
+;==============================================================================
+; Always mapped
+;==============================================================================
+        MMU ZOMBIE_SLOT e, PAGE_ZOMBIE, ZOMBIE_ADDR
+        ORG ZOMBIE_ADDR
+        INCLUDE "zombie.asm"
+        DISPLAY "Zombie end:",/A,$
+
+        MMU TABLES_SLOT e, PAGE_OCC1, TABLES_ADDR  ; cell colours, kept mapped
+        ORG TABLES_ADDR
         INCLUDE "tables_col.inc"
         DISPLAY "Colours end:",/A,$
-        ORG $7000
+        ORG HUMAN_ADDR
         INCLUDE "human.asm"
         DISPLAY "Humans end:",/A,$
         INCLUDE "map.asm"
         DISPLAY "Map end:   ",/A,$
-        INCLUDE "keys.asm"
-        DISPLAY "Keys end:  ",/A,$
-        INCLUDE "sprites.asm"
-        DISPLAY "Sprites end:",/A,$
         ASSERT $ <= $8000
 
-; Sprite pattern banks, assembled at $0000 (loaded through slot 0)
+; The sine table: its own page, read at $0000 (slot 0) by get_sin.  $0000
+; is 256-byte aligned, as sin_lo / sin_hi need.
+        MMU SIN_SLOT e, PAGE_SIN, SIN_ADDR
+        ORG SIN_ADDR
+        INCLUDE "sin_tables.asm"
+        DISPLAY "Sine end:  ",/A,$
+
+; Sprite pattern banks, swapped into slot 7 ($E000) while they load
+        MMU SPRBANK_SLOT e, PAGE_SPR0, SPRBANK_ADDR
+        ORG SPRBANK_ADDR
         INCLUDE "sprite_data.asm"
+        DISPLAY "Spr bank 0 end:",/A,$
 
 ;------------------------------------------------------------------------------
-        SAVENEX OPEN "zpolice.nex", start, stack_top
+        SAVENEX OPEN "zpolice.nex", boot, boot_stack
         SAVENEX CORE 3,0,0
         SAVENEX CFG 0
         SAVENEX AUTO

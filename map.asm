@@ -42,9 +42,9 @@ map_init:
 .dv:    ld (hl),0
         inc hl
         djnz .dv
-        ld a,L2_BANK_A*2                ; both Layer 2 buffers
+        ld a,PAGE_L2_A                  ; both Layer 2 buffers
         call map_l2
-        ld a,L2_BANK_B*2
+        ld a,PAGE_L2_B
         ; fall through
 
 ; A = first 8K page of a Layer 2 buffer: draw the map into it.  Streets are
@@ -64,7 +64,7 @@ map_l2:
         ld b,a
         ld a,(ml_base)
         add a,b
-        nextreg $50,a                   ; paged in at $0000
+        nextreg L2SEC_MMU,a                   ; paged in at $0000
         pop af
         and 31
         ld ixh,a
@@ -181,13 +181,13 @@ map_pix:
         ld a,e
         add a,MAP_X
         ld l,a                          ; HL = pixel in the section
-        ld a,L2_BANK_A*2
+        ld a,PAGE_L2_A
         add a,d
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld (hl),c
-        ld a,L2_BANK_B*2
+        ld a,PAGE_L2_B
         add a,d
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld (hl),c
         ret
 

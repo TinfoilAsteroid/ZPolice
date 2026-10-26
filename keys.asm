@@ -1,5 +1,6 @@
 ;==============================================================================
-; Z-POLICE - keyboard (page 7, after map.asm: kept mapped in slot 3)
+; Z-POLICE - keyboard (8K page PAGE_KEYS, runs at $E000 in slot 7: main_loop
+; and the menu page it in, and the game logic pages in slot 6 call it)
 ;
 ; Redefinable keys.  A key is a 16-bit code: high byte = key bank, low byte
 ; = bit mask within that bank.

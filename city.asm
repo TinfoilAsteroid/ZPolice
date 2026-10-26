@@ -4,7 +4,7 @@
 ; All Layer 2 drawing: back-to-front city traversal, building transform,
 ; culling and shading, 3D clipping, projection, polygon fill, lines, the
 ; viewport clear, ground dots and the gunsight.  Paged in by main_loop with
-; nextreg $57,PAGE_CITY.  Shared variables and tables live in zpolice.asm.
+; nextreg CODE_MMU,PAGE_CITY.  Shared variables and tables live in zpolice.asm.
 ;==============================================================================
 
         ALIGN 256
@@ -28,7 +28,7 @@ push_end:
         ld a,(seg_page)                 ; next row starts a new section
         inc a                           ; (inline: SP is borrowed, no calls)
         ld (seg_page),a
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         jp fs_loop
 .done:  ld sp,(saved_sp)
         ret
@@ -52,7 +52,7 @@ seg_map:
         ld a,(seg_base)
         add a,b
         ld (seg_page),a
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         ld a,c
         and 31
         pop bc
@@ -72,7 +72,7 @@ line_seg:
 .up:    dec a                           ; up into the previous section
         ld h,31
 .set:   ld (seg_page),a
-        nextreg $50,a
+        nextreg L2SEC_MMU,a
         pop af
         ret
 
@@ -2273,7 +2273,7 @@ OCC_RECN        equ $60         ; up to $5F: 30 records ($6000 on: city_col)
 OR_VIS          equ 128         ; bld_vis, bld_mx, bld_mz, col_x, col_z, col_top
 ; A list entry is a record's high byte (< $60), a cell with humans as its
 ; city_col address ($6000-$6FFF) or a cell with zombies as its city_map
-; address (>= $C000).
+; address (>= $8000).
 
 ; Start of the city: occlusion on only in level flight
 occ_begin:
@@ -2699,7 +2699,7 @@ occ_draw_list:
         add hl,de
         call human_cell
         jr .nx
-.zom:   call zombie_cell                ; >= $C000: zombies (city_map address)
+.zom:   call zombie_cell                ; >= $8000: zombies (city_map address)
         jr .nx
 .bld:   ld h,d                          ; record D
         ld l,OR_VIS

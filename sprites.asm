@@ -1,6 +1,6 @@
 ;==============================================================================
-; Z-POLICE - hardware sprites, Layer 3 (page 7, $7000-$7FFF: kept mapped in
-; slot 3, so any page can call it)
+; Z-POLICE - hardware sprites, Layer 3 (8K page PAGE_SPRITES, runs at $E000
+; in slot 7: page it in with nextreg CODE_MMU,PAGE_SPRITES before calling)
 ;
 ; The Next has 128 hardware sprites, each 16x16 pixels from a pattern in the
 ; sprite pattern memory (16K, separate from the Z80's: 64 8-bit patterns of
@@ -21,9 +21,10 @@
 ; x = -8 shows its right half at the left edge.  With overlapping sprites,
 ; the higher numbered one is drawn on top.
 ;
-; Use: sprites_init once (start-up), load patterns with spr_load_bank (a
-; sprite bank, sprite_data.asm) or spr_patterns (and a
-; palette with spr_palette if wanted), then set up sprites in the shadow
+; Use: sprites_init once (start-up), load patterns with spr_patterns or
+; from a sprite bank (sprite_data.asm: page the bank into slot 7 and call
+; its spr_load_bank, from outside slot 7), and a palette with spr_palette
+; if wanted, then set up sprites in the shadow
 ; table with spr_set / spr_pos / spr_pattern / spr_flags / spr_scale /
 ; spr_hide / spr_show / spr_hide_all, and copy the table to the hardware
 ; once a frame with spr_update.  The table holds the first SPR_COUNT sprites;
@@ -59,16 +60,13 @@ SPR_PAT_PORT    equ $5B         ; write: pattern bytes, from the selected slot
 
 ;------------------------------------------------------------------------------
 ; Start-up: sprites on, shown over the border too (the full 320 x 256),
-; priority S U L; the transparent index; the human status patterns loaded;
-; every hardware sprite hidden and the shadow table cleared (all hidden,
+; priority S U L; the transparent index; every hardware sprite hidden and the shadow table cleared (all hidden,
 ; pattern 0, at 0,0).
 ;------------------------------------------------------------------------------
 sprites_init:
         nextreg $15,%00001011           ; priority S U L, sprites over the
                                         ; border (bit 1), visible (bit 0)
         nextreg $4B,SPR_TRANS
-        ld a,PAGE_SPR0                  ; the human status sprites,
-        call spr_load_bank              ; patterns 0..HSPR_COUNT-1
         ld bc,SPR_SLOT_PORT             ; from sprite 0, the 4-byte form
         xor a                           ; (+3 bit 6 clear): all hidden
         out (c),a
@@ -125,29 +123,6 @@ spr_patterns:
         otir
         dec d
         jr nz,.lp
-        ret
-
-;------------------------------------------------------------------------------
-; Load the patterns of the sprite bank in 8K page A (sprite_data.asm): it is
-; mapped into slot 0 for the copy, and slot 0's page is put back after.
-;------------------------------------------------------------------------------
-spr_load_bank:
-        ld e,a
-        ld bc,$243B                     ; NextReg $50: slot 0's page now
-        ld a,$50
-        out (c),a
-        inc b
-        in a,(c)
-        push af
-        ld a,e
-        nextreg $50,a
-        ld hl,SPRB_DATA
-        ld a,(SPRB_COUNT)
-        ld b,a
-        ld a,(SPRB_FIRST)
-        call spr_patterns
-        pop af
-        nextreg $50,a
         ret
 
 ;------------------------------------------------------------------------------
