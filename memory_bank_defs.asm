@@ -149,6 +149,9 @@ PAGE_SIN                equ 14          ; sin_tables.asm: the sine table
                                         ; (slot 0, read by get_sin)
 PAGE_INIT               equ 15          ; initialise.asm: start-up set-up,
                                         ; initgame (slot 7, once)
+PAGE_FILE               equ 16          ; file_handler.asm: SD card loading
+                                        ; and saving (slot 7)
+PAGE_AUDIO              equ 17          ; audio.asm: sound set-up (slot 7)
 
 ; Layer 2 double buffer, in 16K banks (NextReg $12 / $13 take banks; the
 ; pages are bank * 2).  Layer 2 is clipped to 192 rows, so each buffer

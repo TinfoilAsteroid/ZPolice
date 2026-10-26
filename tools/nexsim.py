@@ -73,6 +73,9 @@ class Cpu:
         self.spr_attr = [[0] * 5 for _ in range(128)]
         self.spr_pat = bytearray(16384)
         self.spr_slot = self.spr_abyte = self.spr_pidx = 0
+        # TurboSound: AY chips by select value (3 = AY 1, 2 = AY 2, 1 = AY 3)
+        self.ay, self.ay_pans = {}, {}
+        self.ay_chip, self.ay_pan, self.ay_reg = 3, 3, 0
         self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
                     "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
@@ -226,6 +229,16 @@ class Cpu:
             return
         if (port & 0xFF) == 0x6B:
             self.dma_write(v)
+            return
+        if port == 0xFFFD:              # TurboSound: chip or register select
+            if v & 0x80 and (v & 0x1C) == 0x1C:
+                self.ay_chip, self.ay_pan = v & 3, (v >> 5) & 3
+            elif v < 16:
+                self.ay_reg = v
+            return
+        if port == 0xBFFD:              # the selected AY register's value
+            self.ay.setdefault(self.ay_chip, [0] * 16)[self.ay_reg] = v
+            self.ay_pans[self.ay_chip] = self.ay_pan
             return
         if port == 0x303B:              # sprite / pattern slot
             self.spr_slot, self.spr_abyte = v & 0x7F, 0
@@ -420,7 +433,98 @@ class Cpu:
                 not f & FPV, f & FPV, not f & FS, f & FS][y]
 
     # --- execute ------------------------------------------------------------
+    # --- interrupts (raised by a test: there's no frame timer) ---------------
+    def interrupt(self, bus=0xFF):
+        """Accept a maskable interrupt now if enabled: IM 2 calls the word at
+        I*256 + bus; IM 1 calls $0038.  Returns False if interrupts are off."""
+        if not self.iff:
+            return False
+        self.iff = 0
+        self.sp = (self.sp - 2) & 0xFFFF
+        self.wr16(self.sp, self.pc)
+        if getattr(self, "im", 0) == 2:
+            self.pc = self.rd16(((getattr(self, "i", 0) << 8) | bus) & 0xFFFF)
+            self.t += 19
+        else:
+            self.pc = 0x0038
+            self.t += 13
+        return True
+
+    # --- esxDOS (RST $08 with the ROM paged in) -----------------------------
+    # Set cpu.esx_root to a host folder to emulate the file calls there.
+    ESX_ERR_NOFILE, ESX_ERR_EXISTS, ESX_ERR_BADHANDLE = 5, 18, 11
+    def esx_call(self):
+        ret = self.rd16(self.sp)
+        fn = self.rd(ret)
+        self.sp = (self.sp + 2) & 0xFFFF
+        self.pc = (ret + 1) & 0xFFFF
+        if not hasattr(self, "esx_files"):
+            self.esx_files, self.esx_next, self.esx_log = {}, 1, []
+        A = self.r[7]
+        bc = (self.r[0] << 8) | self.r[1]
+        de = (self.r[2] << 8) | self.r[3]
+        def name_at(a):
+            s = bytearray()
+            while self.rd(a):
+                s.append(self.rd(a)); a += 1
+            return os.path.join(self.esx_root, s.decode())
+        def ok(a=None):
+            self.r[6] &= ~FC
+            if a is not None:
+                self.r[7] = a & 0xFF
+        def err(code):
+            self.r[6] |= FC
+            self.r[7] = code
+        def set_bc(v):
+            self.r[0], self.r[1] = (v >> 8) & 0xFF, v & 0xFF
+        def set_bcde(v):
+            set_bc(v >> 16); self.r[2], self.r[3] = (v >> 8) & 0xFF, v & 0xFF
+        self.esx_log.append((fn, self.mmu[0], self.mmu[1], self.iff))
+        if fn == 0x89:                                  # M_GETSETDRV
+            ok(ord('C'))
+        elif fn == 0x9A:                                # F_OPEN
+            path, mode = name_at(self.ix), self.r[0]
+            exists = os.path.exists(path)
+            if (mode & 0x0C) == 0x00 and not exists: return err(self.ESX_ERR_NOFILE)
+            if (mode & 0x0C) == 0x04 and exists: return err(self.ESX_ERR_EXISTS)
+            fm = "r+b" if exists and (mode & 0x0C) != 0x0C else "w+b"
+            if (mode & 0x0C) == 0x00 and not (mode & 2): fm = "rb"
+            f = open(path, fm)
+            h = self.esx_next; self.esx_next += 1
+            self.esx_files[h] = f
+            ok(h)
+        elif fn in (0x9B, 0x9D, 0x9E, 0x9F, 0xA1):
+            f = self.esx_files.get(A)
+            if f is None: return err(self.ESX_ERR_BADHANDLE)
+            if fn == 0x9B:                              # F_CLOSE
+                f.close(); del self.esx_files[A]; ok(0)
+            elif fn == 0x9D:                            # F_READ
+                data = f.read(bc)
+                for i, v in enumerate(data): self.wr((self.ix + i) & 0xFFFF, v)
+                set_bc(len(data)); ok()
+            elif fn == 0x9E:                            # F_WRITE
+                f.write(bytes(self.rd((self.ix + i) & 0xFFFF) for i in range(bc)))
+                set_bc(bc); ok()
+            elif fn == 0x9F:                            # F_SEEK
+                off, mode = (bc << 16) | de, self.ix & 0xFF
+                f.seek(off if mode == 0 else (f.tell() + off if mode == 1 else f.tell() - off))
+                set_bcde(f.tell()); ok()
+            else:                                       # F_FSTAT
+                size = os.fstat(f.fileno()).st_size
+                for i in range(11): self.wr(self.ix + i, 0)
+                for i in range(4): self.wr(self.ix + 7 + i, (size >> (8 * i)) & 0xFF)
+                ok()
+        elif fn == 0xAD:                                # F_UNLINK
+            path = name_at(self.ix)
+            if not os.path.exists(path): return err(self.ESX_ERR_NOFILE)
+            os.remove(path); ok()
+        else:
+            raise Halt(f"esxDOS function {fn:02X} not modelled")
+
     def step(self):
+        if self.pc == 0x0008 and self.mmu[0] == 0xFF and getattr(self, "esx_root", None):
+            self.t += 1000
+            return self.esx_call()
         op = self.fetch()
         idx = 0
         t_extra = 0
@@ -570,9 +674,12 @@ class Cpu:
             elif z == 5:
                 self.pc = self.pop()
                 self.t += 14
-            elif z == 6:
+            elif z == 6:                                # IM 0/1/2
+                self.im = (0, 0, 1, 2)[y & 3]
                 self.t += 8
             else:
+                if y == 0:                              # LD I,A
+                    self.i = r[7]
                 self.t += 9
             return
         if x == 2 and y in (4, 6) and z == 3:   # OUTI OTIR

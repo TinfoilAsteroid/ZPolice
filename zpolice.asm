@@ -415,7 +415,10 @@ start:
         ld sp,stack_top
         nextreg CODE_MMU,PAGE_INIT      ; hardware set-up and memory map
         call initgame                   ; (initialise.asm)
-
+        nextreg CODE_MMU,PAGE_AUDIO     ; the AY chips silent, stereo
+        call init_audio                 ; (audio.asm)
+        call im2_init                   ; I -> the IM 2 vector table, IM 2
+                                        ; (interrupts.asm; still disabled)
         ; load the shaded Layer 2 palette (first L2 palette, 9-bit entries)
         nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
         nextreg $40,0
@@ -463,6 +466,8 @@ newGame:
         ldir
         ld a,START_LEVEL
         ld (level),a
+        ld a,1
+        ld (wave_number),a              ; the level's first zombie wave
         xor a
         ld (game_over),a
         ld hl,0
@@ -548,6 +553,7 @@ main_loop:
 ; do that.  Every 50 video frames (1 second) the number of frames rendered
 ; becomes the FPS figure.
 ;==============================================================================
+    IFDEF DRAW_FPS
 vtick:
         ld bc,$243B
         ld a,$1E
@@ -578,7 +584,6 @@ vtick:
         inc (hl)
         ret
 
-    IFDEF DRAW_FPS
 ; Once per rendered frame, after the flip
 fps_tick:
         call vtick
@@ -1011,6 +1016,8 @@ wpn_sel:    ds 1                        ; selected slot (keys 1-5), fires on SPA
 wflash_slot: ds 1                       ; empty slot requested: which, and
 wflash_t:   ds 1                        ; frames of yellow/blue flash left
 level:      db START_LEVEL              ; current level (newGame: START_LEVEL)
+wave_number: db 1                       ; current zombie wave of the level,
+                                        ; 1..LV_WAVES (newGame: 1)
 game_over:  db 0                        ; 1: the landing pad was destroyed
 salvage_points: dw 0                    ; salvage points, 16-bit (newGame: 0)
 vg_sin:     dw 0                        ; vtol_ground: heading sin, cos,
@@ -1102,6 +1109,16 @@ stack_top:
         INCLUDE "initialise.asm"
         DISPLAY "Init end:  ",/A,$
 
+        MMU CODE_SLOT e, PAGE_FILE, CODE_ADDR
+        ORG CODE_ADDR
+        INCLUDE "file_handler.asm"
+        DISPLAY "File end:  ",/A,$
+
+        MMU CODE_SLOT e, PAGE_AUDIO, CODE_ADDR
+        ORG CODE_ADDR
+        INCLUDE "audio.asm"
+        DISPLAY "Audio end: ",/A,$
+
 ;==============================================================================
 ; Game logic pages: assembled at $C000, swapped into slot 6.  They may call
 ; the core page in slot 7 (main_loop has the keys there while they run).
@@ -1127,6 +1144,7 @@ stack_top:
         MMU ZOMBIE_SLOT e, PAGE_ZOMBIE, ZOMBIE_ADDR
         ORG ZOMBIE_ADDR
         INCLUDE "zombie.asm"
+        INCLUDE "levels.asm"            ; the level table (any page reads it)
         DISPLAY "Zombie end:",/A,$
 
         MMU TABLES_SLOT e, PAGE_OCC1, TABLES_ADDR  ; cell colours, kept mapped
@@ -1138,6 +1156,8 @@ stack_top:
         DISPLAY "Humans end:",/A,$
         INCLUDE "map.asm"
         DISPLAY "Map end:   ",/A,$
+        INCLUDE "interrupts.asm"        ; IM 2 vector table and routine
+        DISPLAY "IM2 end:   ",/A,$
         ASSERT $ <= $8000
 
 ; The sine table: its own page, read at $0000 (slot 0) by get_sin.  $0000

@@ -716,6 +716,10 @@ span filler borrows SP, so time comes from the raster instead:
 | `menu.asm` | main menu page (`PAGE_MENU`, page 8, game logic at `$C000`): menu screen, per-frame random seed stirring, starts `newGame` |
 | `keys.asm` | keyboard engine (`PAGE_KEYS`, page 12, core function at `$E000`): scans the 8 ZX half-rows and the 2 Next extended-key registers each frame; redefinable action keys |
 | `sprites.asm` | hardware sprites, Layer 3 (`PAGE_SPRITES`, page 13, core function at `$E000`): set-up, pattern and palette loading, a shadow attribute table and its per-frame upload, positions on the 320 × 256 sprite screen |
+| `levels.asm` | the level table, in the zombie page (slot 1, always mapped): per level (`LV_SIZE` 14 bytes) the level number, an 8-character city name, the number of zombies, waves, fast zombies and special monsters, and the highest special monster id; `level_entry` (A = level → HL = entry). Placeholder values, not used by the game yet. The current wave is `wave_number` (resident, 1 at a new game) |
+| `file_handler.asm` | SD card file handling (`PAGE_FILE`, page 16, at `$E000` in slot 7), general purpose over the esxDOS / NextZXOS API (`RST $08`): `fh_init`, `fh_open`, `fh_close`, `fh_read`, `fh_write`, `fh_seek`, `fh_size`, `fh_load`, `fh_save`, `fh_exists`, `fh_delete`. Carry set on error with A = the esxDOS error code. Each call pages the ROM into slots 0–1 for the `RST $08` (the divMMC only traps it then) and puts the game's pages back. Call from outside slot 7; names and buffers in `$4000`–`$DFFF`. The emulator (`tools/nexsim.py`) models these calls on a host folder (`cpu.esx_root`) |
+| `interrupts.asm` | interrupt mode 2 (page 7 after `map.asm`, always mapped): `im2_table`, 256 words at a 256-byte boundary all pointing at `im2_routine`, which sits at an address with equal high and low bytes (`$7B7B`) so any data-bus byte, odd or even, reaches it; `im2_routine` (placeholder: `ei`, `reti`); `im2_init` (I = the table's high byte, `IM 2`), called by `start` after `init_audio`. Interrupts stay disabled for now |
+| `audio.asm` | sound (`PAGE_AUDIO`, page 17, at `$E000` in slot 7): `init_audio`, called once by `start` after `initgame`, puts the three TurboSound AY chips in a known silent state (both outputs on, every register 0, then the mixer to tones only with noise off and the envelope to attack-and-hold), leaving AY 1 selected. Helpers: `ay_select` (A = `AY_CHIP_n`), `ay_write` (A = register, E = value). The emulator records AY register writes (`cpu.ay`) |
 | `initialise.asm` | start-up set-up (`PAGE_INIT`, page 15, at `$E000` in slot 7): `initgame`, called once by `start`, sets the CPU speed, Layer 2 mode, transparency, layer priority, Layer 2 scroll and clip window, the always-mapped slots and the border |
 | `sprite_data.asm` | sprite pattern banks (8K pages from `PAGE_SPR0`, page 9, assembled at `$E000` and swapped into slot 7 to load): a count, a first pattern number and the patterns; bank 0 has the human status sprites |
 | `map.asm` | the city map (page 7 after `human.asm`, always mapped): drawing it into both Layer 2 buffers, the ULA set-up over it, the player's flashing dot, zombie blips, human dots |
@@ -742,7 +746,9 @@ $2000-$3FFF  PAGE_ZOMBIE (page 5, ~3.2K) zombie.asm - always mapped (slot 1)
 $4000-$5FFF  occlusion data (page 6, OCCLUSION_CULL)
 $6000-$6FFF  city_col: cell colour families (page 7)
 $7000-$7FFF  humans: code, sprites, records, hum_bits (human.asm), then
-             the city map code (map.asm), page 7 - always mapped (slot 3)
+             the city map code (map.asm), then the IM 2 vector table
+             ($7900, 256 words) and routine ($7B7B) (interrupts.asm),
+             page 7 - always mapped (slot 3)
 $8000-$9FFF  ULA screen (page 10, the first half of bank 5, slot 4):
              bitmap $8000, attributes $9800
 $A000-$BFFF  resident main code, shared variables and tables, stack
@@ -762,6 +768,8 @@ $E000-$FFFF  core function page, swapped with NextReg $57 (CODE_MMU):
                                       spr_load_bank copies its patterns
                PAGE_INIT    (page 15) initialise.asm - start-up set-up
                                       (initgame), once
+               PAGE_FILE    (page 16) file_handler.asm - SD card files
+               PAGE_AUDIO   (page 17) audio.asm - sound set-up
 ```
 
 **Code pages:** the names are in `memory_bank_defs.asm`.
