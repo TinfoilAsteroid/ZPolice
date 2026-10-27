@@ -24,18 +24,16 @@
 ;   +7,+8  cell (x, z) of its map dot
 ;   +9     1 = map dot shown
 ;   +10    hit points left (HUMAN_HP; a rocket blast, weapons.asm)
+;   +11,+12  cell (x, z) marked with CELL_HUMAN in city_map ($FF = none)
 ;
-; Drawing: draw_cell (city page) asks hum_here whether a cell holds humans
-; (a 64x64 bit table, hum_bits) and draws them with human_cell: after the
-; building on whose roof they stand, so the roof doesn't cover them.  With
+; Drawing: draw_cell (city page) tests the cell's CELL_HUMAN mark in
+; city_map (bit 6, set by hum_flags) and draws them with human_cell: after
+; the building on whose roof they stand, so the roof doesn't cover them.  With
 ; OCCLUSION_CULL the cell goes on the draw list instead (as its city_col
 ; address, $6000-$6FFF) and is drawn from there.
 ;==============================================================================
 
-HREC            equ 11
-
-        ALIGN 256
-hum_bits:   ds GRID*GRID/8              ; 1 bit per cell: humans stand there
+HREC            equ 13
 
         INCLUDE "tables_human.inc"      ; hum_ptr, waving stick men
 
@@ -57,8 +55,11 @@ human_init:
         ld de,HREC
 .clr:   ld (ix+6),0
         ld (ix+9),0
+        ld (ix+11),$FF                  ; no cell marked
         add ix,de
         djnz .clr
+        ld c,~CELL_HUMAN & $FF          ; no human marks in city_map (a new
+        call map_mask                   ; game reuses it; zombie page)
         ld ix,humans
         ld a,(nhumans)
         ld b,a
@@ -101,10 +102,17 @@ human_init:
         add ix,de
         pop bc
         djnz .lp
-        jp hum_bits_build
+        jp hum_flags
 
-; A = city_map byte of human IX's cell
+; A = the cell code (CELL_CODE bits) of human IX's cell
 hum_map:
+        call hum_map_ptr
+        ld a,(hl)
+        and CELL_CODE
+        ret
+
+; HL -> city_map byte of human IX's cell.  Preserves BC.
+hum_map_ptr:
         ld l,(ix+3)
         ld h,0
         ROWOFS
@@ -112,76 +120,50 @@ hum_map:
         add hl,a
         ld de,city_map
         add hl,de
-        ld a,(hl)
         ret
 
-; Rebuild hum_bits from the humans still waiting
-hum_bits_build:
-        ld hl,hum_bits
-        ld de,hum_bits+1
-        ld bc,GRID*GRID/8-1
-        ld (hl),0
-        ldir
+; Mark the waiting humans' cells in city_map (CELL_HUMAN, bit 6): first take
+; the mark off every record's marked cell (+11, +12), then mark the cell of
+; each human still waiting and remember it.  Called whenever humans are
+; placed, move, board or die.
+hum_flags:
         ld ix,humans
         ld b,HUMAN_MAX
-.lp:    push bc
-        ld a,(ix+6)
-        or a
-        jr z,.nx
-        ld l,(ix+3)
+.clr:   ld a,(ix+11)
+        cp GRID
+        jr nc,.cn                       ; none marked
+        ld l,(ix+12)
         ld h,0
         ROWOFS
-        ld a,(ix+1)
         add hl,a
-        call hum_bit                    ; HL -> byte, A = mask
-        or (hl)
-        ld (hl),a
-.nx:    ld de,HREC
-        add ix,de
-        pop bc
-        djnz .lp
-        ret
-
-; HL = cell index -> HL -> its byte in hum_bits, A = its bit mask
-hum_bit:
-        ld a,l
-        and 7
-        ld b,a
-        srl h
-        rr l
-        srl h
-        rr l
-        srl h
-        rr l
-        ld de,hum_bits
-        add hl,de
-        ld a,1
-        inc b
-.sh:    dec b
-        ret z
-        add a,a
-        jr .sh
-
-; HL -> a city_map byte: NZ if humans stand in that cell.  Preserves HL.
-hum_here:
-        push hl
-        push bc
-        push de
         ld de,city_map
+        add hl,de
+        res CELL_HUMAN_B,(hl)
+        ld (ix+11),$FF
+.cn:    ld de,HREC
+        add ix,de
+        djnz .clr
+        ld ix,humans
+        ld b,HUMAN_MAX
+.set:   ld a,(ix+6)
         or a
-        sbc hl,de
-        call hum_bit
-        and (hl)
-        pop de
-        pop bc
-        pop hl
+        jr z,.sn                        ; gone: no mark
+        call hum_map_ptr
+        set CELL_HUMAN_B,(hl)
+        ld a,(ix+1)
+        ld (ix+11),a
+        ld a,(ix+3)
+        ld (ix+12),a
+.sn:    ld de,HREC
+        add ix,de
+        djnz .set
         ret
 
 ;------------------------------------------------------------------------------
 ; Draw the humans in a cell: HL -> its city_map byte.  Needs the city page.
 ;------------------------------------------------------------------------------
 human_cell:
-        call hum_here
+        bit CELL_HUMAN_B,(hl)
         ret z
         ld de,city_map
         or a
@@ -273,6 +255,7 @@ human_update:
         jr nz,.notpad
         call cam_cell_ptr
         ld a,(hl)
+        and CELL_CODE
         ld (hu_cell),a
         call bld_height
         ld (hu_floor),hl                ; height of the floor under it
@@ -322,7 +305,7 @@ human_update:
 .done:  ld a,(hu_moved)
         or a
         ret z
-        call hum_bits_build             ; someone moved or boarded
+        call hum_flags                  ; someone moved or boarded
         ld c,1                          ; and redraw the dots that are on
         ld a,(hflash)
         cp 3

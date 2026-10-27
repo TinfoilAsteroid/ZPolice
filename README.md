@@ -182,8 +182,8 @@ would otherwise look like line 0 and end a frame early.
   * both Layer 2 buffers cleared and Layer 2 made visible again;
   * the ULA panel and the city map (`ula_init`, which also makes the HUD
     redraw its passenger and weapon rows);
-  * zombies (with the cell lists cleared) and humans (passengers and
-    saved = 0).
+  * zombies and humans (passengers and saved = 0). Each first clears its
+    marks in `city_map` (bits 7 and 6), since a new game reuses the map.
 
 ## Controls
 
@@ -327,8 +327,10 @@ Inspired by *Defender*: humans wait around the city to be picked up.
 **Drawing:** zombies and humans share one figure drawer (`fig_draw` in
 `zombie.asm`). It takes the feet's height (`fig_y`), a frame chooser
 (`fig_sel`) and a patched colour.
-* `hum_here` checks a 64×64-bit table (`hum_bits`) to see whether a cell
-  holds humans.
+* A cell holds humans when bit 6 (`CELL_HUMAN`) of its `city_map` byte is
+  set. `hum_flags` keeps these marks: it is called whenever humans are
+  placed, run, board or die. Each human record remembers the cell it marked
+  (+11, +12), so the old mark can be taken off. `HREC` is 13.
 * In a street cell, humans are drawn after its zombies. On a building,
   they're drawn after the building, so the roof doesn't cover them.
 * With `OCCLUSION_CULL`, the cell goes on the draw list as its `city_col`
@@ -380,8 +382,9 @@ on the horizontal distance along the path. The first thing met ends it:
 * **Building cell:** a wall hit where the path enters the cell below the
   roof, or a roof hit where it drops below the roof. These use the real
   heights, so the perimeter wall is 70 m even with `SKY_IS_WALL`.
-* **Street cell:** the zombies standing in it, from the cell lists. Each is
-  a box 0.5 m wide and 2 m tall (`ZHIT_R`, `ZHIT_H`), tested by distance
+* **Street cell:** if its `CELL_ZOMBIE` bit is set, the zombies standing in
+  it, found by searching the zombie records. Each is a box 0.5 m wide and
+  2 m tall (`ZHIT_R`, `ZHIT_H`), tested by distance
   along and across the path. The nearest along the path is hit.
 * **Ground:** where the path reaches height 0.
 * **Map edge:** a round that leaves the 64 × 64 map is simply removed.
@@ -712,7 +715,7 @@ span filler borrows SP, so time comes from the raster instead:
 | `memory_bank_defs.asm` | memory bank definitions, included by `zpolice.asm`: the MMU slots (`MMU_SLOT_n`), their NextRegs (`MMU_SLOT_n_REGISTER`, `$50`–`$57`) and addresses (`membank0`–`membank7`); what each slot is used for (`<use>_SLOT`, `<use>_MMU`, `<use>_ADDR`, e.g. `LOGIC_MMU` / `LOGIC_ADDR` for the game logic pages at `$C000`, `CODE_MMU` / `CODE_ADDR` for the core function pages at `$E000`); and the 8K pages (`PAGE_*`, `L2_BANK_A` / `_B`) |
 | `city.asm` | city page (`PAGE_CITY`, runs at `$E000`): all Layer 2 drawing, with its own tables and variables |
 | `hud.asm` | HUD page (`PAGE_HUD`, runs at `$E000`): all ULA (Layer 1) code, font and labels |
-| `zombie.asm` | zombie page (`PAGE_ZOMBIE`, stays mapped at `$2000`): zombie records, seeding, walking, per-cell lists and the scaled sprite drawer |
+| `zombie.asm` | zombie page (`PAGE_ZOMBIE`, stays mapped at `$2000`): zombie records, seeding, walking, the zombie marks in `city_map` (`zflags`) and the scaled sprite drawer |
 | `menu.asm` | main menu page (`PAGE_MENU`, page 8, game logic at `$C000`): menu screen, per-frame random seed stirring, starts `newGame` |
 | `keys.asm` | keyboard engine (`PAGE_KEYS`, page 12, core function at `$E000`): scans the 8 ZX half-rows and the 2 Next extended-key registers each frame; redefinable action keys |
 | `sprites.asm` | hardware sprites, Layer 3 (`PAGE_SPRITES`, page 13, core function at `$E000`): set-up, pattern and palette loading, a shadow attribute table and its per-frame upload, positions on the 320 × 256 sprite screen |
@@ -745,7 +748,7 @@ $0000-$1FFF  one 8K section (32 rows) of the Layer 2 back buffer, slot 0
 $2000-$3FFF  PAGE_ZOMBIE (page 5, ~3.2K) zombie.asm - always mapped (slot 1)
 $4000-$5FFF  occlusion data (page 6, OCCLUSION_CULL)
 $6000-$6FFF  city_col: cell colour families (page 7)
-$7000-$7FFF  humans: code, sprites, records, hum_bits (human.asm), then
+$7000-$7FFF  humans: code, sprites, records (human.asm), then
              the city map code (map.asm), then the IM 2 vector table
              ($7900, 256 words) and routine ($7B7B) (interrupts.asm),
              page 7 - always mapped (slot 3)
@@ -859,6 +862,25 @@ the frame rate. At 14 fps:
 | Zombie walk (`zspeed` 10 = 0.63) | 0.63 | 0.049 | ≈ 0.7 |
 | Machine gun round (`BULLET_STEP`) | 457 | 35.7 | 500 |
 | Human running to the VTOL (`HUMAN_RUN`) | 9 | 0.70 | ≈ 10 |
+
+## City map bytes
+
+Each cell of `city_map` (64 × 64) is one byte:
+
+| Bits | Meaning |
+|---|---|
+| 0–4 (`CELL_CODE`) | cell code: 0 road, 1–15 building height level, 16 the landing pad (`PAD_CODE`), 17 the terrace (`TERRACE_CODE`) |
+| 5 | free (for later: salvage, pickups, etc.) |
+| 6 (`CELL_HUMAN`) | a human waits in this cell (`hum_flags`, human.asm) |
+| 7 (`CELL_ZOMBIE`) | a zombie or special monster stands in this cell (`zflags`, zombie.asm); its type is in its zombie record |
+
+* **Reading the code:** every reader masks with `and CELL_CODE` before
+  testing for road (0) or a code. `bld_height` masks for itself.
+* **Changing the code:** keep the marks (`CELL_FLAGS`). For example, a
+  destroyed terrace tile clears only bits 0–4.
+* **Why:** the marks replace the old per-cell tables, `zcell` (4K, with
+  `znext`) and `hum_bits` (512 bytes). `draw_cell` and the rounds' grid
+  walk test them on the map byte they have already read.
 
 ## Maths
 
@@ -1012,7 +1034,8 @@ so buildings in front of them hide them correctly.
     the dot goes back to its usual green shades. A zombie killed while
     attacking also has its flag cleared.
   * Record bytes +16 (mode: walking, going for a base tile, attacking) and
-    +17 (hit timer) hold this; `ZREC` is 19, with +18 the hit points.
+    +17 (hit timer) hold this. `ZREC` is 21: +18 holds the hit points,
+    and +19, +20 the cell marked in `city_map`.
   * `base_init`, called by `newGame`, rebuilds the pad and terrace and
     their hit points.
   * One zombie took 500 frames per terrace tile and 1,000 for the pad.
@@ -1073,9 +1096,15 @@ so buildings in front of them hide them correctly.
   * Call `zblip_off` before marking a zombie as gone; the weapons do this
     when they kill one.
 * **Drawing in painter's order:** `draw_cell` jumps to `zombie_cell` for
-  every empty cell it visits. A 32×32 table (`zcell`) plus a `znext` chain
-  lists the zombies in each cell, rebuilt each frame by `zombie_update`, so
-  an empty cell with no zombies costs one table lookup. A zombie is drawn at
+  every empty cell it visits, but only when bit 7 (`CELL_ZOMBIE`) of the
+  cell's `city_map` byte says zombies are there. Then the zombie records are
+  searched for that cell (highest index first). So an empty street costs
+  one bit test on the map byte `draw_cell` has already read.
+  * `zflags`, at the end of `zombie_update`, keeps the marks. First it takes
+    the mark off the cell each record last marked (+19, +20). Then it marks
+    the cell of each active zombie. Doing it in two passes means two zombies
+    in one cell keep the cell marked, and a zombie killed since the last
+    pass loses its mark. A zombie is drawn at
   its cell's place in the back-to-front order, so nearer buildings
   overwrite it.
 * **Projection:** the zombie's feet are yaw and pitch rotated with the city

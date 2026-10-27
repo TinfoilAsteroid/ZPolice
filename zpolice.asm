@@ -89,6 +89,17 @@
 ; Speeds are per rendered frame, so real speed depends on the frame rate
 ; (figures below are at 14 fps).
 GRID            equ 64          ; the city is GRID x GRID tiles (gentables.py)
+; A city_map byte: bits 0-4 the cell code (0 road, 1-15 building height
+; level, PAD_CODE, TERRACE_CODE), bit 6 set while a human waits in the cell
+; (human.asm, hum_flags), bit 7 while a zombie or special monster stands in
+; it (zombie.asm, zflags; its type is in its record).  Bit 5 is free.  So
+; every reader masks with CELL_CODE before testing for road or a code.
+CELL_CODE       equ %00011111
+CELL_FLAGS      equ %11100000       ; (the marks, kept when the code changes)
+CELL_HUMAN_B    equ 6
+CELL_ZOMBIE_B   equ 7
+CELL_HUMAN      equ 1<<CELL_HUMAN_B
+CELL_ZOMBIE     equ 1<<CELL_ZOMBIE_B
 TILE_M          equ 20          ; metres per tile (reference scale)
 TILE_UNITS      equ 256         ; world units per tile
 HEIGHT_M        equ 10          ; metres per height unit
@@ -764,7 +775,7 @@ vtol_ground:
         ld de,city_map
         add hl,de
         ld a,(hl)
-        or a
+        and CELL_CODE
         ret z                           ; road
         call bld_height
         ld de,(vg_max)

@@ -24,6 +24,7 @@
 ;   +16    mode: 0 = walking, 1 = going for a base tile, 2 = attacking it
 ;   +17    frames to its next hit on the tile
 ;   +18    hit points left (ZHP, ZHP_FAST; weapons.asm zdamage)
+;   +19,+20  cell (x, z) marked with CELL_ZOMBIE in city_map ($FF = none)
 ; zatk_flags (one byte per zombie, by index): TRUE while it attacks a base
 ; tile, when its map dot is red; FALSE again once the tile is destroyed.
 ;
@@ -60,8 +61,8 @@
 ; Zombies are only ever on street (empty) cells.  They are drawn by the city
 ; traversal when it reaches their cell (draw_cell jumps to zombie_cell for
 ; empty cells), so the painter's algorithm hides them behind nearer buildings.
-; A 32x32 table (zcell) holds the first zombie in each cell, znext chains the
-; rest; it is rebuilt every frame by zombie_update.
+; A cell holding zombies has bit 7 (CELL_ZOMBIE) of its city_map byte set,
+; by zflags every frame; zombie_cell then searches the records for them.
 ;
 ; Sprites (tables_zombie.inc, generated): 8 scales from 1x4 to 8x16 pixels,
 ; forward and left facings, 4 walk frames.  Rear and right are the mirrored
@@ -69,7 +70,7 @@
 ;==============================================================================
 
 NZOMB           equ 20          ; number of zombies
-ZREC            equ 19          ; bytes per zombie record
+ZREC            equ 21          ; bytes per zombie record
 ZT_FAST         equ 1           ; +15: fast zombie
 ZHP             equ 5           ; hit points: a zombie (level 1)
 ZHP_FAST        equ 4           ; and a fast zombie
@@ -80,20 +81,14 @@ ZMARGIN         equ 16          ; keep at least this far from walls: 1.25 m
 ZWAIT           equ 100         ; frames to stand still when stuck
 ZOMBIE_H        equ 26          ; height: 2 m (the same as the hit box, ZHIT_H)
 
-        ALIGN 256
-zcell:      ds GRID*GRID                ; first zombie in each cell (index+1, 0 none)
-
         INCLUDE "tables_zombie.inc"     ; sprites, sizes, bitrev
 
 ;------------------------------------------------------------------------------
 ; Seed NZOMB zombies at random street positions, away from building walls
 ;------------------------------------------------------------------------------
 zombie_init:
-        ld hl,zcell                     ; empty cell lists (zlink needs them
-        ld de,zcell+1                   ; clear; a new game reuses them)
-        ld bc,GRID*GRID-1
-        ld (hl),0
-        ldir
+        ld c,~CELL_ZOMBIE & $FF         ; no zombie marks in city_map (a new
+        call map_mask                   ; game reuses it)
         ; (zseed: seeded at power-on, stirred by the menu every frame)
         ld a,(level)                    ; junction bias towards the pad:
         add a,a                         ; min(ZBIAS_MAX, ZBIAS_BASE +
@@ -127,7 +122,7 @@ zombie_init:
         ld (ix+3),a                     ; z cell
         call zmap_ptr
         ld a,(hl)
-        or a
+        and CELL_CODE
         jr nz,.try                      ; building: pick again
         call zrand
         ld a,l
@@ -155,6 +150,7 @@ zombie_init:
         ld (ix+14),0                    ; no blip yet
         ld (ix+16),0                    ; walking
         ld (ix+17),0
+        ld (ix+19),$FF                  ; no cell marked yet
         ld a,NZOMB                      ; and not attacking
         sub b
         ld hl,zatk_flags
@@ -182,10 +178,10 @@ zombie_init:
         add ix,de
         dec b
         jp nz,.lp
-        jp zlink
+        jp zflags
 
 ;------------------------------------------------------------------------------
-; Per frame: walk every zombie and rebuild the cell lists.  Call after
+; Per frame: walk every zombie and mark the cells they stand in.  Call after
 ; setup_frame (uses cos_p/sin_p for the zombie height vector).
 ;------------------------------------------------------------------------------
 zombie_update:
@@ -211,14 +207,6 @@ zombie_update:
         ld (zlook),hl
         add hl,de                       ; fast zombies walk twice as far
         ld (zlook_fast),hl              ; between checks
-        ; unlink: clear each zombie's cell entry
-        ld ix,zombies
-        ld b,NZOMB
-.clr:   call zcell_ptr
-        ld (hl),0
-        ld de,ZREC
-        add ix,de
-        djnz .clr
         ld ix,zombies
         ld b,NZOMB
 .mv:    push bc
@@ -233,25 +221,54 @@ zombie_update:
         djnz .mv
         ; fall through
 
-; Rebuild zcell/znext from the zombie positions (zcell entries must be clear)
-zlink:
+; Mark the zombies' cells in city_map (CELL_ZOMBIE, bit 7): first take the
+; mark off every record's marked cell (+19, +20), then mark the cell of each
+; active zombie and remember it.  Two passes, so two zombies sharing a cell
+; keep it marked, and one killed since the last pass loses its mark.
+zflags:
         ld ix,zombies
         ld b,NZOMB
-        ld c,1                          ; zombie index + 1
-.lp:    bit 0,(ix+10)
-        jr z,.nx                        ; gone: not in any cell list
-        call zcell_ptr
-        ld a,(hl)                       ; old head of this cell's list
-        ld (hl),c
-        ld hl,znext-1
-        ld e,a
-        ld a,c
+.clr:   ld a,(ix+19)
+        cp GRID
+        jr nc,.cn                       ; none marked
+        ld l,(ix+20)
+        ld h,0
+        ROWOFS
         add hl,a
-        ld (hl),e                       ; znext[index] = old head
-.nx:    ld de,ZREC
+        ld de,city_map
+        add hl,de
+        res CELL_ZOMBIE_B,(hl)
+        ld (ix+19),$FF
+.cn:    ld de,ZREC
         add ix,de
-        inc c
+        djnz .clr
+        ld ix,zombies
+        ld b,NZOMB
+.set:   bit 0,(ix+10)
+        jr z,.sn                        ; gone: no mark
+        call zmap_ptr
+        set CELL_ZOMBIE_B,(hl)
+        ld a,(ix+1)
+        ld (ix+19),a
+        ld a,(ix+3)
+        ld (ix+20),a
+.sn:    ld de,ZREC
+        add ix,de
+        djnz .set
+        ret
+
+; City_map bytes AND= C, all of them (clears marks at a new game)
+map_mask:
+        ld hl,city_map
+        ld d,GRID*GRID/256
+        ld b,0
+.lp:    ld a,(hl)
+        and c
+        ld (hl),a
+        inc hl
         djnz .lp
+        dec d
+        jr nz,.lp
         ret
 
 ; Move zombie IX for one frame (see the header for the rules)
@@ -490,13 +507,16 @@ base_damage:
         ld bc,city_map
         add hl,bc
         ld a,(hl)
+        and CELL_CODE
         cp PAD_CODE
         jr nz,.ter
         pop hl
         ld a,1                          ; the landing pad: game over
         ld (game_over),a
         ret
-.ter:   ld (hl),0                       ; a terrace tile: road now
+.ter:   ld a,(hl)                       ; a terrace tile: road now (the
+        and CELL_FLAGS                  ; marks kept)
+        ld (hl),a
         pop hl
         ld bc,city_col
         add hl,bc
@@ -738,7 +758,7 @@ ztest:
         ld de,city_map
         add hl,de
         ld a,(hl)
-        or a
+        and CELL_CODE                   ; Z: road (A = the cell code)
         ret
 .no:    or a                            ; A >= 32: NZ
         ret
@@ -754,13 +774,6 @@ add_sb:
         ld b,h
         ld c,l
         pop hl
-        ret
-
-; HL -> zcell entry for zombie IX.  Preserves BC.
-zcell_ptr:
-        call zcell_ofs
-        ld de,zcell
-        add hl,de
         ret
 
 ; HL -> city_map entry for zombie IX's cell.  Preserves BC.
@@ -800,31 +813,41 @@ zrand:
 
 ;------------------------------------------------------------------------------
 ; Called (jp) from draw_cell for an empty cell, HL -> its city_map byte.
-; Draws the zombies standing in that cell.  Needs the city page at $E000.
+; Draws the zombies standing in that cell (bit 7 says there are some: then
+; the records are searched for them, highest index first).  Needs the city
+; page at $E000.
 ;------------------------------------------------------------------------------
 zombie_cell:
-        ld de,zcell-city_map
-        add hl,de
-        ld a,(hl)
-        or a
+        bit CELL_ZOMBIE_B,(hl)
         ret z
-        push ix
-.lp:    dec a
-        ld (zcur),a
-        ld e,a
-        ld d,ZREC
-        mul d,e
-        ld ix,zombies
-        add ix,de
-        call zombie_draw
-        ld a,(zcur)
-        ld hl,znext
-        add hl,a
-        ld a,(hl)
+        ld de,city_map
         or a
-        jr nz,.lp
+        sbc hl,de                       ; the cell's index, row * GRID + x
+        ld a,l
+        and GRID-1
+        ld (zc_x),a
+        add hl,hl
+        add hl,hl                       ; H = row (GRID = 64)
+        ld a,h
+        ld (zc_z),a
+        push ix
+        ld ix,zombies+(NZOMB-1)*ZREC
+        ld b,NZOMB
+.lp:    ld a,(zc_x)
+        cp (ix+1)
+        jr nz,.nx
+        ld a,(zc_z)
+        cp (ix+3)
+        jr nz,.nx
+        push bc
+        call zombie_draw                ; (skips a zombie no longer active)
+        pop bc
+.nx:    ld de,-ZREC
+        add ix,de
+        djnz .lp
         pop ix
         ret
+        ASSERT GRID == 64
 
 ; Project and draw zombie IX
 zombie_draw:
@@ -1107,10 +1130,10 @@ zi_fast:    db 0                        ; zombie_init: fast zombies still to mak
 ; fast zombies per level (level 1 first)
 zfast_lvl:  db 1
 zombies:    ds NZOMB*ZREC
-znext:      ds NZOMB
 zseed:      dw 1
 zanim:      db 0
-zcur:       db 0
+zc_x:       db 0                        ; zombie_cell: the cell being drawn
+zc_z:       db 0
 zh_y:       dw 0
 zh_z:       dw 0
 zt:         ds 6

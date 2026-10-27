@@ -1341,9 +1341,13 @@ draw_cell:
         ld de,city_map
         add hl,de
         ld a,(hl)
-        or a
+        ld c,a
+        and CELL_CODE
         jr nz,.bld
-        ; street: the zombies and humans standing there
+        ; street: the zombies and humans standing there (bits 7, 6)
+        ld a,c
+        and CELL_ZOMBIE|CELL_HUMAN
+        ret z                           ; nobody
     IFDEF OCCLUSION_CULL
         ld a,(occ_on)
         or a
@@ -1358,8 +1362,7 @@ draw_cell:
         call zombie_cell
         pop hl
         jp human_cell
-.bld:   ld c,a
-        call hum_here
+.bld:   bit CELL_HUMAN_B,c
         jr z,draw_bld                   ; nobody on the roof
     IFDEF OCCLUSION_CULL
         ld a,(occ_on)
@@ -1787,7 +1790,7 @@ nb_cover:
         ld de,city_map
         add hl,de
         ld a,(hl)
-        or a
+        and CELL_CODE
         ret z                           ; street (carry clear)
         call bld_height
         ld de,(bld_h)
@@ -2391,9 +2394,9 @@ occ_stepm:
         ret
 
 ; HL -> a city_map byte: list the cell (as its city_col address) if humans
-; stand there
+; stand there (bit 6)
 occ_human:
-        call hum_here
+        bit CELL_HUMAN_B,(hl)
         ret z
         ld de,city_col-city_map
         add hl,de
@@ -2407,13 +2410,9 @@ occ_human:
         ret
 
 ; Empty cell, HL -> its city_map byte: list it if zombies stand there
+; (bit 7)
 occ_zombie:
-        push hl
-        ld de,zcell-city_map
-        add hl,de
-        ld a,(hl)
-        pop hl
-        or a
+        bit CELL_ZOMBIE_B,(hl)
         ret z
         ex de,hl
         ld hl,(occ_lp)

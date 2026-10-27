@@ -23,7 +23,7 @@
 ; path).  The first thing met ends the path:
 ;   * a building cell: hit where the path enters the cell if it is below the
 ;     roof there (a wall), otherwise where it drops below the roof (the roof);
-;   * a street cell: the zombies standing in it (zcell lists), each a box
+;   * a street cell marked as holding zombies (CELL_ZOMBIE): those in it, each a box
 ;     0.5 m wide and 2 m tall, nearest along the path first;
 ;   * the ground, where the path reaches height 0;
 ;   * leaving the GRID x GRID map: the round is gone.
@@ -746,8 +746,13 @@ cell_hit:
         add hl,de
         ld a,(hl)
         pop hl
-        or a
-        jr z,cell_zombies
+        ld c,a
+        and CELL_CODE
+        jr nz,.bld
+        bit CELL_ZOMBIE_B,c             ; street: zombies there?
+        ret z                           ; no (carry clear)
+        jr cell_zombies
+.bld:   ld a,c
         call bld_height                 ; HL = roof height
         ld (b_h),hl
         ld hl,(b_sin_)                  ; below the roof where it enters?
@@ -786,17 +791,14 @@ cell_hit:
         scf
         ret
 
-; Street cell, HL = map index: the nearest zombie standing in it that the
-; path passes through (box ZHIT_R either side, ZHIT_H tall).
+; Street cell (b_ci, b_cj) marked as holding zombies: the nearest zombie
+; standing in it that the path passes through (box ZHIT_R either side,
+; ZHIT_H tall).  The records are searched, highest index first.
 cell_zombies:
-        ld de,zcell
-        add hl,de
-        ld a,(hl)                       ; first zombie + 1
-        or a
-        ret z
         ld hl,$FFFF
         ld (b_shit),hl
         push iy
+        ld a,NZOMB
 .zl:    dec a
         ld (b_zi),a
         ld e,a
@@ -806,6 +808,12 @@ cell_zombies:
         add iy,de
         bit 0,(iy+10)
         jp z,.zn                        ; already dead
+        ld a,(b_ci)                     ; in this cell?
+        cp (iy+1)
+        jp nz,.zn
+        ld a,(b_cj)
+        cp (iy+3)
+        jp nz,.zn
         ld l,(iy+0)                     ; relative position
         ld h,(iy+1)
         ld de,(b_x0)
@@ -870,10 +878,7 @@ cell_zombies:
         ld (b_zhit),iy
         ld a,(b_zi)                     ; (its index, for zatk_flags)
         ld (b_zhit_i),a
-.zn:    ld a,(b_zi)                     ; next zombie in the cell
-        ld hl,znext
-        add hl,a
-        ld a,(hl)
+.zn:    ld a,(b_zi)                     ; next record
         or a
         jp nz,.zl
         pop iy
@@ -1014,7 +1019,7 @@ rocket_blast:
         or a
         jr z,.base
         push ix
-        call hum_bits_build             ; (human.asm) no longer drawn
+        call hum_flags                  ; (human.asm) no longer drawn
         pop ix
 .base:
         ; base tiles: the cells from (x, z) - BLAST_R to (x, z) + BLAST_R, if
@@ -1045,6 +1050,7 @@ rocket_blast:
         ld bc,city_map
         add hl,bc
         ld a,(hl)
+        and CELL_CODE
         call zbase                      ; (zombie.asm) Z: pad or terrace
         jr nz,.bn
         push de

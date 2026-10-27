@@ -71,7 +71,7 @@ map_l2:
         ld ixl,MAP_X
         ld b,GRID
 .px:    ld a,(hl)
-        or a
+        and CELL_CODE
         ld a,MAP_BG
         jr z,.st
         ld a,(de)
@@ -258,7 +258,7 @@ map_under:
         add hl,de
         ld a,(hl)
         pop hl
-        or a
+        and CELL_CODE
         ld a,MAP_BG
         jr z,.x                         ; street
         ld de,city_col
