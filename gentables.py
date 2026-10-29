@@ -1,13 +1,22 @@
-"""Generate lookup tables and the city map for Z-Police: sin_tables.asm,
-htabs.asm, city_map.asm and l2_pallets.asm (resident), tables_city.inc and
-the other tables_*.inc files.
+"""Generate lookup tables and data for Z-Police: sin_tables.asm, htabs.asm,
+city_map.asm and l2_pallets.asm (constants and checks), tables_city.inc and
+the other tables_*.inc files, and the city and level data files in ZPDATA/
+(CITYnn.ZPC, LEVELnn.ZPL), loaded from the SD card at the start of a level.
+Each city's map comes from maps/CITYnn.json (made and edited with
+tools/map_editor.py); a city without one is generated from its seeds, and
+its JSON written, once.
 
 All trig is S7.8 fixed point (1.0 == 256). Angles are 8-bit (256 == 360 deg).
 """
 import colorsys
+import os
 import re
 import math
 import random
+import sys
+import time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+import citymap                          # the city map files (tools/citymap.py)
 
 PMAX = 24          # must match PMAX in zpolice.asm
 GRID = 64          # must match GRID in zpolice.asm
@@ -78,115 +87,156 @@ BLD_MAX_H = 7 * 128                    # must match zpolice.asm (height unit = 1
 # entry 17 (TERRACE_CODE) the terrace round it, 0.25 height units high.
 PAD_CODE, PAD_H = 16, 64               # 0.5 height units (5 m)
 TERRACE_CODE, TERRACE_H = 17, 32       # 0.25 height units
-emit_words("htab", [round(lvl * BLD_MAX_H / 15) for lvl in range(16)] + [PAD_H, TERRACE_H])
+# Entry 18 (VOID_CODE): out of bounds, outside the city's perimeter wall, so a
+# city can be another shape inside the GRID x GRID map.  Never drawn, black
+# on the HUD map, nothing placed there; as tall as the wall (BLD_MAX_H), so
+# anything that tests heights (collisions, sight, rounds) finds it solid.
+VOID_CODE, VOID_H = 18, BLD_MAX_H
+emit_words("htab", [round(lvl * BLD_MAX_H / 15) for lvl in range(16)] + [PAD_H, TERRACE_H, VOID_H])
 lines.append(f"        ASSERT BLD_MAX_H == {BLD_MAX_H}   ; gentables.py and zpolice.asm agree")
 lines.append(f"PAD_CODE        equ {PAD_CODE}      ; map code of the base landing pad")
 lines.append(f"TERRACE_CODE    equ {TERRACE_CODE}      ; the terrace round it (0.25 height units)")
 lines.append(f"PAD_H           equ {PAD_H}     ; its height (0.5 height units)")
+lines.append(f"VOID_CODE       equ {VOID_CODE}      ; out of bounds (outside the perimeter): never drawn")
 lines.append("")
 
-# City map: bits 0-3 height level (0 = empty / street).  Buildings fill their
-# whole cell.
-# Every 8th row/column is an open boulevard.
-# The player's base: a 7x7 central plaza laid over the normal layout, open
-# road with the landing pad in its centre cell.  The city's centre is the
-# corner between cells GRID/2-1 and GRID/2, so the pad goes in cell GRID/2:
-# on the crossing of the two middle boulevards.
+# ---------------------------------------------------------------------------
+# Cities and levels -> data files in ZPDATA/, loaded from the SD card at the
+# start of each level (level_load.asm).  The game has no city built in.
+#
+# A city: a GRID x GRID map of cell codes (city_map: 0 road, 1-15 building
+# height level, PAD_CODE, TERRACE_CODE), a colour family per cell
+# (city_col), a Layer 2 palette (its own time of day) and a sky colour.
+# Each city is played for CITY_LEVELS levels.  City 1 uses the original
+# seeds and colours, so it is the original city.  Every city has the base
+# plaza and landing pad in the same place (PAD_X, PAD_Z).
+#
+# ZPDATA/CITYnn.ZPC (nn = 01..):
+#   +0   4    "ZPCY"
+#   +4   1    format version (1)
+#   +5   1    city number
+#   +6   8    city name, ASCII, space padded
+#   +14  2    sky colour: RRRGGGBB, then the low blue bit (as NextReg $44)
+#   +16  16   (reserved, 0)
+#   +32  512  Layer 2 palette: 256 RRRGGGBB / low-blue-bit pairs
+#   +544 4096 city_col
+#   +4640 4096 city_map
+# ZPDATA/LEVELnn.ZPL (nn = 01..):
+#   +0   4    "ZPLV"
+#   +4   1    format version (1)
+#   +5   1    city number (its ZPDATA/CITYnn.ZPC)
+#   +6   15   the level record (levels.asm): level, city name (8), zombies,
+#             waves, fast zombies, special monsters, highest special id,
+#             draw distance (tiles, 2..VIEW_R)
+#   +21  1    number of map changes, then 4 bytes each: x, z, cell code,
+#             city_col (hand-made layout changes for this level)
+#
+# Every 8th row/column of a map is an open boulevard.  The player's base: a
+# 7x7 central plaza laid over the normal layout, open road with the landing
+# pad in its centre cell.  The city's centre is the corner between cells
+# GRID/2-1 and GRID/2, so the pad goes in cell GRID/2: on the crossing of the
+# two middle boulevards.
 PLAZA = 7
 PAD_X = PAD_Z = GRID // 2
 PAD_FAMILY = 63                            # white: reserved for the pad
 TERRACE_FAMILY = 62                        # green: reserved for the terrace
 TERRACE_R = 2                              # terrace: cells 1..2 out from the pad
 BLD_FAMILIES = 62                          # ordinary buildings: families 0..61
-rng = random.Random(1984)
-city = []
-for j in range(GRID):
-    for i in range(GRID):
-        if i % 8 == 0 or j % 8 == 0 or rng.random() < 0.10:
-            city.append(0)
-            continue
-        d = math.hypot(i - GRID / 2, j - GRID / 2) * 32 / GRID   # downtown scales with the grid
-        lvl = 1 + rng.randint(0, 3) + int(max(0.0, 9 - d * 0.75) * rng.random())
-        lvl = min(15, lvl)
-        if lvl < 8:
-            rng.random()                # old tower roll: keeps the same layout
-        city.append(lvl)
-# Rat runs: narrow streets cut through the 7x7 building blocks between the
-# boulevards.  Each block, at random: nothing, a straight run right across, an
-# L (in from one side, turning to leave by an adjacent side) or a crossroads.
-# Runs sit at a random row/column 2..6 into the block (not centred, and never
-# next to a boulevard, so they stay one cell wide) and always open onto
-# boulevards at both ends.  A separate generator, so the rest of the layout
-# is unchanged.
-RAT_P = (0.35, 0.25, 0.25, 0.15)       # none, straight, L, crossroads
-rrng = random.Random(4096)
-def street(i, j):
-    if 0 <= i < GRID and 0 <= j < GRID:
-        city[j * GRID + i] = 0
-rat_count = [0, 0, 0, 0]
-for by in range(0, GRID, 8):
-    for bx in range(0, GRID, 8):
-        r = rrng.random()
-        kind = 0
-        for k, pk in enumerate(RAT_P):
-            if r < pk:
-                kind = k
-                break
-            r -= pk
-        rat_count[kind] += 1
-        row = by + rrng.randint(2, 6)      # the run's row / column in the block
-        col = bx + rrng.randint(2, 6)
-        if kind == 1:                      # straight: across or down
-            if rrng.random() < 0.5:
-                for i in range(bx + 1, bx + 8):
-                    street(i, row)
-            else:
-                for j in range(by + 1, by + 8):
-                    street(col, j)
-        elif kind == 2:                    # L: west or east side, then north or south
-            xs = range(bx + 1, col + 1) if rrng.random() < 0.5 else range(col, bx + 8)
-            ys = range(by + 1, row + 1) if rrng.random() < 0.5 else range(row, by + 8)
-            for i in xs:
-                street(i, row)
-            for j in ys:
-                street(col, j)
-        elif kind == 3:                    # crossroads
-            for i in range(bx + 1, bx + 8):
-                street(i, row)
-            for j in range(by + 1, by + 8):
-                street(col, j)
-print("rat runs per block: none %d, straight %d, L %d, crossroads %d" % tuple(rat_count))
-
-# The central plaza: open road with the pad in the middle (after the rat
-# runs, before the perimeter wall)
-for j in range(PAD_Z - PLAZA // 2, PAD_Z + PLAZA // 2 + 1):
-    for i in range(PAD_X - PLAZA // 2, PAD_X + PLAZA // 2 + 1):
-        city[j * GRID + i] = 0
-for j in range(PAD_Z - TERRACE_R, PAD_Z + TERRACE_R + 1):
-    for i in range(PAD_X - TERRACE_R, PAD_X + TERRACE_R + 1):
-        city[j * GRID + i] = TERRACE_CODE       # the terrace round the pad
-city[PAD_Z * GRID + PAD_X] = PAD_CODE
+WALL_FAMILY = 0                            # the perimeter wall's colour family
+BASE_YAW = 0                               # start heading: north (+z), up the
+                                           # middle boulevard (0 = +z, 64 = +x)
 lines.append(f"PAD_X           equ {PAD_X}      ; base landing pad cell (gentables.py)")
 lines.append(f"PAD_COL         equ ${PAD_FAMILY * 4:02X}     ; its city_col (colour family * 4)")
 lines.append(f"TERRACE_COL     equ ${TERRACE_FAMILY * 4:02X}     ; the terrace's city_col")
 lines.append(f"TERRACE_R       equ {TERRACE_R}       ; terrace: cells 1..TERRACE_R from the pad")
 lines.append(f"PAD_Z           equ {PAD_Z}")
-# start heading: north (+z), up the middle boulevard (yaw: 0 = +z, 64 = +x)
-BASE_YAW = 0
 lines.append(f"BASE_YAW        equ {BASE_YAW}      ; start heading: north up the boulevard")
-print(f"central plaza cells {PAD_X - PLAZA // 2}-{PAD_X + PLAZA // 2}, landing pad at cell ({PAD_X},{PAD_Z})")
+lines.append(f"WALL_FAMILY     equ {WALL_FAMILY}       ; perimeter wall colour family (gentables.py)")
+lines.append(f"        ASSERT GRID == {GRID}   ; gentables.py and zpolice.asm agree")
+lines.append("")
 
-# Perimeter wall: the outer rows and columns are maximum height buildings.
-# Applied after the layout so the random sequence (and every interior cell)
-# is unchanged.
 def on_edge(i, j):
     return i in (0, GRID - 1) or j in (0, GRID - 1)
-city_was_building = [lvl != 0 for lvl in city]
-for j in range(GRID):
-    for i in range(GRID):
-        if on_edge(i, j):
-            city[j * GRID + i] = 15
-emit_bytes("city_map", city, per_line=32)
+
+def make_map(seed, rat_seed, report=False):
+    """The city layout: (cell codes, which edge cells were buildings)."""
+    rng = random.Random(seed)
+    city = []
+    for j in range(GRID):
+        for i in range(GRID):
+            if i % 8 == 0 or j % 8 == 0 or rng.random() < 0.10:
+                city.append(0)
+                continue
+            d = math.hypot(i - GRID / 2, j - GRID / 2) * 32 / GRID   # downtown scales with the grid
+            lvl = 1 + rng.randint(0, 3) + int(max(0.0, 9 - d * 0.75) * rng.random())
+            lvl = min(15, lvl)
+            if lvl < 8:
+                rng.random()                # old tower roll: keeps the same layout
+            city.append(lvl)
+    # Rat runs: narrow streets cut through the 7x7 building blocks between
+    # the boulevards.  Each block, at random: nothing, a straight run right
+    # across, an L (in from one side, turning to leave by an adjacent side)
+    # or a crossroads.  Runs sit at a random row/column 2..6 into the block
+    # (not centred, and never next to a boulevard, so they stay one cell
+    # wide) and always open onto boulevards at both ends.  A separate
+    # generator, so the rest of the layout is unchanged.
+    RAT_P = (0.35, 0.25, 0.25, 0.15)       # none, straight, L, crossroads
+    rrng = random.Random(rat_seed)
+    def street(i, j):
+        if 0 <= i < GRID and 0 <= j < GRID:
+            city[j * GRID + i] = 0
+    rat_count = [0, 0, 0, 0]
+    for by in range(0, GRID, 8):
+        for bx in range(0, GRID, 8):
+            r = rrng.random()
+            kind = 0
+            for k, pk in enumerate(RAT_P):
+                if r < pk:
+                    kind = k
+                    break
+                r -= pk
+            rat_count[kind] += 1
+            row = by + rrng.randint(2, 6)      # the run's row / column in the block
+            col = bx + rrng.randint(2, 6)
+            if kind == 1:                      # straight: across or down
+                if rrng.random() < 0.5:
+                    for i in range(bx + 1, bx + 8):
+                        street(i, row)
+                else:
+                    for j in range(by + 1, by + 8):
+                        street(col, j)
+            elif kind == 2:                    # L: west or east side, then north or south
+                xs = range(bx + 1, col + 1) if rrng.random() < 0.5 else range(col, bx + 8)
+                ys = range(by + 1, row + 1) if rrng.random() < 0.5 else range(row, by + 8)
+                for i in xs:
+                    street(i, row)
+                for j in ys:
+                    street(col, j)
+            elif kind == 3:                    # crossroads
+                for i in range(bx + 1, bx + 8):
+                    street(i, row)
+                for j in range(by + 1, by + 8):
+                    street(col, j)
+    if report:
+        print("rat runs per block: none %d, straight %d, L %d, crossroads %d" % tuple(rat_count))
+    # The central plaza: open road with the pad in the middle (after the rat
+    # runs, before the perimeter wall)
+    for j in range(PAD_Z - PLAZA // 2, PAD_Z + PLAZA // 2 + 1):
+        for i in range(PAD_X - PLAZA // 2, PAD_X + PLAZA // 2 + 1):
+            city[j * GRID + i] = 0
+    for j in range(PAD_Z - TERRACE_R, PAD_Z + TERRACE_R + 1):
+        for i in range(PAD_X - TERRACE_R, PAD_X + TERRACE_R + 1):
+            city[j * GRID + i] = TERRACE_CODE       # the terrace round the pad
+    city[PAD_Z * GRID + PAD_X] = PAD_CODE
+    # Perimeter wall: the outer rows and columns are maximum height
+    # buildings.  Applied after the layout so the random sequence (and every
+    # interior cell) is unchanged.
+    was_building = [lvl != 0 for lvl in city]
+    for j in range(GRID):
+        for i in range(GRID):
+            if on_edge(i, j):
+                city[j * GRID + i] = 15
+    return city, was_building
 
 # Layer 2 palette (9-bit RGB333), 256 entries in families of four:
 #   family*4 + 0  darker side   (side turned away from the player)
@@ -211,6 +261,14 @@ FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
     55: ("MAP_ZOMBIE_DARK", (0, 3, 0)),   #   and dark green
     91: ("PANEL_L2", (1, 1, 3)),         # the ULA panel colour ($25), on Layer 2
     95: ("GAUGE_AMBER", (7, 5, 0)),      # ground height gauge (amber)
+    99: ("GHOST_COL", (7, 7, 7)),        # ghosts (white sheet); map blip shade 1
+    103: ("MAP_GHOST_MID", (5, 5, 5)),   # ghost map blip shades: light grey
+    107: ("MAP_GHOST_DARK", (3, 3, 3)),  #   and grey
+    111: ("GHOST_FADE", (1, 1, 1)),      # a dying ghost's last fade step
+    115: ("BANSHEE_COL", (7, 7, 0)),     # banshees (yellow); map blip shade 1
+    119: ("MAP_BANSHEE_MID", (5, 5, 0)), # banshee blip shades / fade steps
+    123: ("MAP_BANSHEE_DARK", (3, 3, 0)),
+    127: ("BANSHEE_FADE", (1, 1, 0)),    # a dying banshee's last fade step
     59: ("PART_COL0", (1, 7, 1)),        # zombie burst, age 1
     63: ("PART_COL1", (0, 7, 0)),        # zombie burst, age 2
     67: ("PART_COL2", (0, 6, 0)),        # zombie burst, age 3
@@ -219,7 +277,19 @@ FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
     79: ("PART_COL5", (0, 3, 0)),        # zombie burst, age 6
     83: ("PART_COL6", (0, 2, 0)),        # zombie burst, age 7
     87: ("PART_COL7", (0, 1, 0)),        # zombie burst, age 8
+    # rocket / missile burst particles (orange), ages 1..10: FIRE_COL0 + 4*(age-1)
+    131: ("FIRE_COL0", (7, 6, 1)),
+    135: ("FIRE_COL1", (7, 5, 0)),
+    139: ("FIRE_COL2", (7, 4, 0)),
+    143: ("FIRE_COL3", (7, 4, 0)),
+    147: ("FIRE_COL4", (6, 3, 0)),
+    151: ("FIRE_COL5", (6, 3, 0)),
+    155: ("FIRE_COL6", (5, 2, 0)),
+    159: ("FIRE_COL7", (4, 2, 0)),
+    163: ("FIRE_COL8", (3, 1, 0)),
+    167: ("FIRE_COL9", (2, 1, 0)),
 }
+GROUND_IDX = 7                     # GROUND_COL's palette index (city_col of roads)
 TRANSPARENT = (7, 0, 3)            # RGB of $E3 (top 8 bits) -> never use
 
 def q(x):
@@ -229,71 +299,398 @@ def is_transparent(c):
     r, g, b = c
     return r == 7 and g == 0 and b >> 1 == 3
 
-prng = random.Random(4242)
-pal = [(0, 0, 0)] * 256
-for fam in range(64):
-    while True:
-        h = (fam * 0.618034 + prng.random() * 0.05) % 1.0
-        sat = 0.35 + 0.4 * prng.random()
-        val = 0.55 + 0.25 * prng.random()
-        base = colorsys.hsv_to_rgb(h, sat, val)
-        face = tuple(q(c) for c in base)
-        dark = tuple(q(c * 0.68) for c in base)
-        roof = tuple(q(c + (1 - c) * 0.35) for c in base)
-        if len({dark, face, roof}) == 3 and not any(map(is_transparent, (dark, face, roof))):
-            break
-    pal[fam * 4:fam * 4 + 3] = [dark, face, roof]
-pal[PAD_FAMILY * 4:PAD_FAMILY * 4 + 3] = [(5, 5, 5), (6, 6, 6), (7, 7, 7)]   # the pad: white
-pal[TERRACE_FAMILY * 4:TERRACE_FAMILY * 4 + 3] = [(0, 3, 0), (1, 4, 1), (2, 5, 2)]   # terrace: green
-for idx, (_, rgb) in FIXED.items():
-    pal[idx] = rgb
-# City colours, one byte per grid cell, stored straight after city_map so a
-# cell's colour is at its map byte + 1024: buildings hold a random colour
-# family (family*4, shade bits clear); roads/open cells hold GROUND_COL.
-# The perimeter wall is one colour family (WALL_FAMILY) and doesn't draw
-# from crng, so the interior colours are unchanged.
-WALL_FAMILY = 0
-lines.append(f"WALL_FAMILY     equ {WALL_FAMILY}       ; perimeter wall colour family (gentables.py)")
-crng = random.Random(2084)
-# city_col goes in its own file (tables_col.inc, assembled at $6000 in page 7)
-col_lines = ["; ---- generated by gentables.py - do not edit ----", "",
-             "; Colour family of each cell (family*4), city_map order", "city_col:"]
-def cell_col(i, j):
-    if on_edge(i, j):
-        if city_was_building[j * GRID + i]:
-            crng.randrange(BLD_FAMILIES)  # keep the colour sequence in step
-        return f"${WALL_FAMILY * 4:02X}"
-    if city[j * GRID + i] == 0:
-        return "GROUND_COL"
-    if city[j * GRID + i] == PAD_CODE:
-        return f"${PAD_FAMILY * 4:02X}"
-    if city[j * GRID + i] == TERRACE_CODE:
-        return f"${TERRACE_FAMILY * 4:02X}"
-    return f"${crng.randrange(BLD_FAMILIES) * 4:02X}"
-for j in range(GRID):
-    row = [cell_col(i, j) for i in range(GRID)]
-    col_lines.append("        db " + ",".join(row))
-with open("tables_col.inc", "w") as f:
-    f.write("\n".join(col_lines) + "\n")
-print("wrote tables_col.inc")
-lines.append(f"        ASSERT GRID == {GRID}   ; gentables.py and zpolice.asm agree")
-lines.append("")
+# Time of day: a colour change applied to the buildings, the wall and the
+# road.  'day' leaves the colours as generated.
+def tint(c, tod):
+    r, g, b = c
+    if tod == 'dusk':                  # warm, a little darker
+        r, g, b = r * 0.95, g * 0.70, b * 0.55
+    elif tod == 'night':               # dark and blue
+        r, g, b = r * 0.40, g * 0.45, b * 0.70
+    elif tod == 'dawn':                # pale and misty
+        r, g, b = r * 0.6 + 5 * 0.4, g * 0.6 + 5 * 0.4, b * 0.6 + 6 * 0.4
+    c = tuple(max(0, min(7, int(round(v)))) for v in (r, g, b))
+    if is_transparent(c):
+        c = (c[0], 1, c[2])
+    return c
 
-# palette goes after city_col (city_col must directly follow city_map)
-pal_lines = []
-pal_lines.append("; Layer 2 palette: NextReg $44 byte pairs (RRRGGGBB, low blue bit)")
-pal_lines.append("l2_palette:")
-for k in range(0, 256, 8):
-    bs = []
-    for r, g, b in pal[k:k + 8]:
-        bs += [f"${(r << 5) | (g << 2) | (b >> 1):02X}", f"${b & 1:02X}"]
-    pal_lines.append("        db " + ",".join(bs))
-pal_lines.append("")
+def make_palette(seed, tod):
+    prng = random.Random(seed)
+    pal = [(0, 0, 0)] * 256
+    for fam in range(64):
+        while True:
+            h = (fam * 0.618034 + prng.random() * 0.05) % 1.0
+            sat = 0.35 + 0.4 * prng.random()
+            val = 0.55 + 0.25 * prng.random()
+            base = colorsys.hsv_to_rgb(h, sat, val)
+            face = tuple(q(c) for c in base)
+            dark = tuple(q(c * 0.68) for c in base)
+            roof = tuple(q(c + (1 - c) * 0.35) for c in base)
+            if len({dark, face, roof}) == 3 and not any(map(is_transparent, (dark, face, roof))):
+                break
+        if tod != 'day':
+            dark, face, roof = (tint(c, tod) for c in (dark, face, roof))
+            if dark == face:               # keep the three shades apart
+                dark = tuple(max(0, v - 1) for v in face)
+            if roof == face:
+                roof = tuple(min(7, v + 1) for v in face)
+        pal[fam * 4:fam * 4 + 3] = [dark, face, roof]
+    pal[PAD_FAMILY * 4:PAD_FAMILY * 4 + 3] = [(5, 5, 5), (6, 6, 6), (7, 7, 7)]   # the pad: white
+    pal[TERRACE_FAMILY * 4:TERRACE_FAMILY * 4 + 3] = [(0, 3, 0), (1, 4, 1), (2, 5, 2)]   # terrace: green
+    for idx, (_, rgb) in FIXED.items():
+        pal[idx] = rgb
+    if tod != 'day':
+        pal[GROUND_IDX] = tint(pal[GROUND_IDX], tod)
+    return pal
+
+# City colour styles: a city may replace the building colour families of some
+# hues with its own materials.  {city name: (hues replaced, materials)}; a
+# replaced family takes a material in turn (brick, concrete, brick, ...), the
+# variant picked by the city's palette seed.  Hues by the main face's hue in
+# degrees (as hue_of): the same bands the colour report uses.
+HUE_BANDS = [(15, 'red'), (40, 'orange'), (65, 'yellow'), (80, 'lime'),
+             (150, 'green'), (185, 'teal'), (205, 'cyan'), (250, 'blue'),
+             (280, 'indigo'), (320, 'purple'), (345, 'pink'), (360, 'red')]
+BRICK = [(0.62, 0.24, 0.17), (0.55, 0.20, 0.14), (0.70, 0.33, 0.22),
+         (0.60, 0.29, 0.20), (0.66, 0.26, 0.18)]           # brick reds
+CONCRETE = [(0.62, 0.62, 0.60), (0.55, 0.55, 0.52), (0.70, 0.68, 0.63),
+            (0.50, 0.50, 0.49), (0.66, 0.64, 0.58)]        # concrete greys
+CITY_STYLE = {
+    "LONDON": ({'green', 'blue', 'cyan', 'red', 'indigo'}, [BRICK, CONCRETE]),
+}
+
+def hue_of(c):
+    """A 3-bit RGB colour's hue band name, 'grey' if nearly unsaturated."""
+    h, sat, _ = colorsys.rgb_to_hsv(*(v / 7 for v in c))
+    if sat < 0.18:
+        return 'grey'
+    d = h * 360
+    return next(n for lim, n in HUE_BANDS if d <= lim)
+
+def shades(base, tod):
+    """A colour family's dark, face and roof shades from base RGB (0..1),
+    as make_palette makes them (tinted for the time of day)."""
+    face = tuple(q(c) for c in base)
+    dark = tuple(q(c * 0.68) for c in base)
+    roof = tuple(q(c + (1 - c) * 0.35) for c in base)
+    if tod != 'day':
+        dark, face, roof = (tint(c, tod) for c in (dark, face, roof))
+    if dark == face:
+        dark = tuple(max(0, v - 1) for v in face)
+    if roof == face:
+        roof = tuple(min(7, v + 1) for v in face)
+    assert not any(map(is_transparent, (dark, face, roof)))
+    return [dark, face, roof]
+
+def restyle(pal, style, seed, tod):
+    """Replace the building families (0..BLD_FAMILIES-1, the wall's too) whose
+    face hue is in style's hues with its materials, in turn.  Returns the
+    number replaced."""
+    hues, materials = style
+    prng = random.Random(seed + 1)
+    n = 0
+    for fam in range(BLD_FAMILIES):
+        if hue_of(pal[fam * 4 + 1]) in hues:
+            pal[fam * 4:fam * 4 + 3] = shades(prng.choice(materials[n % len(materials)]), tod)
+            n += 1
+    return n
+
+def make_col(city, was_building, seed):
+    """City colours, one byte per cell: buildings a random colour family
+    (family*4, shade bits clear); roads GROUND_COL.  The perimeter wall is
+    one colour family (WALL_FAMILY) and doesn't draw from crng, so the
+    interior colours are unchanged."""
+    crng = random.Random(seed)
+    out = []
+    for j in range(GRID):
+        for i in range(GRID):
+            if on_edge(i, j):
+                if was_building[j * GRID + i]:
+                    crng.randrange(BLD_FAMILIES)  # keep the colour sequence in step
+                out.append(WALL_FAMILY * 4)
+            elif city[j * GRID + i] == 0:
+                out.append(GROUND_IDX)
+            elif city[j * GRID + i] == PAD_CODE:
+                out.append(PAD_FAMILY * 4)
+            elif city[j * GRID + i] == TERRACE_CODE:
+                out.append(TERRACE_FAMILY * 4)
+            elif city[j * GRID + i] == VOID_CODE:
+                out.append(GROUND_IDX)  # (out of bounds: no colour)
+            else:
+                out.append(crng.randrange(BLD_FAMILIES) * 4)
+    return out
+
+def pal_pair(c):
+    r, g, b = c
+    return bytes(((r << 5) | (g << 2) | (b >> 1), b & 1))
+
+# The cities: name, time of day, sky colour, seeds (map, rat runs, colours,
+# palette).  City 1 is the original city (the original seeds, daylight).
+CITY_LEVELS = 5                        # each city is played for 5 levels
+CITIES = [
+    ("LONDON",   'day',   (0, 0, 3), (1984, 4096, 2084, 4242)),
+    ("PARIS",    'dusk',  (6, 3, 2), (1789, 1871, 1944, 1968)),
+    ("TOKYO",    'night', (0, 0, 1), (1603, 1868, 1964, 2020)),
+    ("NEW YORK", 'dawn',  (5, 5, 6), (1626, 1776, 1898, 1929)),
+    ("BERLIN",   'day',   (0, 0, 3), (1237, 1871, 1961, 1989)),
+    ("ROME",     'dusk',  (6, 3, 2), (753, 1527, 1870, 1960)),
+    ("MOSCOW",   'night', (0, 0, 1), (1147, 1612, 1812, 1935)),
+    ("SYDNEY",   'dawn',  (5, 5, 6), (1788, 1842, 1932, 1973)),
+    ("CAIRO",    'day',   (0, 0, 3), (969, 1169, 1869, 1952)),
+    ("CHICAGO",  'night', (0, 0, 1), (1833, 1871, 1893, 1973)),
+]
+assert len(CITIES) <= 99 and all(len(c[0]) <= 8 for c in CITIES)
+DATA_DIR = "ZPDATA"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def write_data(name, data):
+    """Write a data file in ZPDATA, but only if its contents have changed.
+    The folder is synced by OneDrive, which can hold a file it is uploading:
+    it may refuse to have it truncated (OSError 22) or replaced (WinError 5).
+    So an unchanged file is left alone, and a changed one is overwritten in
+    place (then trimmed if it got shorter), which it allows; retried for a
+    few seconds if the file is held."""
+    path = os.path.join(DATA_DIR, name)
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return False
+    except OSError:
+        pass
+    for attempt in range(20):
+        try:
+            if os.path.exists(path):
+                with open(path, "r+b") as f:
+                    f.write(data)
+                    if f.tell() < os.fstat(f.fileno()).st_size:
+                        f.truncate()
+            else:
+                with open(path, "wb") as f:
+                    f.write(data)
+            return True
+        except OSError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
+
+# Text forms of the data files, for editing (the city layout editor to come)
+# and reading: CITYnn.TXC beside CITYnn.ZPC, LEVELnn.TXL beside LEVELnn.ZPL.
+# Each holds exactly what its binary file does; city_from_text and
+# level_from_text turn one back into the binary file's bytes (checked for
+# every file written).  Lines starting ";" are comments; blank lines are
+# ignored.
+#
+# CITYnn.TXC:
+#   CITY n / NAME name / TIME day|dusk|night|dawn / SKY r g b
+#   PALETTE, then 64 lines, one colour family each: "Fnn" and its 4
+#     colours (palette entries nn*4 .. nn*4+3) as "r g b" (0..7)
+#   MAP, then 64 lines of 64 characters, one per cell, x left to right,
+#     z = 0 the first line: MAP_CHARS[code] ("." road, 1-9 A-F building
+#     heights 1-15, P the landing pad, T its terrace, X out of bounds)
+#   COLOURS, then 64 lines of 64 two-character fields (space separated):
+#     the cell's colour family "00".."63", or ".." for a road (GROUND_IDX)
+#   END
+# LEVELnn.TXL:
+#   LEVEL n / CITY n / NAME name / ZOMBIES n / WAVES n / FAST n /
+#   SPECIAL n / SPECIAL_MAX n / VIEW n
+#   CHANGES n, then n lines "x z code family": a cell of the city's map
+#     changed for this level (code and family as in the city file's MAP
+#     and COLOURS characters)
+#   END
+MAP_CHARS = ".123456789ABCDEFPTX"
+assert len(MAP_CHARS) == VOID_CODE + 1 and MAP_CHARS[PAD_CODE] == "P"
+
+def col_text(c):
+    """A city_col byte as its two-character COLOURS field."""
+    if c == GROUND_IDX:
+        return ".."
+    assert c % 4 == 0, c
+    return f"{c // 4:02d}"
+
+def col_value(t):
+    return GROUND_IDX if t == ".." else int(t) * 4
+
+def city_text(n, name, tod, sky, pal, col, city):
+    out = [f"; Z-Police city {n}: CITY{n:02d}.TXC, the text form of CITY{n:02d}.ZPC",
+           "; (written by gentables.py: see its comments for the format)",
+           f"CITY {n}", f"NAME {name}", f"TIME {tod}", "SKY {} {} {}".format(*sky),
+           "", "; colour family: its 4 palette entries (dark, face, roof, fixed) as r g b",
+           "PALETTE"]
+    for fam in range(64):
+        out.append(f"F{fam:02d} " + "  ".join("{} {} {}".format(*pal[fam * 4 + k]) for k in range(4)))
+    out += ["", "; one character a cell: " + " ".join(f"{ch}={i}" for i, ch in enumerate(MAP_CHARS)),
+            "MAP"]
+    for z in range(GRID):
+        row = city[z * GRID:(z + 1) * GRID]
+        assert all(v <= VOID_CODE for v in row)
+        out.append("".join(MAP_CHARS[v] for v in row))
+    out += ["", "; each cell's colour family (.. = road)", "COLOURS"]
+    for z in range(GRID):
+        out.append(" ".join(col_text(c) for c in col[z * GRID:(z + 1) * GRID]))
+    out += ["END", ""]
+    return "\n".join(out)
+
+def text_lines(text):
+    """The lines that matter: no comments, no blank lines."""
+    return [ln.rstrip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith(";")]
+
+def field(line, k):
+    """A "KEY value" line's value; ValueError if its key isn't k."""
+    w = line.split(None, 1)
+    if w[0] != k:
+        raise ValueError(f"expected {k}: {line!r}")
+    return w[1] if len(w) > 1 else ""
+
+def city_from_text(text):
+    """CITYnn.TXC -> (city number, the CITYnn.ZPC bytes)."""
+    ln = text_lines(text)
+    key = lambda i, k: field(ln[i], k)
+    n = int(key(0, "CITY"))
+    name = key(1, "NAME")
+    key(2, "TIME")
+    sky = tuple(int(v) for v in key(3, "SKY").split())
+    assert ln[4] == "PALETTE"
+    pal = []
+    for fam in range(64):
+        f = ln[5 + fam].split()
+        assert f[0] == f"F{fam:02d}", f
+        v = [int(x) for x in f[1:]]
+        assert len(v) == 12
+        pal += [tuple(v[k * 3:k * 3 + 3]) for k in range(4)]
+    i = 5 + 64
+    assert ln[i] == "MAP"
+    city = []
+    for z in range(GRID):
+        row = ln[i + 1 + z]
+        assert len(row) == GRID, (z, row)
+        city += [MAP_CHARS.index(ch) for ch in row]
+    i += 1 + GRID
+    assert ln[i] == "COLOURS"
+    col = []
+    for z in range(GRID):
+        f = ln[i + 1 + z].split()
+        assert len(f) == GRID, z
+        col += [col_value(t) for t in f]
+    assert ln[i + 1 + GRID] == "END"
+    hdr = b"ZPCY" + bytes((1, n)) + name.ljust(8).encode() + pal_pair(sky) + bytes(16)
+    return n, hdr + b"".join(pal_pair(c) for c in pal) + bytes(col) + bytes(city)
+
+LEVEL_KEYS = ["ZOMBIES", "WAVES", "FAST", "SPECIAL", "SPECIAL_MAX", "VIEW"]
+
+def level_text(lv, cn, name, values, changes):
+    out = [f"; Z-Police level {lv}: LEVEL{lv:02d}.TXL, the text form of LEVEL{lv:02d}.ZPL",
+           "; (written by gentables.py: see its comments for the format)",
+           f"LEVEL {lv}", f"CITY {cn}", f"NAME {name}"]
+    out += [f"{k} {v}" for k, v in zip(LEVEL_KEYS, values)]
+    out += ["", "; cells of the city's map changed for this level: x z code family",
+            f"CHANGES {len(changes)}"]
+    out += [f"{x} {z} {MAP_CHARS[code]} {col_text(c)}" for x, z, code, c in changes]
+    out += ["END", ""]
+    return "\n".join(out)
+
+def level_from_text(text):
+    """LEVELnn.TXL -> (level number, the LEVELnn.ZPL bytes)."""
+    ln = text_lines(text)
+    kv = lambda i, k: field(ln[i], k)
+    lv = int(kv(0, "LEVEL"))
+    cn = int(kv(1, "CITY"))
+    name = kv(2, "NAME")
+    values = [int(kv(3 + j, k)) for j, k in enumerate(LEVEL_KEYS)]
+    nch = int(kv(3 + len(LEVEL_KEYS), "CHANGES"))
+    changes = []
+    for j in range(nch):
+        x, z, ch, c = ln[4 + len(LEVEL_KEYS) + j].split()
+        changes.append((int(x), int(z), MAP_CHARS.index(ch), col_value(c)))
+    assert ln[4 + len(LEVEL_KEYS) + nch] == "END"
+    rec = bytes((lv,)) + name.ljust(8).encode() + bytes(values)
+    return lv, b"ZPLV" + bytes((1, cn)) + rec + bytes((len(changes),)) + b"".join(bytes(c) for c in changes)
+
+# The city maps: maps/CITYnn.json (tools/citymap.py has the format; edit
+# with tools/map_editor.py).  A city without one is generated from its seeds
+# (make_map, make_col) and its JSON written, so it can be edited from then on.
+MAP_DIR = "maps"
+os.makedirs(MAP_DIR, exist_ok=True)
+assert citymap.MAP_CHARS == MAP_CHARS and citymap.GRID == GRID
+assert (citymap.PAD, citymap.TERRACE, citymap.VOID) == (PAD_CODE, TERRACE_CODE, VOID_CODE)
+assert (citymap.PAD_X, citymap.PAD_Z, citymap.TERRACE_R) == (PAD_X, PAD_Z, TERRACE_R)
+assert (citymap.WALL_FAMILY, citymap.TERRACE_FAMILY, citymap.PAD_FAMILY) == (WALL_FAMILY, TERRACE_FAMILY, PAD_FAMILY)
+assert citymap.BLD_FAMILIES == BLD_FAMILIES
+assert citymap.GROUND_IDX == GROUND_IDX
+
+def city_layout(n, name, s_map, s_rat, s_col):
+    """City n's map and colours (city_map and city_col bytes): from its
+    JSON, or generated (and the JSON written) if it has none."""
+    path = os.path.join(MAP_DIR, f"CITY{n:02d}.json")
+    if not os.path.exists(path):
+        city, was_building = make_map(s_map, s_rat, report=(n == 1))
+        col = make_col(city, was_building, s_col)
+        fams = [None if c == GROUND_IDX else c // 4 for c in col]
+        citymap.save(path, n, name, city, fams)
+        print(f"wrote {path} (generated: edit it with tools/map_editor.py)")
+    m = citymap.load(path)
+    errs = citymap.validate(m["cells"], m["fams"])
+    if errs:
+        raise SystemExit(f"{path}: the map can't be used:\n  " + "\n  ".join(errs))
+    city = m["cells"]
+    col = [GROUND_IDX if f is None else f * 4
+           for f in (citymap.family_for(c, f) for c, f in zip(m["cells"], m["fams"]))]
+    return city, col
+
+for n, (name, tod, sky, (s_map, s_rat, s_col, s_pal)) in enumerate(CITIES, 1):
+    city, col = city_layout(n, name, s_map, s_rat, s_col)
+    pal = make_palette(s_pal, tod)
+    if name in CITY_STYLE:             # its own building materials
+        k = restyle(pal, CITY_STYLE[name], s_pal, tod)
+        print(f"{name}: {k} of {BLD_FAMILIES} building colour families restyled")
+    pal[3] = sky                       # SKY_COL: the city's sky
+    hdr = b"ZPCY" + bytes((1, n)) + name.ljust(8).encode() + pal_pair(sky) + bytes(16)
+    assert len(hdr) == 32
+    data = hdr + b"".join(pal_pair(c) for c in pal) + bytes(col) + bytes(city)
+    assert len(data) == 32 + 512 + 2 * GRID * GRID
+    changed = write_data(f"CITY{n:02d}.ZPC", data)
+    print(f"{'wrote' if changed else 'unchanged'} {DATA_DIR}/CITY{n:02d}.ZPC ({name}, {tod}): {len(data)} bytes")
+    text = city_text(n, name, tod, sky, pal, col, city)
+    assert city_from_text(text) == (n, data)      # the text form is exact
+    changed = write_data(f"CITY{n:02d}.TXC", text.encode("ascii"))
+    print(f"{'wrote' if changed else 'unchanged'} {DATA_DIR}/CITY{n:02d}.TXC")
+for old in (f"CITY{n}.ZPC" for n in range(1, 10)):     # the old one-digit names
+    if os.path.exists(os.path.join(DATA_DIR, old)):
+        try:                            # (best effort: OneDrive may hold it)
+            os.remove(os.path.join(DATA_DIR, old))
+            print(f"removed the old {DATA_DIR}/{old}")
+        except OSError:
+            print(f"could not remove the old {DATA_DIR}/{old} (in use): unused, delete it later")
+
+# The levels: CITY_LEVELS per city, in order.  Values as the old built-in
+# level table (placeholders to tune); the draw distance is VIEW_R (6) for
+# now.  Hand-made levels can replace these files.
+VIEW_R = 6                             # must match zpolice.asm
+for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
+    cn = (lv - 1) // CITY_LEVELS + 1
+    # zombies a wave: 10, 15, 20, 25, 30 over each city's 5 levels; one
+    # wave on the first city's levels, one more for each city after
+    zomb = 10 + 5 * ((lv - 1) % CITY_LEVELS)
+    waves = 1 + (lv - 1) // CITY_LEVELS
+    fast = min(zomb, (lv + 1) // 2)
+    assert zomb <= 30                  # NZOMB, zombie.asm
+    spec = 0 if lv < 5 else min(5, (lv - 3) // 2)
+    maxid = 0 if spec == 0 else min(3, (lv - 1) // 5)
+    rec = bytes((lv,)) + CITIES[cn - 1][0].ljust(8).encode() + bytes((zomb, waves, fast, spec, maxid, VIEW_R))
+    assert len(rec) == 15
+    changes = []                       # (x, z, code, col): none yet
+    data = b"ZPLV" + bytes((1, cn)) + rec + bytes((len(changes),)) + b"".join(bytes(c) for c in changes)
+    write_data(f"LEVEL{lv:02d}.ZPL", data)
+    text = level_text(lv, cn, CITIES[cn - 1][0], (zomb, waves, fast, spec, maxid, VIEW_R), changes)
+    assert level_from_text(text) == (lv, data)    # the text form is exact
+    write_data(f"LEVEL{lv:02d}.TXL", text.encode("ascii"))
+print(f"levels: {DATA_DIR}/LEVEL01..{CITY_LEVELS * len(CITIES):02d}.ZPL and .TXL")
+lines.append(f"LEVEL_LAST      equ {CITY_LEVELS * len(CITIES)}      ; the last level (gentables.py)")
+lines.append(f"CITY_LEVELS     equ {CITY_LEVELS}       ; levels played in each city (gentables.py)")
+
+# Palette slot checks (zpolice.asm names the fixed colours)
 for idx, (name, _) in FIXED.items():
-    pal_lines.append(f"        ASSERT {name} == {idx}")
-pal_lines.append("")
-
-lines += pal_lines
+    lines.append(f"        ASSERT {name} == {idx}")
+lines.append("")
 
 # Split into the resident tables (sin_tables.asm, htabs.asm, city_map.asm,
 # l2_pallets.asm: below) and the city page's tables
@@ -331,16 +728,22 @@ MAIN_FILES = [   # file, its labels, its opening lines
       "        ALIGN 256"]),
     ("htabs.asm", {"hztab", "htab"},
      ["; Horizon row per pitch (hztab) and building height per map code (htab)"]),
-    ("city_map.asm", {"city_map"},
-     ["; The city: GRID x GRID map bytes (height levels, base codes), and the",
-      "; base and perimeter wall constants"]),
-    ("l2_pallets.asm", {"l2_palette"},
-     ["; The Layer 2 palette, and checks on the fixed colour slots zpolice.asm",
-      "; names"]),
+    ("city_map.asm", set(),
+     ["; The city constants shared by every city: the base and landing pad",
+      "; position, the perimeter wall's colour family.  The cities themselves",
+      "; (maps, cell colours, palettes) are data files, ZPDATA/CITYnn.ZPC,",
+      "; loaded at the start of each level (level_load.asm)."]),
+    ("l2_pallets.asm", set(),
+     ["; Checks on the fixed Layer 2 palette slots zpolice.asm names.  The",
+      "; palettes themselves are in the city files (ZPDATA/CITYnn.ZPC), one",
+      "; per city, loaded at the start of each level (level_load.asm)."]),
 ]
 EQU_TO = {"PAD_": "city_map.asm", "TERRACE_": "city_map.asm",
           "BASE_YAW": "city_map.asm", "WALL_FAMILY": "city_map.asm",
+          "LEVEL_LAST": "city_map.asm",
+          "CITY_LEVELS": "city_map.asm",
           "ASSERT GRID": "city_map.asm", "ASSERT BLD_MAX_H": "htabs.asm"}
+EQU_TO.update({f"ASSERT {name} ==": "l2_pallets.asm" for _, (name, _) in FIXED.items()})
 out = {f: [] for f, _, _ in MAIN_FILES}
 dest, pending = None, []
 for ln in main_l:
@@ -490,6 +893,69 @@ print("wrote tables_human.inc")
 for row in zip(*[human_frame(hc) for hc in HUMAN_WAVE]):
     print("   ".join(row))
 
+# Ghost sprites -> tables_ghost.inc (zombie page): a stick man under a white
+# sheet, arms out, two eye holes, the hem fluttering over his feet in 2
+# frames.  Same 8 scales and row format as the zombies and humans.
+GHOST_BODY = [
+    "..####..",
+    ".######.",
+    ".######.",
+    ".#.##.#.",                         # eye holes
+    ".######.",
+    "########",                         # arms out under the sheet
+    "########",
+    ".######.",
+    ".######.",
+    ".######.",
+    ".######.",
+    ".######.",
+    ".######.",
+]
+GHOST_HEMS = [["##.##.##", "#..#..#.", "..#..#.."],
+              ["#.##.##.", ".#..#..#", "..#..#.."]]     # last row: his feet
+gl = ["; ---- generated by gentables.py - do not edit ----", "",
+      "; ghost sprite pointers: index frame*8 + level", "gho_ptr:"]
+for fr in range(2):
+    gl.append("        dw " + ",".join(f"gho_{fr}_{k}" for k in range(8)))
+for fr, hem in enumerate(GHOST_HEMS):
+    src = GHOST_BODY + hem
+    assert len(src) == 16 and all(len(row) == 8 for row in src)
+    for k, (w, h) in enumerate(ZLEVELS):
+        gl.append(f"gho_{fr}_{k}: db " + ",".join(f"${r:02X}" for r in shrink(src, w, h)))
+# The banshee: like the ghost, but thinner (a 4-pixel sheet, arms trailing
+# wisps), drawn yellow
+BANSHEE_BODY = [
+    "...##...",
+    "..####..",
+    "..#..#..",                         # eye holes
+    "..####..",
+    ".######.",                         # arms out
+    ".#.##.#.",                         # trailing wisps
+    "...##...",
+    "..####..",
+    "..####..",
+    "..####..",
+    "..####..",
+    "..####..",
+    "..####..",
+]
+BANSHEE_HEMS = [["..#..#..", ".#....#.", "...##..."],
+                ["..#.#.#.", "..#..#..", "...##..."]]
+gl.append("; banshee sprite pointers: index frame*8 + level")
+gl.append("bsh_ptr:")
+for fr in range(2):
+    gl.append("        dw " + ",".join(f"bsh_{fr}_{k}" for k in range(8)))
+for fr, hem in enumerate(BANSHEE_HEMS):
+    src = BANSHEE_BODY + hem
+    assert len(src) == 16 and all(len(row) == 8 for row in src)
+    for k, (w, h) in enumerate(ZLEVELS):
+        gl.append(f"bsh_{fr}_{k}: db " + ",".join(f"${r:02X}" for r in shrink(src, w, h)))
+with open("tables_ghost.inc", "w") as f:
+    f.write("\n".join(gl) + "\n")
+print("wrote tables_ghost.inc (ghost, banshee)")
+for row in zip(*[GHOST_BODY + hem for hem in GHOST_HEMS]):
+    print("   ".join(row))
+
 
 # ---------------------------------------------------------------------------
 # Menu font -> tables_font.inc (menu.asm): ASCII 32-95, 8 bytes each.  A 5x7
@@ -549,64 +1015,6 @@ with open("tables_font.inc", "w") as f:
 print("wrote tables_font.inc")
 
 
-# ---------------------------------------------------------------------------
-# HUD compass -> tables_compass.inc (hud.asm).  A tape for a full turn: 64
-# columns at 4 yaw units (5.6 degrees) per pixel, N at column 0 (yaw 0 = +z),
-# E at 16 (yaw 64 = +x), marks every 8 columns.  8 rows: 1-5 the 3x5
-# letters (N, E, S, W red; NE, SE, SW, NW yellow), 7 the ticks.  Stored 96
-# columns wide (the first 32 repeated) so any 32-wide window is one copy.
-# Plus compass_bg: the 48x16 Layer 2 patch behind it (panel colour, the
-# 2-pixel frame, a red notch over the centre column), drawn once.
-L3x5 = {
-    'N': ["#..#", "##.#", "#.##", "#..#", "#..#"],
-    'E': ["###", "#..", "##.", "#..", "###"],
-    'S': [".##", "#..", ".#.", "..#", "##."],
-    'W': ["#.#", "#.#", "###", "###", "#.#"],
-}
-CTAPE_W = 64
-tape = [["MAP_BG"] * CTAPE_W for _ in range(8)]
-marks = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-for k, name in enumerate(marks):
-    centre = k * 8
-    col = "HUD_WARN" if len(name) == 1 else "BULLET_COL"
-    width = sum(len(L3x5[ch][0]) for ch in name) + (len(name) - 1)
-    x = centre - width // 2
-    for ch in name:
-        for r, row in enumerate(L3x5[ch]):
-            for c, px in enumerate(row):
-                if px == '#':
-                    tape[1 + r][(x + c) % CTAPE_W] = col
-        x += len(L3x5[ch][0]) + 1
-    tape[7][centre % CTAPE_W] = "DOT_COL"                 # tick under the mark
-    tape[7][(centre + 4) % CTAPE_W] = "DOT_COL"           # and between marks
-cl = ["; ---- generated by gentables.py - do not edit ----", "",
-      "; compass tape: 8 rows x 96 columns (64 for a turn + 32 repeated)",
-      "compass_tape:"]
-for r in range(8):
-    row = tape[r] + tape[r][:32]
-    for i in range(0, 96, 16):
-        cl.append("        db " + ",".join(row[i:i + 16]))
-# the static patch: 48x16 at pixel (120, 152); frame 36x12 at (126, 154)
-cl.append("; compass background: 16 rows x 48 columns at pixel (120, 152)")
-cl.append("compass_bg:")
-for y in range(152, 168):
-    row = []
-    for x in range(120, 168):
-        if 154 <= y <= 165 and 126 <= x <= 161:
-            if 128 <= x <= 159 and 156 <= y <= 163:
-                v = "MAP_BG"                               # the strip (per frame)
-            elif x in (143, 144) and y in (154, 155):
-                v = "HUD_WARN"                             # centre notch
-            else:
-                v = "EDGE_COL"                             # frame
-        else:
-            v = "PANEL_L2"
-        row.append(v)
-    for i in range(0, 48, 16):
-        cl.append("        db " + ",".join(row[i:i + 16]))
-with open("tables_compass.inc", "w") as f:
-    f.write("\n".join(cl) + "\n")
-print("wrote tables_compass.inc")
 
 
 # ---------------------------------------------------------------------------
@@ -656,11 +1064,43 @@ HSPR = [("HSPR_FIELD", hspr(HSPR_SEAT, {"#": SPR_W})),
         ("HSPR_ABOARD", hspr(HSPR_SIT, {"W": SPR_W, "C": SPR_C})),
         ("HSPR_SAVED", hspr(HSPR_MAN, {"#": SPR_G})),
         ("HSPR_DEAD", dead)]
+HSPR_N = len(HSPR)
+
+# Compass bar sprites (hud_sprites.asm), after the human status ones: the
+# letters N, E, S, W (red, the menu font's 5x7 letters doubled, centred),
+# a yellow dot for NE / SE / SW / NW, a small white dot for the 22.5 degree
+# marks between, and a white pointer (the heading) for under the bar.
+SPR_Y = 0xFC                            # yellow
+def letter16(ch):
+    art = [list("." * 16) for _ in range(16)]
+    for r, row in enumerate(FONT5x7[ch]):
+        for c, px in enumerate(row):
+            if px == "#":
+                for dy in (0, 1):
+                    for dx in (0, 1):
+                        art[1 + 2 * r + dy][3 + 2 * c + dx] = "#"
+    return ["".join(row) for row in art]
+def block16(x0, y0, w, h):
+    return ["".join("#" if x0 <= x < x0 + w and y0 <= y < y0 + h else "." for x in range(16))
+            for y in range(16)]
+POINTER = ["......." + "#" * 2 + ".......",
+           "......" + "#" * 4 + "......",
+           "....." + "#" * 6 + ".....",
+           "...." + "#" * 8 + "...."] + ["." * 16] * 12
+HSPR += [("CSPR_N", hspr(letter16("N"), {"#": SPR_R})),
+         ("CSPR_E", hspr(letter16("E"), {"#": SPR_R})),
+         ("CSPR_S", hspr(letter16("S"), {"#": SPR_R})),
+         ("CSPR_W", hspr(letter16("W"), {"#": SPR_R})),
+         ("CSPR_DOT", hspr(block16(6, 6, 4, 4), {"#": SPR_Y})),
+         ("CSPR_TICK", hspr(block16(7, 7, 2, 2), {"#": SPR_W})),
+         ("CSPR_PTR", hspr(POINTER, {"#": SPR_W}))]
 hl = ["; ---- generated by gentables.py - do not edit ----", "",
-      "; human status sprites: 16x16 8-bit patterns (RRRGGGBB, $E3 transparent)"]
+      "; sprite bank 0: 16x16 8-bit patterns (RRRGGGBB, $E3 transparent): the",
+      "; human status sprites, then the compass bar's"]
 for n, (name, _) in enumerate(HSPR):
     hl.append(f"{name:15s} equ {n}")
-hl.append(f"HSPR_COUNT      equ {len(HSPR)}")
+hl.append(f"HSPR_COUNT      equ {HSPR_N}      ; the human status ones")
+hl.append(f"SPRB0_PATTERNS  equ {len(HSPR)}     ; all of bank 0's")
 hl.append("hspr_patterns:")
 for name, pix in HSPR:
     hl.append(f"; {name}")

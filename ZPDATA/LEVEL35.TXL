@@ -1,0 +1,15 @@
+; Z-Police level 35: LEVEL35.TXL, the text form of LEVEL35.ZPL
+; (written by gentables.py: see its comments for the format)
+LEVEL 35
+CITY 7
+NAME MOSCOW
+ZOMBIES 30
+WAVES 7
+FAST 18
+SPECIAL 5
+SPECIAL_MAX 3
+VIEW 6
+
+; cells of the city's map changed for this level: x z code family
+CHANGES 0
+END

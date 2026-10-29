@@ -88,7 +88,7 @@ TRUE        equ 1
 ; --- actions: index into key_defs --------------------------------------------
 K_SPEED_UP  equ 0
 K_SPEED_DN  equ 1
-K_STOP      equ 2
+K_AIRBRAKE  equ 2                       ; air brake: rapid stop
 K_LEFT      equ 3
 K_RIGHT     equ 4
 K_CLIMB     equ 5
@@ -96,9 +96,11 @@ K_DESCEND   equ 6
 K_NOSE_UP   equ 7
 K_NOSE_DN   equ 8
 K_FIRE      equ 9
-K_WEAPON    equ 10                      ; cycle the centre slot's weapon
+K_GUN_UP    equ 10                      ; tilt the centre gun up,
 K_SLOT1     equ 11                      ; select weapon slots 1-5
-K_ACTIONS   equ 16
+K_GUN_DN    equ 16                      ; down,
+K_GUN_CTR   equ 17                      ; and back to the centre
+K_ACTIONS   equ 18
 
 ;------------------------------------------------------------------------------
 ; Read all ten key banks: key_prev = last scan, key_now = this one, every bit
@@ -271,10 +273,13 @@ KBD_STOP_DOUBLING:
                                         ; keys kept out of the 8x5 matrix
 key_now:    ds KEY_BANKS                ; this scan, 1 = pressed
 key_prev:   ds KEY_BANKS                ; the scan before (must follow key_now)
-key_defs:                               ; the key of each action (redefinable)
+; The key of each action, by K_*: the defaults (key_defaults), and the
+; ones in use (key_defs: redefinable on the redefine keys screen,
+; keydef.asm, which can put the defaults back)
+    MACRO KEY_DEFAULTS
             dw KB_Q                     ; K_SPEED_UP
             dw KB_A                     ; K_SPEED_DN
-            dw KB_Z                     ; K_STOP
+            dw KB_Z                     ; K_AIRBRAKE
             dw KB_O                     ; K_LEFT
             dw KB_P                     ; K_RIGHT
             dw KB_W                     ; K_CLIMB
@@ -282,6 +287,11 @@ key_defs:                               ; the key of each action (redefinable)
             dw KB_E                     ; K_NOSE_UP
             dw KB_D                     ; K_NOSE_DN
             dw KB_SPACE                 ; K_FIRE
-            dw KB_0                     ; K_WEAPON
+            dw KB_R                     ; K_GUN_UP
             dw KB_1, KB_2, KB_3, KB_4, KB_5     ; K_SLOT1..5
+            dw KB_F                     ; K_GUN_DN
+            dw KB_V                     ; K_GUN_CTR
+    ENDM
+key_defs:   KEY_DEFAULTS
             ASSERT $ - key_defs == K_ACTIONS*2
+key_defaults: KEY_DEFAULTS

@@ -1,6 +1,33 @@
 # Z-Police TODO
 
-## Next session (planned 2026-10-27): do this first, before any other development
+## Before a release
+
+- Set `DEBUG_KILLALL equ 0` in `zpolice.asm`: it takes out the debug keys
+  (0: kill all, 9: next city). See README "Controls".
+
+## Done 2026-10-27: level configuration files and pre-built city maps
+
+See README "Levels and cities". Left for later:
+
+- (Done: the zombie, wave, fast-zombie and special-monster counts are used,
+  and levels move on after LEVEL COMPLETE. See README "Waves and level
+  progress".)
+- (Done: after level 50, CONGRATULATIONS, GAME OVER, the main menu.)
+- More in the level complete (to come).
+- Hand-made level files: map changes, different draw distances for night
+  or fog.
+- A visible sky (`SKY_IS_WALL` off) to show each city's sky colour.
+
+## Ghosts (done 2026-10-27): open points
+
+- (Done 2026-10-28: the VTOL's hit points are shown on the HUD as
+  INTEGRITY, a percentage. At 0 it spins down, then GAME OVER: done.)
+- Ghosts are placed at the level's start only; they don't respawn.
+- (Done: the banshee, special type `ZT_BANSHEE`, spawned on even waves.)
+  `LV_SPECIAL_MAX` is still not used: banshees follow the wave rule, not
+  the level file.
+
+## (Original notes, kept for reference)
 
 **Level configuration files, with pre-built city maps.**
 

@@ -122,9 +122,6 @@ ula_init:
         inc hl
         djnz .dl
 
-        ld a,$FF                        ; the HUD's "last drawn" values:
-        ld (pax_shown),a                ; none, so everything is drawn
-        ld (wsel_shown),a
         ld a,GLYPH_S                    ; gauge labels: S (speed) and
         ld de,ULA_ROW_LBL+SPD_GCOL      ; A (altitude | ground)
         call print_glyph_at
@@ -140,24 +137,13 @@ ula_init:
         ld a,32-(ALT_GCOL-SPD_GCOL)
         add hl,a
         djnz .ga
-        ld hl,lbl_wpn                   ; "WPN:" and the slot digits
-        ld de,ULA_ROW_PAX+WPN_LBL
-        call print_label
-        ld a,GLYPH_COLON
-        ld de,ULA_ROW_PAX+WPN_LBL+3
-        call print_glyph_at
-        ld c,0
-.wd:    ld a,c
-        push bc
-        ld b,0
-        call wpn_digit
-        pop bc
-        inc c
-        ld a,c
-        cp WPN_SLOTS
-        jr nz,.wd
+        ld hl,lbl_int                   ; INTEGRITY (the percentage: drawn
+        ld de,ULA_ROW_INT+INT_COL       ; by draw_integrity)
+        ld b,9
+        call print_glyphs
+        ld a,$FF
+        ld (int_shown),a                ; (drawn next frame)
         call map_init
-        call compass_init
     IFDEF DRAW_FPS
         jp fps_draw                     ; initial " 0 FPS"
     ELSE
@@ -165,231 +151,170 @@ ula_init:
     ENDIF
 
 ;------------------------------------------------------------------------------
-; Compass: a horizontal strip, 32x8 pixels in a 2-pixel frame, centred on the
-; current heading.  Layer 2 (per-pixel colour: red N/E/S/W, yellow NE/SE/
-; SW/NW) under transparent ULA cells.  compass_tape (gentables.py) covers a
-; full turn at 4 yaw units a pixel; each frame the 32 columns centred on yaw
-; are copied into the back buffer.
+; Weapon slots (placeholders): an 8x16 box for each, 2 character cells on
+; rows WPN_ROW, WPN_ROW+1, at columns WPN_COL0, +2, ... in the order
+; wpn_order (as numbered on keys 1-5: 2 4 1 5 3).  A box is green if its
+; slot holds a weapon, red if it is empty; the selected slot has a white
+; outline.  An empty slot that was asked for flashes amber / red (WFLASH
+; frames each, 3 times, ending red).  Under an occupied slot, on row
+; WPN_ROW+2, the letter of its weapon (wpn_glyph): M, L, C or R.
+; Redrawn every frame.
 ;------------------------------------------------------------------------------
-; New game: the ULA cells over the compass transparent (paper 0, no ink),
-; and the frame and background drawn into both Layer 2 buffers
-compass_init:
-        ld hl,ULA_ATTR + 19*32 + 15
-        ld b,6
-.a1:    ld (hl),0
-        inc hl
-        djnz .a1
-        ld hl,ULA_ATTR + 20*32 + 15
-        ld b,6
-.a2:    ld (hl),0
-        inc hl
-        djnz .a2
-        ld a,PAGE_L2_A
-        call .buf
-        ld a,PAGE_L2_B
-.buf:   ld (cp_base),a                  ; A = first page of a buffer
-        ld hl,compass_bg
-        ld c,COMP_BGY                   ; row
-.row:   ld a,c
-        rlca
-        rlca
-        rlca
-        and 7                           ; its 32-row section
-        ld b,a
-        ld a,(cp_base)
-        add a,b
-        nextreg L2SEC_MMU,a
-        ld a,c
-        and 31
-        ld d,a
-        ld e,COMP_BGX
-        push bc
-        ld bc,48
-        ldir
-        pop bc
-        inc c
-        ld a,c
-        cp COMP_BGY+16
-        jr nz,.row
-        ret
+WPN_ATTR_ON     equ C_OK<<3 | 7         ; paper green, ink white (outline)
+WPN_ATTR_OFF    equ C_WARN<<3 | 7       ; paper red
+WPN_ATTR_FLASH  equ C_AMBER<<3 | 7      ; paper amber
+WPN_BMP         equ ULA_BMP + (WPN_ROW/8)*$800 + (WPN_ROW&7)*32 + WPN_COL0
+        ASSERT WPN_ROW/8 == (WPN_ROW+2)/8       ; the 3 rows in one third
+        ASSERT WPN_COL0 + 2*(WPN_SLOTS-1) < MAP_COL
 
-; Each frame: the 32 columns of the tape centred on the heading
-draw_compass:
-        ld a,(yaw)
-        rrca
-        rrca
-        and 63                          ; centre column (4 yaw units a pixel)
-        sub 16
-        and 63                          ; left edge
-        ld (cp_col),a
-        ld c,0                          ; tape row
-.row:   ld a,c                          ; screen row COMP_Y + c
-        add a,COMP_Y
-        ld b,a
-        rlca
-        rlca
-        rlca
-        and 7
-        ld e,a
-        ld a,(seg_base)                 ; the back buffer's section
-        add a,e
-        nextreg L2SEC_MMU,a
-        ld a,b
-        and 31
-        push bc
-        ld b,a                          ; DE -> the row in the section
-        ld d,c
-        ld e,96
-        mul d,e                         ; tape row * 96
-        ld hl,compass_tape
-        add hl,de
-        ld a,(cp_col)
-        add hl,a
-        ld d,b
-        ld e,COMP_X
-        ld bc,32
-        ldir
-        pop bc
-        inc c
-        ld a,c
-        cp 8
-        jr nz,.row
-        ret
-
-;------------------------------------------------------------------------------
-; Weapon slots, right of the passengers: "WPN:" and the digits 1-5.  A digit
-; is green if its slot holds a weapon, light blue if it is empty; the
-; selected slot's digit has a box round it.  An empty slot that was asked
-; for flashes yellow / blue (WFLASH frames each, 3 times, ending blue).
-;------------------------------------------------------------------------------
 draw_wpn:
-        ld a,(wpn_sel)                  ; move the box when the selection changes
-        ld hl,wsel_shown
-        cp (hl)
-        jr z,.col
-        ld c,(hl)
-        ld (hl),a
-        ld a,c
-        cp WPN_SLOTS
-        jr nc,.new                      ; nothing boxed yet
-        ld b,0
-        call wpn_digit                  ; the old one: plain
-.new:   ld a,(wpn_sel)
-        ld b,1
-        call wpn_digit                  ; the new one: boxed
-.col:   ld hl,ULA_ATTR + PAX_ROW*32 + WPN_COL
-        ld de,wpn_slots
-        ld b,0
-.lp:    ld c,P_PANEL<<3 | C_OK          ; fitted: green
-        ld a,(de)
+        ld c,$FF                        ; the slot flashing amber this frame
+        ld a,(wflash_t)
         or a
-        jr nz,.fl
-        ld c,P_PANEL<<3 | C_BLUE        ; empty: blue
-.fl:    ld a,(wflash_t)                 ; flashing this one?
-        or a
-        jr z,.st
-        ld a,(wflash_slot)
-        cp b
-        jr nz,.st
-        ld a,(wflash_t)                 ; phase (t-1)/WFLASH: odd = yellow
-        dec a
-        push bc
+        jr z,.nf
+        dec a                           ; phase (t-1)/WFLASH: odd = amber
         ld b,-1
 .dv:    inc b
         sub WFLASH
         jr nc,.dv
         bit 0,b
+        jr z,.nf
+        ld a,(wflash_slot)
+        ld c,a
+.nf:    ld a,c
+        ld (wd_flash),a
+        ld hl,wflash_t                  ; count the flash down
+        ld a,(hl)
+        or a
+        jr z,.go
+        dec (hl)
+.go:    ld b,0                          ; box position, left to right
+.lp:    push bc
+        ld a,b
+        add a,a
+        ld (wd_col),a                   ; its column offset
+        ld hl,wpn_order
+        ld a,b
+        add hl,a
+        ld c,(hl)                       ; C = its slot (0 = the centre gun)
+        ld a,c
+        add a,a
+        ld hl,wpn_slots+WPN_TYPE
+        add hl,a
+        ld a,(hl)
+        ld (wd_type),a
+        ld e,WPN_ATTR_ON                ; fitted: green
+        or a
+        jr nz,.pc
+        ld e,WPN_ATTR_OFF               ; empty: red, or amber while flashing
+        ld a,(wd_flash)
+        cp c
+        jr nz,.pc
+        ld e,WPN_ATTR_FLASH
+.pc:    ld a,(wd_col)                   ; the box's two cells
+        ld hl,ULA_ATTR + WPN_ROW*32 + WPN_COL0
+        add hl,a
+        ld (hl),e
+        ld a,32
+        add hl,a
+        ld (hl),e
+        ld a,(wpn_sel)                  ; outline if selected, else clear
+        cp c
+        ld de,$FF81                     ; D: top / bottom line, E: sides
+        jr z,.bx
+        ld de,0
+.bx:    ld a,(wd_col)
+        ld hl,WPN_BMP
+        add hl,a
+        push hl
+        ld (hl),d                       ; upper cell: top line, then sides
+        ld b,7
+.b1:    inc h
+        ld (hl),e
+        djnz .b1
+        pop hl
+        ld a,32
+        add hl,a
+        push hl
+        ld b,7                          ; lower cell: sides, then bottom line
+.b2:    ld (hl),e
+        inc h
+        djnz .b2
+        ld (hl),d
+        pop hl
+        ld a,32                         ; the cell below: its weapon's letter
+        add hl,a
+        ex de,hl
+        ld a,(wd_type)
+        ld hl,wpn_glyph
+        add hl,a
+        ld a,(hl)
+        call print_glyph_at
         pop bc
-        jr z,.st
-        ld c,P_PANEL<<3 | C_YEL
-.st:    ld (hl),c
-        inc hl
-        inc de
-        inc de
         inc b
         ld a,b
         cp WPN_SLOTS
         jr nz,.lp
-        ld hl,wflash_t                  ; count the flash down
-        ld a,(hl)
-        or a
-        ret z
-        dec (hl)
         ret
 
-; A = slot: draw its digit (slot + 1); B = 1: with a box round it
-wpn_digit:
-        ld e,a
-        add a,low (ULA_ROW_PAX + WPN_COL)
-        ld l,a
-        ld h,high (ULA_ROW_PAX + WPN_COL)
-        push hl
-        ld a,e
-        inc a                           ; glyph = digit
-        ex de,hl
-        push bc
-        call print_glyph_at
-        pop bc
-        pop hl
-        bit 0,b
-        ret z
-        ld a,(hl)                       ; box: top and bottom rows, and
-        or $FF                          ; both sides between (the digits
-        ld (hl),a                       ; keep clear of the cell's edge)
-        ld b,6
-.sd:    inc h
-        ld a,(hl)
-        or $81
+;------------------------------------------------------------------------------
+; Integrity: the VTOL's hit points as a percentage of VTOL_HP, "nnn%" on row
+; INT_ROW+1 under the INTEGRITY label.  VTOL_HP is 50, so the percentage is
+; just vtol_hp * 2 (a shift left).  Green, amber below INT_WARN, red below
+; INT_DANGER.  Redrawn only when it changes (int_shown).
+;------------------------------------------------------------------------------
+draw_integrity:
+        ld a,(vtol_hp)
+        add a,a                         ; percent = hp * 2
+        ld hl,int_shown
+        cp (hl)
+        ret z                           ; unchanged
         ld (hl),a
-        djnz .sd
-        inc h
-        ld (hl),$FF
-        ret
-
-;------------------------------------------------------------------------------
-; Passengers: PASSENGER_MAX 8x8 cells on the panel's top row.  From the left:
-; a green stick man for each human saved (delivered to the base), a white
-; one for each human aboard, and an empty seat (a hollow square) for the rest.
-;------------------------------------------------------------------------------
-draw_pax:
-        ld de,ULA_ROW_PAX + PAX_COL
-        ld hl,ULA_ATTR + PAX_ROW*32 + PAX_COL
-        ld b,0                          ; cell
-.lp:    push bc
-        push de
-        push hl
-        ld a,(saved)
-        ld c,a
-        ld a,b
-        cp c
-        jr nc,.ab
-        ld (hl),P_PANEL<<3 | C_OK       ; saved: green man
-        ld a,GLYPH_MAN
-        jr .g
-.ab:    ld (hl),ATTR_PANEL              ; white
-        ld a,(passengers)
-        add a,c
-        ld c,a                          ; saved + aboard
-        ld a,b
-        cp c
-        ld a,GLYPH_SEAT
-        jr nc,.g                        ; empty seat
-        ld a,GLYPH_MAN                  ; aboard
-.g:     call print_glyph_at
-        pop hl
+        ld c,P_PANEL<<3 | C_OK          ; its colour
+        cp INT_WARN
+        jr nc,.col
+        ld c,P_PANEL<<3 | C_AMBER
+        cp INT_DANGER
+        jr nc,.col
+        ld c,P_PANEL<<3 | C_WARN
+.col:   ld hl,ULA_ATTR + (INT_ROW+1)*32 + INT_PCT_COL
+        ld b,4
+.at:    ld (hl),c
         inc hl
-        pop de
-        inc e
-        pop bc
-        inc b
-        ld a,b
-        cp PASSENGER_MAX
-        jr nz,.lp
+        djnz .at
+        ld hl,int_txt                   ; the digits, no leading zeros
+        ld b,100
+        call .dig
+        ld b,10
+        call .dig
+        ld (hl),a                       ; units
+        ld a,(int_txt)
+        or a
+        jr nz,.pr
+        ld a,GLYPH_SPACE
+        ld (int_txt),a
+        ld a,(int_txt+1)
+        or a
+        jr nz,.pr
+        ld a,GLYPH_SPACE
+        ld (int_txt+1),a
+.pr:    ld hl,int_txt
+        ld de,ULA_ROW_INT+32+INT_PCT_COL
+        ld b,4
+        jr print_glyphs
+.dig:   ld (hl),0                       ; A = A mod B, (HL) = A / B
+.ds:    cp b
+        jr c,.dd
+        sub b
+        inc (hl)
+        jr .ds
+.dd:    inc hl
         ret
+        ASSERT VTOL_HP == 50            ; (percent = hp * 2)
+        ASSERT INT_PCT_COL+3 < MAP_COL && INT_COL+8 < MAP_COL
 
-; HL -> 3 glyph codes, DE = first ULA cell
-print_label:
-        ld b,3
+; HL -> B glyph codes, DE = first ULA cell: print them along the row
+print_glyphs:
 .l:     push bc
         push de
         ld a,(hl)
@@ -411,28 +336,17 @@ print_label:
 ;------------------------------------------------------------------------------
 
 ;==============================================================================
-; HUD: weapons, compass, passengers, and the speed, altitude and ground
-; height gauges.  The gauges are vertical bars on Layer 2 (in the back
-; buffer, every frame) behind transparent ULA cells, as the compass is: the
+; HUD: the weapon slots, and the speed, altitude and ground height gauges
+; (the humans and the compass are hardware sprites: hud_sprites.asm).  The
+; gauges are vertical bars on Layer 2 (in the back buffer, every frame)
+; behind transparent ULA cells: the
 ; altitude and ground bars share one 8-pixel cell column, which ULA
 ; attributes couldn't colour (green, amber and black in one cell).
 ;==============================================================================
 draw_hud:
         call draw_wpn
-        call draw_compass
-        ; passengers: redrawn when the number aboard or saved changes
-        ld a,(saved)                    ; (human.asm, page 7)
-        add a,a
-        add a,a
-        add a,a
-        ld hl,passengers
-        add a,(hl)
-        ld hl,pax_shown
-        cp (hl)
-        jr z,.pxok
-        ld (hl),a
-        call draw_pax
-.pxok:
+        call draw_integrity
+        ; (the humans' states: hardware sprites, hum_hud in human.asm)
 
         call draw_gauges
         jp map_player
@@ -543,14 +457,31 @@ g_clamp:
 ;==============================================================================
 ; HUD page data
 ;==============================================================================
-pax_shown:  db $FF                      ; passengers last drawn ($FF: not yet)
-wsel_shown: db $FF                      ; weapon slot boxed ($FF: none yet)
+int_shown:  db $FF                      ; draw_integrity: the percentage shown
+int_txt:    db 0, 0, 0, GLYPH_PCT       ;   its glyphs: digits, %
+lbl_int:    db GLYPH_I, GLYPH_N, GLYPH_T, GLYPH_E, GLYPH_G, GLYPH_R, GLYPH_I
+            db GLYPH_T, GLYPH_Y         ; INTEGRITY
+wd_flash:   db $FF                      ; draw_wpn: the slot flashing amber,
+wd_col:     db 0                        ;   the box's column offset,
+wd_type:    db 0                        ;   and its slot's weapon
+; the boxes' slots, left to right (keys 2 4 1 5 3)
+wpn_order:  db 1, 3, 0, 4, 2
+        ASSERT $ - wpn_order == WPN_SLOTS
+; weapon type (WPN_*) -> its letter under the box
+wpn_glyph:  db GLYPH_SPACE              ; WPN_NONE
+            db GLYPH_M                  ; WPN_GUN: machine gun
+            db GLYPH_L                  ; WPN_LASER
+            db GLYPH_C                  ; WPN_CHAIN: chain gun
+            db GLYPH_R                  ; WPN_ROCKETS: rocket pod
+            db GLYPH_S                  ; WPN_MISSILE: missile pod
+            db GLYPH_SPACE              ; WPN_BOMB (none yet)
+            db GLYPH_B                  ; WPN_BOFORS: Bofors cannon
+            db GLYPH_P                  ; WPN_PROX: proximity cannon
+        ASSERT $ - wpn_glyph == WPN_LAST + 1
 g_spd:      db 0                        ; draw_gauges: bar heights (pixels)
 g_spdc:     db 0                        ;   and the speed bar's colour
 g_alt:      db 0
 g_gnd:      db 0
-cp_col:     db 0                        ; compass: tape column at the left edge
-cp_base:    db 0                        ; compass_init: buffer being drawn
 
 ; 8x8 glyphs: digits 0-9, then F, P, S, space
 GLYPH_F     equ 10
@@ -566,13 +497,17 @@ GLYPH_R     equ 19
 GLYPH_N     equ 20
 GLYPH_MAN   equ 21
 GLYPH_SEAT  equ 22
-GLYPH_W     equ 23
-GLYPH_COLON equ 24
+GLYPH_M     equ 23
+GLYPH_C     equ 24
+GLYPH_B     equ 25
+GLYPH_I     equ 26
+GLYPH_E     equ 27
+GLYPH_Y     equ 28
+GLYPH_PCT   equ 29
 ; ULA bitmap cell addresses (pixel line 0) of the gauge rows
 ULA_ROW_LBL equ ULA_BMP + (GAUGE_LROW/8)*$800 + (GAUGE_LROW&7)*32
-ULA_ROW_PAX equ ULA_BMP + (PAX_ROW/8)*$800 + (PAX_ROW&7)*32
-lbl_wpn:    db GLYPH_W,GLYPH_P,GLYPH_N
-        INCLUDE "tables_compass.inc"    ; compass_tape, compass_bg
+ULA_ROW_INT equ ULA_BMP + (INT_ROW/8)*$800 + (INT_ROW&7)*32
+        ASSERT INT_ROW/8 == (INT_ROW+1)/8       ; (+32: the next row)
 font:
         db $00,$3C,$46,$4A,$52,$62,$3C,$00     ; 0
         db $00,$18,$28,$08,$08,$08,$3E,$00     ; 1
@@ -597,5 +532,10 @@ font:
         db $00,$42,$62,$52,$4A,$46,$42,$00     ; N
         db $18,$18,$7E,$18,$18,$24,$24,$66     ; stick man (passenger aboard)
         db $00,$7E,$42,$42,$42,$42,$7E,$00     ; empty seat: hollow 6x6 square
-        db $00,$42,$42,$42,$5A,$66,$42,$00     ; W
-        db $00,$00,$18,$18,$00,$18,$18,$00     ; colon
+        db $00,$42,$66,$5A,$42,$42,$42,$00     ; M
+        db $00,$3C,$42,$40,$40,$42,$3C,$00     ; C
+        db $00,$7C,$42,$7C,$42,$42,$7C,$00     ; B
+        db $00,$3E,$08,$08,$08,$08,$3E,$00     ; I
+        db $00,$7E,$40,$7C,$40,$40,$7E,$00     ; E
+        db $00,$42,$24,$18,$08,$08,$08,$00     ; Y
+        db $00,$62,$64,$08,$10,$26,$46,$00     ; %

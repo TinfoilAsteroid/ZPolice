@@ -1,6 +1,8 @@
 ;==============================================================================
-; Z-POLICE - interrupt mode 2 (page 7, after map.asm: kept mapped in slot 3,
-; so the table and routine are there whatever page is swapped in)
+; Z-POLICE - interrupt mode 2 (in the zombie page, after map.asm: kept
+; mapped in slot 1, so the table and routine are there whatever page is
+; swapped in; the ROM replaces slot 1 only during esxDOS calls, when
+; interrupts are off)
 ;
 ; In IM 2 an interrupt calls the address held in the word at I*256 + the
 ; byte on the data bus, which can be anything.  So:

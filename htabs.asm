@@ -11,6 +11,7 @@ hztab:
 htab:
         dw $0000,$003C,$0077,$00B3,$00EF,$012B,$0166,$01A2
         dw $01DE,$021A,$0255,$0291,$02CD,$0309,$0344,$0380
-        dw $0040,$0020
+        dw $0040,$0020,$0380
 
         ASSERT BLD_MAX_H == 896   ; gentables.py and zpolice.asm agree
+VOID_CODE       equ 18      ; out of bounds (outside the perimeter): never drawn

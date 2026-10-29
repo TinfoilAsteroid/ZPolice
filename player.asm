@@ -19,10 +19,13 @@ update_player:
         ld de,old_pos                   ; the VTOL's nose and tail)
         ld bc,10                        ; cam_x(3) cam_z(3) cam_y(2) yaw(2)
         ldir
+        ld a,(vtol_dead)
+        or a
+        jp nz,vtol_wreck                ; destroyed: out of control
 
         ; (keys: kbd_scan has read them; actions from keys.asm)
         ; --- speed ---
-        ld a,K_SPEED_UP
+        ld a,K_SPEED_UP                 ; (by SPEED_STEP, 1)
         call key_held
         jr z,.nq
         ld a,(speed)
@@ -38,26 +41,68 @@ update_player:
         jr z,.na
         dec a
         ld (speed),a
-.na:    ld a,K_STOP
+.na:    ; --- air brake: while held, the speed falls AIRBRAKE_STEP a frame
+        ; towards 0, going forwards or backwards.  Each braking frame tips the
+        ; nose one pitch step, as a nose key press does: up when braking
+        ; forward motion, down when braking reverse.  The pitch damper waits
+        ; while it brakes (ab_on), as it does while a nose key is held.
+        xor a
+        ld (ab_on),a
+        ld a,K_AIRBRAKE
         call key_held
         jr z,.nw
+        ld a,(speed)
+        or a
+        jr z,.nw                        ; stopped: nothing to brake
+        ld (ab_on),a                    ; (non-zero: braking this frame)
+        jp m,.rev
+        sub AIRBRAKE_STEP               ; forwards: slower, not past 0
+        jr nc,.fwd
         xor a
-        ld (speed),a
+.fwd:   ld (speed),a
+        xor a
+        ld (pitch_frac),a               ; whole steps, as the keys
+        ld a,(pitch)
+        cp PMAX
+        jr z,.nw
+        inc a                           ; nose up
+        ld (pitch),a
+        jr .nw
+.rev:   add a,AIRBRAKE_STEP             ; backwards: towards 0, not past it
+        jr nc,.bk
+        xor a
+.bk:    ld (speed),a
+        xor a
+        ld (pitch_frac),a
+        ld a,(pitch)
+        cp (-PMAX) & $FF
+        jr z,.nw
+        dec a                           ; nose down
+        ld (pitch),a
 .nw:
-        ; --- yaw ---
+        ; --- yaw: YAW_RATE a frame, but YAW_FINE on the frame a turn key is
+        ; first pressed (a tap turns 1 degree: fine control)
         ld a,K_LEFT
         call key_held
         jr z,.ns
-        ld hl,(yaw_frac)                ; 8.8 heading
         ld de,YAW_RATE
+        ld a,K_LEFT
+        call key_pressed
+        jr z,.lr
+        ld de,YAW_FINE
+.lr:    ld hl,(yaw_frac)                ; 8.8 heading
         or a
         sbc hl,de
         ld (yaw_frac),hl
 .ns:    ld a,K_RIGHT
         call key_held
         jr z,.nf
-        ld hl,(yaw_frac)
         ld de,YAW_RATE
+        ld a,K_RIGHT
+        call key_pressed
+        jr z,.rr
+        ld de,YAW_FINE
+.rr:    ld hl,(yaw_frac)
         add hl,de
         ld (yaw_frac),hl
 .nf:
@@ -83,6 +128,10 @@ update_player:
         inc a
         ld (pitch),a
 .nt:    ; --- pitch damper: ease back to level when the pitch keys are released
+        ; (and the air brake isn't tipping the nose)
+        ld a,(ab_on)
+        or a
+        jr nz,.held
         ld a,K_NOSE_UP
         call key_held
         jr nz,.held
@@ -149,11 +198,19 @@ update_player:
 .moved:
         call check_collision
         ret z
-        ; crashed - restore and stop
+        ; crashed - restore and stop, taking |speed| / 4 (a 2-bit shift
+        ; right, rounded down) as damage
         ld hl,old_pos
         ld de,cam_x
         ld bc,10
         ldir
+        ld a,(speed)
+        bit 7,a
+        jr z,.dmg
+        neg                             ; (reversing into it)
+.dmg:   srl a
+        srl a
+        call vtol_damage                ; (zpolice.asm)
         xor a
         ld (speed),a
         ld a,C_WARN
@@ -231,6 +288,54 @@ check_collision:
 .no:    xor a
         ret
 
+; The VTOL has been destroyed (vtol_dead): the controls do nothing.  It
+; spins DEAD_SPIN a frame and falls, a unit a frame faster each frame (up
+; to DEAD_FALL_MAX), until it hits the ground under it (floor_y: the road,
+; or the highest roof under its footprint).  Once down it lies still for
+; DEAD_PAUSE frames, then sets game_over (main_loop: the GAME OVER screen,
+; then the main menu).
+vtol_wreck:
+        xor a
+        ld (speed),a
+        ld a,(dead_down)
+        or a
+        jr nz,.down
+        ld hl,(yaw_frac)                ; spin
+        ld de,DEAD_SPIN
+        add hl,de
+        ld (yaw_frac),hl
+        ld a,(dead_vy)                  ; fall, faster each frame
+        cp DEAD_FALL_MAX
+        jr nc,.vy
+        inc a
+        ld (dead_vy),a
+.vy:    ld e,a
+        ld d,0
+        ld hl,(cam_y)
+        or a
+        sbc hl,de
+        jr nc,.y
+        ld hl,0
+.y:     push hl
+        call floor_y                    ; HL = the ground under it
+        ex de,hl
+        pop hl
+        or a
+        sbc hl,de
+        add hl,de
+        jr nc,.set                      ; still above it
+        ex de,hl                        ; hit the ground: on it
+        ld a,1
+        ld (dead_down),a
+.set:   ld (cam_y),hl
+        ret
+.down:  ld hl,dead_wait                 ; on the ground: the pause, then
+        dec (hl)                        ; GAME OVER
+        ret nz
+        ld a,1
+        ld (game_over),a
+        ret
+
 ; One damping step: move the signed 8.8 pitch (pitch_frac/pitch) towards 0
 ; by max(PDAMP_MIN, |whole pitch| * PDAMP_K), stopping exactly at 0.
 ; Calculated rather than looked up: the Z80N MUL makes it as quick as a
@@ -268,3 +373,4 @@ pitch_damp:
 ;==============================================================================
 old_pos:    ds 10                       ; cam_x, cam_z, cam_y, yaw before the move
 pd_count:   db PDAMP_FRAMES             ; frames to the next damping step
+ab_on:      db 0                        ; non-zero: the air brake acted this frame

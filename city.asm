@@ -1227,7 +1227,8 @@ draw_city:
     ENDIF
 draw_cells:
         ld a,(cz)
-        sub VIEW_R
+        ld hl,view_r
+        sub (hl)
         ld (cell_j),a
 .b:     ld a,(cell_j)
         ld hl,cz
@@ -1238,7 +1239,8 @@ draw_cells:
         inc (hl)
         jr .b
 .f:     ld a,(cz)
-        add a,VIEW_R
+        ld hl,view_r
+        add a,(hl)
         ld (cell_j),a
 .f2:    ld a,(cell_j)
         ld hl,cz
@@ -1254,7 +1256,8 @@ draw_row:
         cp GRID
         ret nc
         ld a,(cx)
-        sub VIEW_R
+        ld hl,view_r
+        sub (hl)
         ld (cell_i),a
         call row_start
 .l:     ld a,(cell_i)
@@ -1274,7 +1277,8 @@ draw_row:
         ld (row_z1),hl
         jr .l
 .r:     ld a,(cx)
-        add a,VIEW_R
+        ld hl,view_r
+        add a,(hl)
         ld (cell_i),a
         call row_start
 .r2:    ld a,(cell_i)
@@ -1343,7 +1347,7 @@ draw_cell:
         ld a,(hl)
         ld c,a
         and CELL_CODE
-        jr nz,.bld
+        jr nz,.nst
         ; street: the zombies and humans standing there (bits 7, 6)
         ld a,c
         and CELL_ZOMBIE|CELL_HUMAN
@@ -1362,8 +1366,11 @@ draw_cell:
         call zombie_cell
         pop hl
         jp human_cell
-.bld:   bit CELL_HUMAN_B,c
-        jr z,draw_bld                   ; nobody on the roof
+.nst:   cp VOID_CODE
+        ret z                           ; out of bounds: never drawn
+.bld:   ld a,c                          ; humans on the roof, monsters
+        and CELL_ZOMBIE|CELL_HUMAN      ; (ghosts) above it?
+        jr z,draw_bld                   ; nobody
     IFDEF OCCLUSION_CULL
         ld a,(occ_on)
         or a
@@ -1372,18 +1379,24 @@ draw_cell:
         push hl
         call occ_human                  ; listed before the building, so
         pop hl                          ; drawn after it
+        push hl
+        call occ_zombie
+        pop hl
         pop bc
         jr draw_bld
 .hdraw:
     ENDIF
         push hl
-        call draw_bld                   ; the building, then the humans on
-        pop hl                          ; its roof
+        call draw_bld                   ; the building, then the ghosts
+        pop hl                          ; above it and the humans on its
+        push hl                         ; roof
+        call zombie_cell
+        pop hl
         jp human_cell
 
 ; The building in the cell at HL (C = its map byte)
 draw_bld:
-        ld de,city_col-city_map         ; same index in city_col (page 7)
+        ld de,city_col-city_map         ; same index in city_col (city bank)
         add hl,de
         ld a,(hl)
         and %11111100
@@ -1849,9 +1862,12 @@ rot_pitch:
 ;==============================================================================
 draw_dots:
         ld a,(cz)
-        sub DOT_R
+        ld hl,dot_r
+        sub (hl)
         ld (dot_j),a
-        ld a,2*DOT_R+2
+        ld a,(dot_r)
+        add a,a
+        add a,2
         ld (dot_rows),a
 .row:   ld a,(dot_j)
         cp GRID+1
@@ -1859,7 +1875,8 @@ draw_dots:
         ; first corner of the row by full rotation, then step along x:
         ; +256 world units in x adds exactly (cosY, sinY) to (X, Z1)
         ld a,(cx)
-        sub DOT_R
+        ld hl,dot_r
+        sub (hl)
         ld (dot_i),a
         ld h,a
         ld l,0
@@ -1876,7 +1893,9 @@ draw_dots:
         ld (t_dz),hl
         call rot_yaw
         ld (t_x),hl
-        ld a,2*DOT_R+2
+        ld a,(dot_r)
+        add a,a
+        add a,2
         ld (dot_cols),a
 .col:   ld a,(dot_i)
         cp GRID+1
@@ -1945,8 +1964,10 @@ draw_bullets:
         jr z,.nx
         ld a,(ix+B_KIND)
         cp BK_ROCKET
-        jr nz,.rnd
-        call draw_rocket
+        jr c,.rnd                       ; a round (or a Bofors shell)
+        cp BK_MISSILE+1
+        jr nc,.rnd
+        call draw_rocket                ; a rocket or a missile
         jr .nx
 .rnd:   ld a,(ix+B_STATE)
         cp 3                            ; 3: laser beam
@@ -2094,11 +2115,11 @@ draw_particles:
         ld a,c
         call seg_map                    ; row's section -> A = y & 31
         ld h,a
-        ld a,(ix+0)                     ; colour: PART_COL0 + (age-1)*4
-        dec a
+        ld a,(ix+0)                     ; colour: its age-1 colour (+10)
+        dec a                           ; + (age-1)*4
         add a,a
         add a,a
-        add a,PART_COL0
+        add a,(ix+10)
         ld (hl),a
 .nx:    ld de,PREC
         add ix,de
@@ -2233,19 +2254,35 @@ bul_clip:
 ; Gunsight in the centre of the Layer 2 viewport
 ;==============================================================================
 draw_gunsight:
-        ld a,HUD_COL
-        ld (line_col),a
-        ld hl,VIEW_CY*256+122
-        ld de,VIEW_CY*256+125
+        ld a,HUD_COL                    ; centred on row sight_y (the centre
+        ld (line_col),a                 ; gun's tilt: gun_aim, weapons.asm)
+        ld a,(sight_y)
+        ld h,a
+        ld d,a
+        ld l,122
+        ld e,125
         call draw_line
-        ld hl,VIEW_CY*256+131
-        ld de,VIEW_CY*256+134
+        ld a,(sight_y)
+        ld h,a
+        ld d,a
+        ld l,131
+        ld e,134
         call draw_line
-        ld hl,(VIEW_CY-6)*256+128
-        ld de,(VIEW_CY-3)*256+128
+        ld a,(sight_y)
+        sub 6
+        ld h,a
+        add a,3
+        ld d,a
+        ld l,128
+        ld e,l
         call draw_line
-        ld hl,(VIEW_CY+3)*256+128
-        ld de,(VIEW_CY+6)*256+128
+        ld a,(sight_y)
+        add a,3
+        ld h,a
+        add a,3
+        ld d,a
+        ld l,128
+        ld e,l
         jp draw_line
 
     IFDEF OCCLUSION_CULL
@@ -2276,7 +2313,7 @@ OCC_RECN        equ $60         ; up to $5F: 30 records ($6000 on: city_col)
 OR_VIS          equ 128         ; bld_vis, bld_mx, bld_mz, col_x, col_z, col_top
 ; A list entry is a record's high byte (< $60), a cell with humans as its
 ; city_col address ($6000-$6FFF) or a cell with zombies as its city_map
-; address (>= $8000).
+; address ($7000-$7FFF).
 
 ; Start of the city: occlusion on only in level flight
 occ_begin:
@@ -2306,7 +2343,8 @@ occ_cells:
         ld a,(cz)
         ld (cell_j),a
         call occ_row                    ; camera row first
-        ld b,VIEW_R
+        ld a,(view_r)
+        ld b,a
 .f:     push bc
         ld hl,cell_j
         inc (hl)
@@ -2315,7 +2353,8 @@ occ_cells:
         djnz .f
         ld a,(cz)
         ld (cell_j),a
-        ld b,VIEW_R
+        ld a,(view_r)
+        ld b,a
 .n:     push bc
         ld hl,cell_j
         dec (hl)
@@ -2330,16 +2369,19 @@ occ_row:
         ret nc
         ; right half, as draw_row: start at cx+R, step down to cx
         ld a,(cx)
-        add a,VIEW_R
+        ld hl,view_r
+        add a,(hl)
         ld (cell_i),a
         call row_start
-        ld b,VIEW_R
+        ld a,(view_r)
+        ld b,a
 .d:     call occ_stepm
         djnz .d
         ld a,(cx)
         ld (cell_i),a
         call try_cell                   ; camera column first
-        ld b,VIEW_R
+        ld a,(view_r)
+        ld b,a
 .r:     push bc
         ld hl,cell_i
         inc (hl)
@@ -2349,17 +2391,22 @@ occ_row:
         djnz .r
         ; left half, as draw_row: start at cx-R, step up to cx-1
         ld a,(cx)
-        sub VIEW_R
+        ld hl,view_r
+        sub (hl)
         ld (cell_i),a
         call row_start
-        ld b,VIEW_R-1
+        ld a,(view_r)
+        dec a
+        ld b,a
 .u:     call occ_stepp
         djnz .u
         ld a,(cx)
         dec a
         ld (cell_i),a
         call try_cell                   ; then cx-1 .. cx-R
-        ld b,VIEW_R-1
+        ld a,(view_r)
+        dec a
+        ld b,a
 .l:     push bc
         ld hl,cell_i
         dec (hl)
@@ -2409,8 +2456,8 @@ occ_human:
         ld (occ_lp),hl
         ret
 
-; Empty cell, HL -> its city_map byte: list it if zombies stand there
-; (bit 7)
+; HL -> a city_map byte: list the cell if zombies stand there, or special
+; monsters fly over it (bit 7)
 occ_zombie:
         bit CELL_ZOMBIE_B,(hl)
         ret z
@@ -2692,13 +2739,13 @@ occ_draw_list:
         cp $60
         jr c,.bld                       ; < $60: a building record
         ex de,hl
-        cp $80
+        cp high city_map
         jr nc,.zom
         ld de,city_map-city_col         ; $60-$6F: humans (city_col address)
         add hl,de
         call human_cell
         jr .nx
-.zom:   call zombie_cell                ; >= $8000: zombies (city_map address)
+.zom:   call zombie_cell                ; $70-$7F: zombies (city_map address)
         jr .nx
 .bld:   ld h,d                          ; record D
         ld l,OR_VIS

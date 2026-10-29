@@ -13,7 +13,7 @@
 ;  clipped in 3D (Sutherland-Hodgman, 5 planes). Rasterisation then only
 ;  ever sees on-screen 8-bit coordinates.
 ;
-;  Controls: Q/A speed up/down   Z stop      O/P turn left/right
+;  Controls: Q/A speed up/down   Z air brake O/P turn left/right
 ;            W/S climb/descend   E/D nose up/down
 ;            SPACE fire          1-5 select weapon slot
 ;            0 change the centre slot's weapon
@@ -90,7 +90,7 @@
 ; (figures below are at 14 fps).
 GRID            equ 64          ; the city is GRID x GRID tiles (gentables.py)
 ; A city_map byte: bits 0-4 the cell code (0 road, 1-15 building height
-; level, PAD_CODE, TERRACE_CODE), bit 6 set while a human waits in the cell
+; level, PAD_CODE, TERRACE_CODE, VOID_CODE: out of bounds), bit 6 set while a human waits in the cell
 ; (human.asm, hum_flags), bit 7 while a zombie or special monster stands in
 ; it (zombie.asm, zflags; its type is in its record).  Bit 5 is free.  So
 ; every reader masks with CELL_CODE before testing for road or a code.
@@ -105,14 +105,23 @@ TILE_UNITS      equ 256         ; world units per tile
 HEIGHT_M        equ 10          ; metres per height unit
 HEIGHT_UNITS    equ 128         ; world units per height unit
 NEAR            equ 16          ; near clip plane: 1.25 m
-VIEW_R          equ 6           ; buildings drawn within +/- 6 tiles (120 m)
-DOT_R           equ 5           ; street intersection markers radius (tiles)
+VIEW_R          equ 6           ; most draw distance: buildings within +/- 6
+                                ; tiles (120 m).  Each level sets its own,
+                                ; 2..VIEW_R (view_r; night, fog), and the
+                                ; street dots' radius one less (dot_r)
 PMAX            equ 24          ; pitch limit (256 = 360 deg) - match gentables.py
 SPEED_MAX       equ 28          ; units/frame: 2.2 m/frame, ~31 m/s (110 km/h)
 SPEED_MIN       equ -6          ; reverse: 0.47 m/frame, ~6.6 m/s
 YAW_RATE        equ $0180       ; turn per frame, 8.8 fixed (1.5 units;
                                 ; 256 units = 360 degrees)
+YAW_FINE        equ 256*256/360 ; the first frame of a turn: 1 degree
+                                ; (182: 0.711 units, 8.8 fixed)
 CLIMB_RATE      equ 4           ; units/frame: 0.31 m/frame, ~4.4 m/s
+SPEED_STEP      equ 1           ; Q / A: speed change a frame, units/frame
+                                ; (1.1 m/s; player.asm uses inc / dec)
+        ASSERT SPEED_STEP == 1
+; Air brake (Z): the speed falls by twice the Q / A step every frame, to 0
+AIRBRAKE_STEP   equ 2*SPEED_STEP    ; 2 units/frame (2.2 m/s)
 ; Pitch damper: with neither E nor D held, the nose eases back to level.
 ; Every PDAMP_FRAMES frames the 8.8 pitch moves towards 0 by
 ; max(PDAMP_MIN, |pitch| * PDAMP_K) in 1/256ths of a pitch unit, i.e. by a
@@ -152,8 +161,20 @@ WPN_GUN         equ 1           ; machine gun (centre slot)
 WPN_LASER       equ 2           ; pulse laser (centre slot)
 WPN_CHAIN       equ 3           ; chain gun (centre slot)
 WPN_ROCKETS     equ 4           ; unguided rocket pod (wing pylons)
-WPN_MISSILE     equ 5           ; guided missile (placeholder)
+WPN_MISSILE     equ 5           ; missile pod (wing pylons)
 WPN_BOMB        equ 6           ; bomb (placeholder)
+WPN_BOFORS      equ 7           ; Bofors cannon (wing pylons)
+WPN_PROX        equ 8           ; proximity cannon (wing pylons)
+WPN_LAST        equ WPN_PROX    ; (the highest type: the tables by type)
+; Weapon type details: wpn_cfg, WCFG_SIZE bytes per type (wpn_cfg_ptr)
+WCFG_LOAD       equ 0           ; full load (AMMO_INF: infinite)
+WCFG_RELOAD     equ 1           ; frames to reload a shot on the pad (0: none)
+WCFG_SLOTS      equ 2           ; the slots it may be fitted in: bit n =
+                                ; slot n (0 = the centre slot, key 1)
+WCFG_SIZE       equ 3
+WS_CENTRE       equ %00001      ; slot masks: the centre slot (key 1),
+WS_PYLONS       equ %11110      ;   the wing pylons (keys 2-5),
+WS_ANY          equ %11111      ;   any slot
 
 ; Machine gun rounds: NBULLETS records of BREC bytes in `bullets`
 NBULLETS        equ 24          ; rounds in flight (the chain gun needs most)
@@ -173,8 +194,12 @@ B_PZ            equ 19
 B_TDX           equ 21          ; path distance between x / z cell boundaries
 B_TDZ           equ 23          ; (0 = not worked out yet)
 B_DMG           equ 25          ; damage to a zombie it hits directly
-B_KIND          equ 26          ; 0 = round or beam, BK_ROCKET = rocket
-BK_ROCKET       equ 1
+B_KIND          equ 26          ; 0 = round or beam, BK_ROCKET = rocket,
+BK_ROCKET       equ 1           ; BK_MISSILE = missile (both burst)
+BK_MISSILE      equ 2
+BK_BOFORS       equ 3           ; a Bofors shell: drawn as a round, bursts
+BK_PROX         equ 4           ; a proximity shell: as Bofors, and bursts
+                                ; passing near a monster (PROX_R)
 NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
 BULLET_MS       equ 500         ; muzzle velocity, m/s
 BULLET_STEP     equ BULLET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 457 units/frame
@@ -184,6 +209,24 @@ GUN_INTERVAL    equ 4           ; machine gun: frames between rounds
 ; frames.  Each round's heading and climb are turned by a random
 ; -CHAIN_DEV..+CHAIN_DEV steps of 1/256 rad (0.22 deg): +/-2 degrees.
 CHAIN_INTERVAL  equ 1           ; chain gun: frames between rounds
+; Centre gun tilt (gun_tilt, signed, 256 = 360 deg): R / F tilt the centre
+; slot's weapon up / down GUN_TILT_STEP a frame, at most GUN_TILT_UP up
+; (11: 15.5 deg, the nearest step to 15) and GUN_TILT_DN down (32: 45 deg);
+; V brings it back to the centre at twice the rate.  Its rounds (and laser)
+; fire at pitch + tilt; the gunsight moves to show where (sight_y).
+GUN_TILT_STEP   equ 1           ; 1.4 deg a frame
+GUN_TILT_UP     equ 11
+GUN_TILT_DN     equ 32
+GUN_CTR_STEP    equ 2*GUN_TILT_STEP
+SIGHT_MARGIN    equ 6           ; the gunsight's arms stay in the view
+; Integrity panel (hud.asm draw_integrity): under the weapon slots,
+; "INTEGRITY" on character row INT_ROW, the VTOL's hit points as a
+; percentage below it (INT_ROW+1)
+INT_ROW         equ 21
+INT_COL         equ 11              ; the label's column (under the slots)
+INT_PCT_COL     equ 12              ; "nnn%" from this column
+INT_WARN        equ 50              ; below this percentage: amber,
+INT_DANGER      equ 25              ;   below this: red (else green)
 CHAIN_DEV       equ 9           ; spread: 9/256 rad = 2.01 degrees
 ; Pulse laser: the beam is on for LASER_ON frames (0.1 s), then cools for
 ; LASER_COOL frames (0.25 s) before it can fire again; holding SPACE repeats.
@@ -216,6 +259,50 @@ ROCKET_LEN      equ 13          ; drawn 1 m long (white),
 ROCKET_TRAIL    equ 19          ; then a yellow trail to 1.5 m behind it
 BLAST_R         equ 64          ; 5 m
 BLAST_DMG       equ 20
+BLAST_PARTS     equ 10          ; its burst: orange particles (FIRE_LIFE frames)
+
+; Missile pod (WPN_MISSILE, on a wing pylon): MISSILE_SHOTS missiles, fired
+; and flying as rockets but at half the speed (75 m/s).  The burst is bigger:
+; MISSILE_DMG to everything within MISSILE_R (1.0 tile) on each of the x, y
+; and z axes, and MISSILE_PARTS orange particles.
+MISSILE_SHOTS   equ 4           ; a full pod
+MISSILE_MS      equ ROCKET_MS/2 ; m/s
+MISSILE_STEP    equ MISSILE_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 68 units/frame
+MISSILE_INTERVAL equ ROCKET_INTERVAL    ; frames between missiles
+MISSILE_R       equ TILE_UNITS  ; 1.0 tile (20 m)
+MISSILE_DMG     equ 15
+MISSILE_PARTS   equ 20
+
+; Bofors cannon (WPN_BOFORS, on a wing pylon): BOFORS_SHOTS shells, fired as
+; the machine gun's rounds (500 m/s, drawn as tracers) at a quarter of its
+; rate.  Each shell bursts where it hits anything: BOFORS_DMG to everything
+; within BOFORS_R (3 m) on each axis, and BOFORS_PARTS orange particles.
+BOFORS_SHOTS    equ 50          ; a full magazine
+BOFORS_INTERVAL equ GUN_INTERVAL*4      ; frames between shells (16)
+BOFORS_R        equ 3*TILE_UNITS/TILE_M ; 3 m: 38 units
+BOFORS_DMG      equ 4
+BOFORS_PARTS    equ 3
+
+; Proximity cannon (WPN_PROX, on a wing pylon): the Bofors cannon, but its
+; shells also burst when they pass within PROX_R (2 m) of a zombie or
+; special monster, on each axis from its x, z and feet (cell_zombies: the
+; burst's own box, so the monster is always in it), where the shell comes
+; nearest it.  The burst: PROX_DMG within PROX_R on each axis.
+PROX_SHOTS      equ BOFORS_SHOTS
+PROX_INTERVAL   equ BOFORS_INTERVAL
+PROX_R          equ 2*TILE_UNITS/TILE_M ; 2 m: 25 units
+PROX_DMG        equ 3
+PROX_PARTS      equ BOFORS_PARTS
+
+; Landed on the base pad (vtol_landed, the cell under it PAD_CODE) the VTOL
+; is repaired and its pods reloaded (pad_service, weapons.asm): 1 hit point
+; every REPAIR_FRAMES frames up to VTOL_HP, and each slot's weapon 1 shot
+; every its reload frames (wpn_cfg, WCFG_RELOAD) up to its full load.
+REPAIR_FRAMES   equ 5
+ROCKET_RELOAD   equ 15          ; frames a rocket
+MISSILE_RELOAD  equ 30          ; frames a missile
+BOFORS_RELOAD   equ 7           ; frames a Bofors shell
+PROX_RELOAD     equ BOFORS_RELOAD   ; and a proximity shell
 
 ; Humans to rescue (human.asm)
 HUMAN_MAX       equ 20          ; room for this many
@@ -226,22 +313,43 @@ HUMAN_ROOF_MAX  equ MAX_Y-HEIGHT_UNITS  ; humans aren't placed on roofs
                                 ; taller than the ceiling - 1.0 height unit
 HUMAN_RUN       equ TILE_UNITS*10/(TILE_M*NOMINAL_FPS)  ; 10 m/s: 9 units/frame
 HUMAN_HP        equ 10          ; hit points (a rocket blast kills)
+VTOL_HP         equ 50          ; the VTOL's hit points (ghosts attack it)
+; At 0 hit points the VTOL is destroyed (vtol_dead): out of control, it
+; spins DEAD_SPIN (8.8 yaw) a frame as it falls, faster each frame up to
+; DEAD_FALL_MAX units, until it hits the ground (the road or roof under it).
+; DEAD_PAUSE frames later the game is over: the GAME OVER screen for 10
+; seconds, then the main menu.
+DEAD_SPIN       equ $0800           ; 8 yaw units a frame: a turn in 32
+DEAD_FALL_MAX   equ 8               ; units a frame (11 m/s at 14 fps)
+DEAD_PAUSE      equ 100             ; frames on the ground before GAME OVER
 DISEMBARK       equ NOMINAL_FPS ; landed on the base pad: one off a second
 
-; Zombie burst: a killed zombie sprays NPART_BURST particles for PART_LIFE
-; frames, bright green fading to dark (weapons.asm moves them, city.asm
-; draws them).  Particle record: +0 age (0 = free, 1..PART_LIFE), +1..+6
-; x, y, z (world units), +7..+9 vx, vy, vz (signed units per frame).
-NPART           equ 40          ; pool: room for 4 bursts at once
+; Particles (weapons.asm moves them, city.asm draws them).  A killed zombie
+; sprays NPART_BURST for PART_LIFE frames, bright green fading to dark; a
+; rocket or missile burst sprays orange ones (FIRE_COL0..) for FIRE_LIFE
+; frames.  Particle record: +0 age (0 = free, 1..its life), +1..+6 x, y, z
+; (world units), +7..+9 vx, vy, vz (signed units per frame), +10 its colour
+; at age 1 (each age after is 4 palette entries on), +11 its life (frames).
+NPART           equ 60          ; pool: a missile burst and 4 zombie bursts
 NPART_BURST     equ 10
 PART_LIFE       equ 8
-PREC            equ 10
+FIRE_LIFE       equ 10
+PREC            equ 12
 PART_Y          equ 13          ; bursts from 1 m up
 PART_GRAV       equ 1           ; vy lost per frame (they arc up and fall)
 
-; The level a new game starts on.  Normally 1; DEBUG: 20, to test the
-; zombies' attacks on the base (junction bias 48 + 2 * level = 88%).
-START_LEVEL     equ 20
+; The level a new game starts on: 1 (for testing, another level with
+; -DSTART_LEVEL_SET=n on the command line)
+    IFDEF START_LEVEL_SET               ; (command line: -DSTART_LEVEL_SET=n)
+START_LEVEL     equ START_LEVEL_SET
+    ELSE
+START_LEVEL     equ 1
+    ENDIF
+
+; Debug: key 0 kills every monster and rescues every human left, so the
+; next wave starts (after the last, the level ends); key 9 the same, on to
+; the next city's first level.  0 for a release.
+DEBUG_KILLALL   equ 1
 
 ; Zombies against the base (zombie.asm)
 ZBIAS_BASE      equ 48          ; junction bias towards the pad, percent:
@@ -250,6 +358,9 @@ ZBIAS_MAX       equ 95          ; at most 95%
 ATTACK_R        equ 26          ; a zombie attacks a base tile from 0.1 tile (2 m)
 ZHIT_FRAMES     equ 5           ; one hit every 5 frames, 1 damage each
 TERRACE_HP      equ 100         ; hit points of each green terrace tile
+NBARR           equ 30          ; barricades (terrace away from the base): at
+BARR_REC        equ 3           ;   most this many, each x, z, hit points
+                                ;   (barr_tab; TERRACE_HP each)
 PAD_HP          equ 200         ; and of the landing pad (destroyed: game over)
 GAME_OVER_FR    equ 500         ; game over screen: 10 s of 50 Hz frames
 
@@ -277,8 +388,16 @@ MAP_ZOMBIE_MID  equ 51          ; zombie blip shades (bright = MAP_ZOMBIE)
 MAP_ZOMBIE_DARK equ 55
 MAP_ZOMBIE_ATK  equ HUD_WARN    ; a zombie attacking the base: red
 ZOMBIE_COL      equ 27
-PANEL_L2        equ 91          ; the ULA panel colour, on Layer 2 (compass)
+PANEL_L2        equ 91          ; the ULA panel colour, on Layer 2 (unused)
 GAUGE_AMBER     equ 95          ; ground height gauge (Layer 2)
+GHOST_COL       equ 99          ; ghosts (white); their map blip's first shade
+MAP_GHOST_MID   equ 103         ; ghost map blip shades: light grey,
+MAP_GHOST_DARK  equ 107         ; grey
+GHOST_FADE      equ 111         ; dark grey: a dying ghost's last fade step
+BANSHEE_COL     equ 115         ; banshees (yellow); their map blip's first shade
+MAP_BANSHEE_MID equ 119         ; banshee blip shades and fade steps
+MAP_BANSHEE_DARK equ 123
+BANSHEE_FADE    equ 127         ; a dying banshee's last fade step
 PART_COL0       equ 59          ; zombie burst particles: age 1 (bright) ..
 PART_COL1       equ 63
 PART_COL2       equ 67
@@ -287,6 +406,18 @@ PART_COL4       equ 75
 PART_COL5       equ 79
 PART_COL6       equ 83
 PART_COL7       equ 87          ; .. age 8 (dark); a step of 4 per age
+FIRE_COL0       equ 131         ; rocket / missile burst particles: age 1
+FIRE_COL1       equ 135
+FIRE_COL2       equ 139
+FIRE_COL3       equ 143
+FIRE_COL4       equ 147
+FIRE_COL5       equ 151
+FIRE_COL6       equ 155
+FIRE_COL7       equ 159
+FIRE_COL8       equ 163
+FIRE_COL9       equ 167
+                                ; (yellow-orange) .. age 10 (FIRE_COL0+36,
+                                ; dark red-brown), a step of 4 per age
 
 ; Screen split: the 3D viewport is Layer 2, top two thirds (256x128, rows
 ; 0-127).  The bottom third (rows 128-191) is an instrument panel drawn on the
@@ -302,7 +433,8 @@ P_PANEL         equ 1           ; paper: panel background
 C_WARN          equ 3           ; ink/paper: red (reversing)
 C_OK            equ 4           ; ink/paper: green
 C_YEL           equ 2           ; ink: yellow (weapon slot flash)
-C_BLUE          equ 5           ; ink: light blue (empty weapon slot)
+C_BLUE          equ 5           ; ink: light blue
+C_AMBER         equ 6           ; ink/paper: amber (weapon slot flash)
 ATTR_PANEL      equ P_PANEL<<3 | 7
 
 ; Gauges: vertical bars on Layer 2 behind transparent ULA cells, filled
@@ -315,16 +447,11 @@ GAUGE_H         equ 48
 GAUGE_LROW      equ 23              ; label row
 SPD_GCOL        equ 1
 ALT_GCOL        equ 3
-PAX_COL         equ 5               ; passengers: first character column
-; Compass: a 32x8 strip at pixel (COMP_X, COMP_Y) in a 2-pixel frame, on
-; Layer 2 behind transparent ULA cells (columns 15-20, character rows 19-20)
-COMP_X          equ 128
-COMP_Y          equ 156
-COMP_BGX        equ 120             ; its 48x16 background patch
-COMP_BGY        equ 152
-PAX_ROW         equ 17              ; passengers aboard (pixel row 136), and
-WPN_LBL         equ 11              ; the weapon slots: "WPN:" at this column,
-WPN_COL         equ 15              ; slot digits 1-5 from this one
+; (The compass is a bar of hardware sprites: hud_sprites.asm)
+PAX_ROW         equ 17              ; the panel's top row (pixel row 136):
+WPN_ROW         equ PAX_ROW         ; the weapon slots: 8x16 boxes on character
+WPN_COL0        equ 11              ; rows 17-18 from this column, every 2nd,
+                                    ; their weapons' letters on row 19
 WFLASH          equ 5               ; empty slot requested: flash frames
 
 ; City map on the right of the panel: 32x32 cells at 2x2 pixels = 64x64,
@@ -416,7 +543,9 @@ boot_stack:
         ; page (PAGE_SIN, slot 0), below
         INCLUDE "htabs.asm"             ; hztab (horizon), htab (heights)
         INCLUDE "city_map.asm"          ; city_map, base / wall constants
-        INCLUDE "l2_pallets.asm"        ; l2_palette
+        INCLUDE "l2_pallets.asm"        ; (checks on the fixed colour slots)
+        INCLUDE "levels.asm"            ; the current level's record
+        INCLUDE "text.asm"              ; text screens: menu, load-out
 
 ;==============================================================================
 ; Entry
@@ -430,18 +559,9 @@ start:
         call init_audio                 ; (audio.asm)
         call im2_init                   ; I -> the IM 2 vector table, IM 2
                                         ; (interrupts.asm; still disabled)
-        ; load the shaded Layer 2 palette (first L2 palette, 9-bit entries)
-        nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
-        nextreg $40,0
-        ld hl,l2_palette
-        ld b,0                          ; 256 entries
-.pal:   ld a,(hl)
-        inc hl
-        nextreg $44,a                   ; RRRGGGBB
-        ld a,(hl)
-        inc hl
-        nextreg $44,a                   ; low blue bit
-        djnz .pal
+        nextreg CODE_MMU,PAGE_FILE      ; the SD card's default drive
+        call fh_init                    ; (file_handler.asm)
+        ; (the Layer 2 palette: each city's own, loaded with the level)
 
         ld a,r                          ; random seed (xorshift: non-zero);
         ld l,a                          ; the menu stirs it every frame
@@ -477,12 +597,64 @@ newGame:
         ldir
         ld a,START_LEVEL
         ld (level),a
+        ld a,VTOL_HP
+        ld (vtol_hp),a                  ; the VTOL undamaged
+        ld a,DEAD_PAUSE
+        ld (dead_wait),a
+        xor a
+        ld (vtol_dead),a
+        ld (dead_down),a
+        ld (dead_vy),a
+        ld hl,0
+        ld (salvage_points),hl          ; no salvage yet
+        ld hl,wpn_stock                 ; and no weapons in store or
+        ld b,2*(WPN_LAST+1)             ; unlocked (wpn_unlocked follows)
+.ws:    ld (hl),0
+        inc hl
+        djnz .ws
+        ld hl,wpn_slots                 ; but those fitted at the start
+        ld b,WPN_SLOTS
+.wu:    ld a,(hl)
+        ld de,wpn_unlocked
+        add de,a
+        ld a,1
+        ld (de),a
+        inc hl
+        inc hl
+        djnz .wu
+        xor a
+        ld (wpn_unlocked+WPN_NONE),a    ; (an empty slot isn't a weapon)
+        ; fall through: the first level
+
+;==============================================================================
+; Start the level `level`: on newGame, and after each level completed
+; (level_complete_screen).  The VTOL goes back onto the base pad, level and
+; still; its hit points, weapons and ammo carry on.  The level's files are
+; loaded and everything in the city is set up afresh.
+;==============================================================================
+next_level:
+        ld sp,stack_top
+        ld hl,start_state               ; position, heading, pitch, speed
+        ld de,cam_x
+        ld bc,speed+1-cam_x
+        ldir
+        ld hl,bullets                   ; no rounds or beam in flight
+        ld de,bullets+1
+        ld bc,(NBULLETS+1)*BREC+NPART*PREC-1    ; and no particles
+        ld (hl),0
+        ldir
         ld a,1
         ld (wave_number),a              ; the level's first zombie wave
         xor a
+        ld (level_done),a
         ld (game_over),a
-        ld hl,0
-        ld (salvage_points),hl          ; no salvage yet
+        nextreg LOGIC_MMU,PAGE_LEVEL    ; the level's files: its record, its
+        ld a,(level)                    ; city's map, colours and palette,
+        call load_level                 ; the draw distance (level_load.asm)
+        jr nc,.loaded
+        nextreg LOGIC_MMU,PAGE_MENU     ; couldn't: say so, back to the menu
+        jp load_error_screen            ; (menu.asm)
+.loaded:
         call base_init                  ; the pad and terrace, at full strength
         nextreg LOGIC_MMU,PAGE_WEAPONS
         call weapons_reset
@@ -506,6 +678,8 @@ newGame:
         call ula_init                   ; ULA: FPS overlay, panel, city map
         call zombie_init                ; place the zombies on the streets
         call human_init                 ; and the humans to rescue
+        nextreg LOGIC_MMU,PAGE_SPECIAL  ; and the level's special monsters
+        call spec_init                  ; (specials.asm)
 
 ;==============================================================================
 ; Main loop
@@ -517,6 +691,8 @@ main_loop:
         call update_player
         call setup_frame
         call zombie_update              ; walk the zombies (page at $2000)
+        nextreg LOGIC_MMU,PAGE_SPECIAL  ; and fly the special monsters
+        call spec_update                ; (specials.asm)
         nextreg LOGIC_MMU,PAGE_WEAPONS  ; weapons logic at $C000
         call update_weapons             ; fire, move rounds, hits
         call human_update               ; map dots, rescues (page at $7000)
@@ -525,7 +701,12 @@ main_loop:
         jr z,.play
         nextreg LOGIC_MMU,PAGE_MENU     ; the pad is destroyed: game over
         jp game_over_screen             ; (menu.asm) -> main menu
-.play:
+.play:  ld a,(level_done)
+        or a
+        jr z,.go
+        nextreg LOGIC_MMU,PAGE_MENU     ; the last wave wiped out: level
+        jp level_complete_screen        ; complete (menu.asm) -> next_level
+.go:
         call map_shadow
     IFDEF DRAW_FPS
         call vtick
@@ -552,6 +733,8 @@ main_loop:
     IFDEF DRAW_FPS
         call fps_tick                   ; HUD page is still at $E000
     ENDIF
+        nextreg CODE_MMU,PAGE_SPRITES   ; the HUD sprites (humans, compass)
+        call hud_sprites                ; (hud_sprites.asm), with the new frame
         jp main_loop
 
 ;==============================================================================
@@ -680,6 +863,23 @@ cam_cell_ptr:
         add hl,de
         ret
 
+; A = damage to the VTOL (a building crash, a ghost): its hit points
+; (vtol_hp) fall by that, not below 0.  At 0 it is destroyed (vtol_dead): it
+; spins down out of control (vtol_wreck, player.asm), then the game is over.
+vtol_damage:
+        or a
+        ret z
+        ld c,a
+        ld a,(vtol_hp)
+        sub c
+        jr nc,.hp
+        xor a
+.hp:    ld (vtol_hp),a
+        ret nz
+        ld a,1
+        ld (vtol_dead),a
+        ret
+
 ; HL = the height the VTOL rests at: MIN_Y when its whole footprint is over
 ; road, or just clear (COLL_H) of the highest roof under it
 floor_y:
@@ -689,6 +889,80 @@ floor_y:
         ld hl,(vg_max)
         ld de,COLL_H+1
         add hl,de
+        ret
+
+; Weapon type details, by WPN_*: its full load, reload frames a shot (0:
+; doesn't reload; the AMMO_INF weapons) and the slots it may be fitted in
+; (resident, for the weapons page and the load-out screen)
+wpn_cfg:    db 0, 0, WS_ANY                             ; WPN_NONE (empty)
+            db AMMO_INF, 0, WS_CENTRE                   ; WPN_GUN
+            db AMMO_INF, 0, WS_ANY                      ; WPN_LASER
+            db AMMO_INF, 0, WS_CENTRE                   ; WPN_CHAIN
+            db ROCKET_SHOTS, ROCKET_RELOAD, WS_PYLONS   ; WPN_ROCKETS
+            db MISSILE_SHOTS, MISSILE_RELOAD, WS_PYLONS ; WPN_MISSILE
+            db 0, 0, 0                                  ; WPN_BOMB (none yet)
+            db BOFORS_SHOTS, BOFORS_RELOAD, WS_PYLONS   ; WPN_BOFORS
+            db PROX_SHOTS, PROX_RELOAD, WS_PYLONS       ; WPN_PROX
+        ASSERT WPN_ROCKETS == 4 && WPN_MISSILE == 5 && WPN_BOFORS == 7
+        ASSERT WPN_PROX == 8
+        ASSERT $ - wpn_cfg == WCFG_SIZE*(WPN_LAST+1)
+
+; A = weapon type -> HL = its wpn_cfg entry.  Preserves BC, DE.
+wpn_cfg_ptr:
+        ld l,a
+        add a,a
+        add a,l                         ; * WCFG_SIZE
+        ld hl,wpn_cfg
+        add hl,a
+        ret
+        ASSERT WCFG_SIZE == 3
+
+; A = weapon type, C = slot (0 = the centre slot): carry set if the weapon
+; may be fitted in that slot (WCFG_SLOTS).  Preserves DE.
+wpn_fits:
+        call wpn_cfg_ptr
+        ld a,WCFG_SLOTS
+        add hl,a
+        ld a,(hl)
+        ld b,c
+        inc b
+.sh:    rrca                            ; bit C into carry
+        djnz .sh
+        ret
+
+;------------------------------------------------------------------------------
+; From the LEVEL COMPLETE screen (menu.asm, slot 6): page the load-out screen
+; into slot 6 (from here, resident) and show it; it goes on to next_level
+;------------------------------------------------------------------------------
+loadout_go:
+        nextreg LOGIC_MMU,PAGE_LOADOUT
+        jp loadout_screen
+
+; From the main menu (menu.asm, slot 6): the redefine keys screen
+keydef_go:
+        nextreg LOGIC_MMU,PAGE_KEYDEF
+        jp keydef_screen
+
+; Back to the main menu, from another slot 6 page (the redefine keys screen)
+menu_go:
+        nextreg LOGIC_MMU,PAGE_MENU
+        jp main_menu
+
+; Z if the VTOL is landed: speed 0 and resting on the floor under it (the
+; road, the landing pad or a roof: floor_y), and not a wreck.  Landed, its
+; weapons don't fire (update_weapons) and humans can board or get off
+; (human_update).
+vtol_landed:
+        ld a,(vtol_dead)
+        or a
+        ret nz                          ; a wreck
+        ld a,(speed)
+        or a
+        ret nz                          ; moving
+        call floor_y
+        ld de,(cam_y)
+        or a
+        sbc hl,de                       ; Z: resting on it
         ret
 
 ; The VTOL's footprint: the corners and the long-side midpoints of its
@@ -1027,10 +1301,29 @@ wpn_sel:    ds 1                        ; selected slot (keys 1-5), fires on SPA
 wflash_slot: ds 1                       ; empty slot requested: which, and
 wflash_t:   ds 1                        ; frames of yellow/blue flash left
 level:      db START_LEVEL              ; current level (newGame: START_LEVEL)
+view_r:     db VIEW_R                   ; draw distance, tiles (load_level)
+dot_r:      db VIEW_R-1                 ; street dots' radius (load_level)
+vtol_hp:    db VTOL_HP                  ; the VTOL's hit points (newGame)
+vtol_dead:  db 0                        ; 1: destroyed (hit points 0)
+dead_down:  db 0                        ; 1: the wreck has hit the ground
+dead_vy:    db 0                        ; its falling speed, units a frame
+dead_wait:  db DEAD_PAUSE               ; frames on the ground to GAME OVER
+level_done: db 0                        ; 1: the level's last wave is wiped out
 wave_number: db 1                       ; current zombie wave of the level,
                                         ; 1..LV_WAVES (newGame: 1)
 game_over:  db 0                        ; 1: the landing pad was destroyed
 salvage_points: dw 0                    ; salvage points, 16-bit (newGame: 0)
+gun_tilt:   db 0                        ; centre gun tilt, signed (weapons_reset)
+barr_n:     db 0                        ; barricades in barr_tab (barricade_init)
+barr_tab:   ds NBARR*BARR_REC           ; barricades: x, z, hit points
+sight_y:    db VIEW_CY                  ; the gunsight's row (gun_aim)
+; Weapons unlocked by salvage (salvage_award, menu.asm), not yet fitted: a
+; count per weapon type (WPN_*), for the load-out page (newGame: none)
+wpn_stock:  ds WPN_LAST+1
+; 1: the weapon type has been unlocked (fitted at the start, or by salvage):
+; the load-out screen lists it, even with none in store (newGame)
+wpn_unlocked: ds WPN_LAST+1
+        ASSERT wpn_unlocked == wpn_stock + WPN_LAST + 1
 vg_sin:     dw 0                        ; vtol_ground: heading sin, cos,
 vg_cos:     dw 0
 vg_fx:      dw 0                        ; nose offset (x, z),
@@ -1048,10 +1341,10 @@ start_state:
             db 0, 0                     ; pitch: level
             db 0                        ; speed
             db WPN_GUN, AMMO_INF        ; slot 0: centre gun, infinite
-            db WPN_ROCKETS, ROCKET_SHOTS  ; 1: left outer pylon: rocket pod
-            db WPN_NONE, 0              ; 2: left inner pylon
-            db WPN_NONE, 0              ; 3: right inner pylon
-            db WPN_NONE, 0              ; 4: right outer pylon
+            db WPN_NONE, 0              ; 1: left outer pylon: empty
+            db WPN_NONE, 0              ; 2: left inner pylon: empty
+            db WPN_NONE, 0              ; 3: right inner pylon: empty
+            db WPN_NONE, 0              ; 4: right outer pylon: empty
             db WPN_CENTRE               ; wpn_sel
             db 0, 0                     ; wflash_slot, wflash_t
 start_state_end:
@@ -1113,6 +1406,7 @@ stack_top:
         MMU CODE_SLOT e, PAGE_SPRITES, CODE_ADDR
         ORG CODE_ADDR
         INCLUDE "sprites.asm"
+        INCLUDE "hud_sprites.asm"       ; the human column, the compass bar
         DISPLAY "Sprites end:",/A,$
 
         MMU CODE_SLOT e, PAGE_INIT, CODE_ADDR
@@ -1149,27 +1443,49 @@ stack_top:
         INCLUDE "menu.asm"
         DISPLAY "Menu end:  ",/A,$
 
+        MMU LOGIC_SLOT e, PAGE_LEVEL, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "level_load.asm"
+        DISPLAY "Level end: ",/A,$
+
+        MMU LOGIC_SLOT e, PAGE_LOADOUT, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "loadout.asm"
+        DISPLAY "Loadout end:",/A,$
+
+        MMU LOGIC_SLOT e, PAGE_KEYDEF, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "keydef.asm"
+        DISPLAY "Keydef end:",/A,$
+
+        MMU LOGIC_SLOT e, PAGE_SPECIAL, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "specials.asm"
+        DISPLAY "Specials end:",/A,$
+
 ;==============================================================================
 ; Always mapped
 ;==============================================================================
         MMU ZOMBIE_SLOT e, PAGE_ZOMBIE, ZOMBIE_ADDR
         ORG ZOMBIE_ADDR
         INCLUDE "zombie.asm"
-        INCLUDE "levels.asm"            ; the level table (any page reads it)
         DISPLAY "Zombie end:",/A,$
-
-        MMU TABLES_SLOT e, PAGE_OCC1, TABLES_ADDR  ; cell colours, kept mapped
-        ORG TABLES_ADDR
-        INCLUDE "tables_col.inc"
-        DISPLAY "Colours end:",/A,$
-        ORG HUMAN_ADDR
         INCLUDE "human.asm"
         DISPLAY "Humans end:",/A,$
         INCLUDE "map.asm"
         DISPLAY "Map end:   ",/A,$
         INCLUDE "interrupts.asm"        ; IM 2 vector table and routine
         DISPLAY "IM2 end:   ",/A,$
-        ASSERT $ <= $8000
+        ASSERT $ <= ZOMBIE_ADDR+MEMBANK_SIZE
+
+; The city bank (page 7, always mapped in slot 3): the current city, read
+; from its file by load_level.  Indexed alike: row * GRID + column.
+        MMU TABLES_SLOT e, PAGE_OCC1, TABLES_ADDR
+        ORG TABLES_ADDR
+city_col:   ds GRID*GRID                ; colour family of each cell (*4)
+city_map:   ds GRID*GRID                ; each cell's code and marks
+        ASSERT city_map == CITYMAP_ADDR
+        ASSERT $ == TABLES_ADDR+MEMBANK_SIZE
 
 ; The sine table: its own page, read at $0000 (slot 0) by get_sin.  $0000
 ; is 256-byte aligned, as sin_lo / sin_hi need.

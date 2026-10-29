@@ -585,6 +585,11 @@ class Cpu:
             r[4], r[5] = v >> 8, v & 0xFF
             self.t += 8
             return
+        if op == 0x32:      # ADD DE,A
+            v = ((r[2] << 8 | r[3]) + r[7]) & 0xFFFF
+            r[2], r[3] = v >> 8, v & 0xFF
+            self.t += 8
+            return
         if 0x28 <= op <= 0x2C:  # barrel shifts on DE by B
             de = (r[2] << 8) | r[3]
             n = r[0] & 31
@@ -950,6 +955,9 @@ def load_nex(cpu, path):
             cpu.page(b * 2 + 1)[:] = chunk[8192:16384]
             off += 16384
     cpu.pc, cpu.sp = pc, sp
+    if not getattr(cpu, "esx_root", None):
+        cpu.esx_root = os.path.dirname(os.path.abspath(path))   # the SD card:
+                                        # the NEX's folder, as when launched
 
 
 # Default ULA palette (8-bit RRRGGGBB): ink 0-7, bright ink 8-15,

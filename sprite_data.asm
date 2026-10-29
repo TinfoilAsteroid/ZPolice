@@ -45,16 +45,17 @@ SPRB_FIRST      equ SPRB_COUNT+1
 SPRB_DATA       equ SPRB_COUNT+2
 
 ;------------------------------------------------------------------------------
-; Bank 0 (PAGE_SPR0): the human status sprites, patterns 0-3
+; Bank 0 (PAGE_SPR0): the human status sprites (patterns 0-3), then the
+; compass bar's letters, dots and pointer (CSPR_*, hud_sprites.asm)
 ; (zpolice.asm maps PAGE_SPR0 to SPRBANK_SLOT, ORG SPRBANK_ADDR, first)
 ;------------------------------------------------------------------------------
 spr_bank0:
         SPRB_LOADER
 spr_bank0_hdr:
-        db HSPR_COUNT                   ; SPRB_COUNT
+        db SPRB0_PATTERNS               ; SPRB_COUNT
         db 0                            ; SPRB_FIRST
         INCLUDE "tables_hspr.inc"       ; hspr_patterns (gentables.py):
-                                        ; HSPR_FIELD, _ABOARD, _SAVED, _DEAD
+                                        ; HSPR_*, CSPR_*
         ASSERT spr_bank0 == spr_load_bank
         ASSERT hspr_patterns == spr_bank0 + SPRB_DATA
         ASSERT $ <= SPRBANK_ADDR+MEMBANK_SIZE

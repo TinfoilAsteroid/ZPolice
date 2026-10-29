@@ -1,5 +1,6 @@
 ;==============================================================================
-; Z-POLICE - city map (page 7, after human.asm: kept mapped in slot 3)
+; Z-POLICE - city map (in the zombie page, after human.asm: kept mapped in
+; slot 1)
 ;
 ; Everything that draws the GRID x GRID city map at the right of the
 ; instrument panel (pixel columns MAP_X.., rows 128-191, one pixel per cell,
@@ -72,10 +73,13 @@ map_l2:
         ld b,GRID
 .px:    ld a,(hl)
         and CELL_CODE
-        ld a,MAP_BG
-        jr z,.st
+        jr z,.bg                        ; a street,
+        cp VOID_CODE
+        jr z,.bg                        ; or out of bounds: black
         ld a,(de)
         or SHADE_FACE
+        jr .st
+.bg:    ld a,MAP_BG
 .st:    ld (ix+0),a
         inc ix
         inc hl
@@ -145,10 +149,16 @@ zblip:
         and 6
         inc a
         ld (ix+14),a
-        ld a,c
+        ld a,(ix+15)                    ; a ghost or banshee: its own shades
+        ld hl,zshades
+        cp ZT_GHOST
+        jr c,.z
+        ld hl,gshades
+        jr z,.z
+        ld hl,bshades
+.z:     ld a,c
         rrca
         and 3
-        ld hl,zshades
         add hl,a
         ld a,(hl)                       ; this step's shade
         jr map_pix
@@ -213,8 +223,8 @@ hum_dots:
         ld b,HUMAN_MAX
 .lp:    push bc
         ld a,(ix+6)
-        or a
-        call nz,hum_dot
+        cp HS_WAIT
+        call z,hum_dot
         ld de,HREC
         add ix,de
         pop bc
@@ -259,12 +269,15 @@ map_under:
         ld a,(hl)
         pop hl
         and CELL_CODE
-        ld a,MAP_BG
-        jr z,.x                         ; street
+        jr z,.bg                        ; street,
+        cp VOID_CODE
+        jr z,.bg                        ; or out of bounds: black
         ld de,city_col
         add hl,de
         ld a,(hl)
         or SHADE_FACE
+        jr .x
+.bg:    ld a,MAP_BG
 .x:     pop de
         ret
 
@@ -272,6 +285,8 @@ map_under:
 ; Map data
 ;==============================================================================
 zshades:    db MAP_ZOMBIE, MAP_ZOMBIE_MID, MAP_ZOMBIE_DARK, MAP_ZOMBIE_MID
+gshades:    db GHOST_COL, MAP_GHOST_MID, MAP_GHOST_DARK, MAP_GHOST_MID
+bshades:    db BANSHEE_COL, MAP_BANSHEE_MID, MAP_BANSHEE_DARK, MAP_BANSHEE_MID
 mp_addr:    dw ULA_BMP                  ; player dot: ULA byte, mask, flash
 mp_mask:    db 0
 mp_frame:   db 0

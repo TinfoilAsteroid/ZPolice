@@ -9,8 +9,8 @@
 ;
 ; Keys 1-5 select the weapon slot that SPACE fires (wpn_sel: 1 = the centre
 ; slot, 2-5 = the wing pylons).  An empty slot isn't selected: the HUD
-; flashes it instead (wflash_slot / wflash_t).  Key 0 cycles the centre slot: machine gun,
-; pulse laser, chain gun.
+; flashes it instead (wflash_slot / wflash_t).  What is fitted where is set
+; on the load-out screen between levels (loadout.asm).
 ;
 ; Machine gun (WPN_GUN, the centre slot): hold SPACE to fire one round every
 ; GUN_INTERVAL frames.  Rounds leave the ship's centre line 0.5 m below the
@@ -35,7 +35,22 @@
 ; rounds too (B_KIND = BK_ROCKET), at 150 m/s and drawn as a short white
 ; streak with a yellow trail.  Wherever one stops (a building, the ground,
 ; a zombie) rocket_blast does BLAST_DMG to every zombie, human and base tile
-; within BLAST_R on each axis.
+; within BLAST_R on each axis, and sprays BLAST_PARTS orange particles.
+;
+; Bofors cannon (WPN_BOFORS, a wing pylon, BOFORS_SHOTS shells): the machine
+; gun's rounds (B_KIND = BK_BOFORS, drawn as tracers) one every
+; BOFORS_INTERVAL frames; each bursts where it stops: BOFORS_DMG within
+; BOFORS_R (3 m) on each axis, BOFORS_PARTS particles.
+;
+; Proximity cannon (WPN_PROX, a wing pylon, PROX_SHOTS shells): the Bofors
+; cannon (B_KIND = BK_PROX), its shells also bursting when they pass within
+; PROX_R (2 m) of a monster (b_pr widens the monster hit boxes,
+; cell_zombies); the burst does PROX_DMG within PROX_R on each axis.
+;
+; Missile pod (WPN_MISSILE, a wing pylon, MISSILE_SHOTS missiles): as the
+; rockets (B_KIND = BK_MISSILE, drawn the same) at half the speed; the burst
+; does MISSILE_DMG within MISSILE_R (1.0 tile) on each axis, and sprays
+; MISSILE_PARTS particles.
 ;
 ; Damage: each round carries its damage (B_DMG): machine gun GUN_DMG, chain
 ; gun CHAIN_DMG, the laser LASER_DMG a beam frame, a rocket none directly
@@ -51,10 +66,27 @@
 ;------------------------------------------------------------------------------
 update_weapons:
         call part_update                ; age and move the burst particles
-        call wpn_select
+        ld a,(vtol_dead)
+        or a
+        jr z,.alive
+        call las_reset                  ; destroyed: no firing, no beam
+        jr .move
+.alive:
+    IF DEBUG_KILLALL
+        call debug_killall              ; (debug: key 0)
+    ENDIF
+        call wpn_select                 ; (slots can be chosen when landed)
+        call gun_aim                    ; and the centre gun tilted
+        call vtol_landed
+        jr nz,.fire
+        call las_reset                  ; landed: no firing, no beam, until
+        call pad_service                ; it takes off; on the pad: repairs
+        jr .move                        ; and reloads
+.fire:  xor a
+        ld (svc_on),a                   ; (service starts afresh next landing)
         call gun_fire
         call laser_update
-        ld ix,bullets
+.move:  ld ix,bullets
         ld b,NBULLETS
 .lp:    push bc
         ld a,(ix+B_STATE)
@@ -91,6 +123,12 @@ gun_fire:
         jr z,.chain
         cp WPN_ROCKETS
         jr z,.rocket
+        cp WPN_MISSILE
+        jr z,.missile
+        cp WPN_BOFORS
+        jr z,.bofors
+        cp WPN_PROX
+        jr z,.prox
         cp WPN_GUN
         ret nz
         call free_round                 ; machine gun: one round
@@ -114,6 +152,34 @@ gun_fire:
         call spawn_round
         ld (ix+B_KIND),BK_ROCKET        ; no direct damage: its blast
         ret
+.missile:
+        call free_round                 ; missile pod: one missile
+        ret c
+        call take_ammo
+        ret c
+        ld a,MISSILE_INTERVAL-1
+        ld (gun_wait),a
+        ld hl,MISSILE_STEP
+        call spawn_round
+        ld (ix+B_KIND),BK_MISSILE       ; no direct damage: its blast
+        ret
+.prox:  ld a,BK_PROX                    ; proximity cannon: one shell
+        jr .shell
+.bofors:
+        ld a,BK_BOFORS                  ; Bofors: one shell
+.shell: ld (sh_kind),a
+        call free_round
+        ret c
+        call take_ammo
+        ret c
+        ld a,BOFORS_INTERVAL-1
+        ld (gun_wait),a
+        ld hl,BULLET_STEP
+        call spawn_round
+        ld a,(sh_kind)
+        ld (ix+B_KIND),a                ; no direct damage: its burst
+        ret
+        ASSERT PROX_INTERVAL == BOFORS_INTERVAL
 .chain: ; chain gun: one round every CHAIN_INTERVAL frames
         call free_round
         ret c
@@ -266,19 +332,38 @@ spawn_round:
         ld hl,(cos_y)
         ld (ix+B_COS),l
         ld (ix+B_COS+1),h
-        ld hl,(sr_len)                  ; horizontal distance per frame
-        ld de,(cos_p)
+        ld hl,(sin_p)                   ; its climb: the view's pitch, or from
+        ld (sr_sin),hl                  ; the centre slot pitch + gun_tilt
+        ld hl,(cos_p)
+        ld (sr_cos),hl
+        ld a,(wpn_sel)
+        cp WPN_CENTRE
+        jr nz,.pt
+        ld a,(gun_tilt)
+        or a
+        jr z,.pt
+        ld hl,pitch
+        add a,(hl)
+        push af
+        call get_sin
+        ld (sr_sin),hl
+        pop af
+        add a,64
+        call get_sin
+        ld (sr_cos),hl
+.pt:    ld hl,(sr_len)                  ; horizontal distance per frame
+        ld de,(sr_cos)
         call fmul
         ld (ix+B_S),l
         ld (ix+B_S+1),h
-        ld hl,(sin_p)                   ; slope = sinP / cosP  (S7.8)
+        ld hl,(sr_sin)                  ; slope = sin / cos  (S7.8)
         ld a,h
         push af
         call abs_hl
-        ld a,h                          ; A:HL = |sinP| << 8
+        ld a,h                          ; A:HL = |sin| << 8
         ld h,l
         ld l,0
-        ld de,(cos_p)
+        ld de,(sr_cos)
         call udiv24
         pop af
         rla
@@ -288,8 +373,87 @@ spawn_round:
         ret
 
 ;------------------------------------------------------------------------------
-; Key 0: cycle the centre slot through machine gun, pulse laser and chain
-; gun (once per press)
+; R / F: tilt the centre gun up / down (GUN_TILT_STEP a frame, to
+; GUN_TILT_UP up, GUN_TILT_DN down); V: back towards level at GUN_CTR_STEP.
+; Then sight_y: the gunsight's row for the selected weapon, VIEW_CY minus
+; 128 * tan(tilt) for the centre slot (the projection's scale), kept
+; SIGHT_MARGIN rows inside the view.
+;------------------------------------------------------------------------------
+gun_aim:
+        ld a,K_GUN_UP
+        call key_held
+        jr z,.dn
+        ld a,(gun_tilt)
+        add a,$80                       ; (signed compare)
+        cp GUN_TILT_UP+$80
+        jr nc,.dn                       ; at the top
+        sub $80-GUN_TILT_STEP
+        ld (gun_tilt),a
+.dn:    ld a,K_GUN_DN
+        call key_held
+        jr z,.ct
+        ld a,(gun_tilt)
+        add a,$80
+        cp $80-GUN_TILT_DN+1
+        jr c,.ct                        ; at the bottom
+        sub $80+GUN_TILT_STEP
+        ld (gun_tilt),a
+.ct:    ld a,K_GUN_CTR
+        call key_held
+        jr z,.sight
+        ld a,(gun_tilt)
+        or a
+        jr z,.sight
+        jp m,.neg
+        sub GUN_CTR_STEP                ; tilted up: down towards 0
+        jp p,.st
+        xor a
+        jr .st
+.neg:   add a,GUN_CTR_STEP              ; tilted down: up towards 0
+        jp m,.st
+        xor a
+.st:    ld (gun_tilt),a
+.sight: ld c,VIEW_CY
+        ld a,(wpn_sel)
+        cp WPN_CENTRE
+        jr nz,.sy                       ; a pylon: straight ahead
+        ld a,(gun_tilt)
+        or a
+        jr z,.sy
+        jp m,.sd
+        ld hl,tilt_rows                 ; up: higher on the screen
+        add hl,a
+        ld a,c
+        sub (hl)
+        jr .sc
+.sd:    neg                             ; down: lower
+        ld hl,tilt_rows
+        add hl,a
+        ld a,c
+        add a,(hl)
+.sc:    ld c,a
+        cp SIGHT_MARGIN
+        jr nc,.lo
+        ld c,SIGHT_MARGIN
+.lo:    ld a,c
+        cp VIEW_H-SIGHT_MARGIN
+        jr c,.sy
+        ld c,VIEW_H-SIGHT_MARGIN-1
+.sy:    ld a,c
+        ld (sight_y),a
+        ret
+
+; round(128 * tan(k * 360/256 deg)), k = 0..GUN_TILT_DN: the gunsight's
+; rows from the centre for a tilt of k
+tilt_rows:  db 0, 3, 6, 9, 13, 16, 19, 22, 25, 29, 32, 35, 39, 42, 46, 49
+            db 53, 57, 61, 64, 68, 73, 77, 81, 86, 90, 95, 100, 105, 110
+            db 116, 122, 128
+        ASSERT $ - tilt_rows == GUN_TILT_DN + 1
+        ASSERT GUN_TILT_UP <= GUN_TILT_DN
+
+;------------------------------------------------------------------------------
+; Keys 1-5: select the weapon slot SPACE fires (an empty one isn't selected:
+; the HUD flashes it instead)
 ;------------------------------------------------------------------------------
 wpn_select:
         ld c,0                          ; slot keys, newly pressed
@@ -301,7 +465,7 @@ wpn_select:
         ld a,c
         cp WPN_SLOTS
         jr nz,.k
-        jr .cyc
+        ret
 .sel:   ld a,c
         add a,a
         ld hl,wpn_slots
@@ -313,36 +477,90 @@ wpn_select:
         ld (wflash_slot),a              ; have the HUD flash the asked-for one
         ld a,6*WFLASH
         ld (wflash_t),a
-        jr .cyc
+        ret
 .fitted:
         ld a,(wpn_sel)
         cp c
-        jr z,.cyc                       ; already selected
+        ret z                           ; already selected
         ld a,c
         ld (wpn_sel),a
-        call las_reset                  ; no beam carried to the new slot
-.cyc:   ld a,K_WEAPON                   ; cycle the centre slot's weapon,
-        call key_pressed                ; once per press
-        ret z
-        ld hl,wpn_slots+WPN_CENTRE*2+WPN_TYPE
-        ld a,(hl)                       ; gun -> laser -> chain gun -> gun
-        cp WPN_GUN
-        ld a,WPN_LASER
-        jr z,.set
-        ld a,(hl)
-        cp WPN_LASER
-        ld a,WPN_CHAIN
-        jr z,.set
-        ld a,WPN_GUN
-.set:   ld (hl),a
-        inc hl
-        ld (hl),AMMO_INF                ; all have infinite ammo
-        ; fall through: no beam or cool-down carried over
+        jp las_reset                    ; no beam carried to the new slot
 
-; New game: no gun cycling, no beam or cool-down
+    IF DEBUG_KILLALL
+;------------------------------------------------------------------------------
+; Debug: key 0 kills every monster at once (zombies, ghouls, ghosts and
+; banshees, none left fading) and counts every human still in the city or
+; aboard as rescued.  zombie_update then finds the wave wiped out: the next
+; wave, or after the last the level complete.
+; Key 9 does the same and ends the level, on to the next city's first level
+; (level 2 -> 6): level becomes this city's last (level_complete_screen
+; moves it on one, or after the last city the game is complete) and the
+; wave the level's last.
+;------------------------------------------------------------------------------
+debug_killall:
+        ld hl,KB_9
+        call key_code_pressed
+        jr z,.k0
+        ld a,(level)                    ; (level-1) mod CITY_LEVELS - CITY_LEVELS
+        dec a
+.m:     sub CITY_LEVELS
+        jr nc,.m
+        neg                             ; CITY_LEVELS-1 - (level-1) mod
+        dec a                           ; CITY_LEVELS: levels left in the city
+        ld hl,level
+        add a,(hl)
+        ld (hl),a                       ; the city's last level
+        ld a,(level_cur+LV_WAVES)
+        ld (wave_number),a              ; its last wave
+        jr .all
+.k0:    ld hl,KB_0
+        call key_code_pressed
+        ret z
+.all:   ld ix,zombies
+        ld b,NMON
+.z:     push bc
+        call zblip_off                  ; (map.asm)
+        ld (ix+10),0                    ; gone (zflags unmarks its cell)
+        ld de,ZREC
+        add ix,de
+        pop bc
+        djnz .z
+        ld hl,zatk_flags                ; nobody attacking
+        ld b,NMON
+.a:     ld (hl),FALSE
+        inc hl
+        djnz .a
+        ld ix,humans
+        ld b,HUMAN_MAX
+.h:     push bc
+        ld a,(ix+6)
+        cp HS_WAIT
+        jr z,.s
+        cp HS_ABOARD
+        jr nz,.hn
+.s:     ld c,0                          ; dot off,
+        call hum_dot
+        ld (ix+6),HS_SAVED              ; rescued
+        ld hl,saved
+        inc (hl)
+.hn:    ld de,HREC
+        add ix,de
+        pop bc
+        djnz .h
+        xor a
+        ld (passengers),a
+        jp hum_flags                    ; (no waiting humans' cells marked)
+    ENDIF
+
+; New game: no gun cool-down, no beam
 weapons_reset:
         xor a
         ld (gun_wait),a
+        ld (svc_on),a
+        ld (gun_tilt),a                 ; the centre gun level
+        ld a,VIEW_CY
+        ld (sight_y),a
+        xor a
         ; fall through
 
 ; Stop any laser beam or cool-down
@@ -359,6 +577,78 @@ sel_slot:
         add a,a
         ld hl,wpn_slots
         add hl,a
+        ret
+
+;------------------------------------------------------------------------------
+; Landed (update_weapons): on the base pad, repair and reload.  The VTOL
+; gains 1 hit point every REPAIR_FRAMES frames up to VTOL_HP; each slot
+; whose weapon reloads (wpn_cfg, zpolice.asm: its full load and frames a
+; shot) gains a
+; shot every that many frames up to its full load.  The counts start afresh
+; each landing (svc_on), so a shot or hit point takes the whole interval.
+;------------------------------------------------------------------------------
+pad_service:
+        call cam_cell_ptr
+        ld a,(hl)
+        and CELL_CODE
+        cp PAD_CODE
+        jr z,.pad
+        xor a                           ; landed elsewhere: nothing
+        ld (svc_on),a
+        ret
+.pad:   ld a,(svc_on)
+        or a
+        jr nz,.go
+        inc a                           ; just landed: start the counts
+        ld (svc_on),a
+        ld a,REPAIR_FRAMES
+        ld (svc_rep),a
+        ld hl,svc_rel
+        ld b,WPN_SLOTS
+.cl:    ld (hl),0                       ; (0: its interval starts next)
+        inc hl
+        djnz .cl
+.go:    ld hl,svc_rep                   ; repair
+        dec (hl)
+        jr nz,.rl
+        ld (hl),REPAIR_FRAMES
+        ld a,(vtol_hp)
+        cp VTOL_HP
+        jr nc,.rl                       ; (undamaged)
+        inc a
+        ld (vtol_hp),a
+.rl:    ld ix,wpn_slots                 ; reload, slot by slot
+        ld hl,svc_rel
+        ld b,WPN_SLOTS
+.sl:    push bc
+        ld a,(ix+WPN_TYPE)
+        push hl
+        call wpn_cfg_ptr                ; (resident)
+        ld a,(hl)
+        ld c,a                          ; C = its full load (WCFG_LOAD)
+        inc hl
+        ld a,(hl)                       ; frames a shot (WCFG_RELOAD)
+        pop hl
+        or a
+        jr z,.nx                        ; doesn't reload (or an empty slot)
+        ld b,a                          ; B = frames a shot
+        ld a,(ix+WPN_AMMO)
+        cp c
+        jr nc,.full
+        ld a,(hl)
+        or a
+        jr nz,.cnt
+        ld (hl),b                       ; a new interval
+.cnt:   dec (hl)
+        jr nz,.nx
+        inc (ix+WPN_AMMO)               ; one more shot
+        jr .nx
+.full:  ld (hl),0
+.nx:    inc hl
+        inc ix
+        inc ix
+        pop bc
+        djnz .sl
         ret
 
 ;------------------------------------------------------------------------------
@@ -407,32 +697,74 @@ laser_update:
         ret
 
 ;------------------------------------------------------------------------------
-; Zombie burst particles (pool `particles`, drawn by draw_particles)
+; Particles (pool `particles`, drawn by draw_particles): zombie bursts and
+; rocket / missile bursts
 ;------------------------------------------------------------------------------
-; IX = a zombie just killed: spray NPART_BURST particles from its body, each
-; with a random velocity (sideways -4..3 units a frame in x and z, upwards
-; 2..5).  Uses free particles only; if the pool runs out, fewer.
+; IX = a zombie just killed: spray NPART_BURST green particles from its body
+; (PART_Y up), each with a random velocity: sideways -4..3 units a frame in
+; x and z, upwards 2..5
 part_burst:
+        ld l,(ix+0)
+        ld h,(ix+1)
+        ld (ps_x),hl
+        ld hl,PART_Y
+        ld (ps_y),hl
+        ld l,(ix+2)
+        ld h,(ix+3)
+        ld (ps_z),hl
+        ld hl,PART_COL0 | PART_LIFE<<8
+        ld (ps_col),hl                  ; (and ps_life)
+        xor a
+        ld (ps_fire),a
+        ld c,NPART_BURST
+        jr part_spray
+
+; A rocket or missile burst at rb_x/y/z: rb_parts orange particles for
+; FIRE_LIFE frames, flying out faster than a zombie's (x and z -8..7 units
+; a frame, y -2..5)
+fire_burst:
+        ld hl,(rb_x)
+        ld (ps_x),hl
+        ld hl,(rb_y)
+        ld (ps_y),hl
+        ld hl,(rb_z)
+        ld (ps_z),hl
+        ld hl,FIRE_COL0 | FIRE_LIFE<<8
+        ld (ps_col),hl
+        ld a,1
+        ld (ps_fire),a
+        ld a,(rb_parts)
+        ld c,a
+        ; fall through
+
+; Spray C particles from ps_x/y/z, colour ps_col (age 1), lasting ps_life
+; frames, velocities by ps_fire.  Uses free particles only; if the pool
+; runs out, fewer.  Preserves IX.
+part_spray:
         push iy
         ld iy,particles
         ld b,NPART
-        ld c,NPART_BURST
 .lp:    ld a,(iy+0)
         or a
         jr nz,.nx                       ; in use
         ld (iy+0),1                     ; age 1: brightest
-        ld a,(ix+0)                     ; at the zombie, PART_Y up
-        ld (iy+1),a
-        ld a,(ix+1)
-        ld (iy+2),a
-        ld (iy+3),PART_Y
-        ld (iy+4),0
-        ld a,(ix+2)
-        ld (iy+5),a
-        ld a,(ix+3)
-        ld (iy+6),a
+        ld hl,(ps_x)
+        ld (iy+1),l
+        ld (iy+2),h
+        ld hl,(ps_y)
+        ld (iy+3),l
+        ld (iy+4),h
+        ld hl,(ps_z)
+        ld (iy+5),l
+        ld (iy+6),h
+        ld hl,(ps_col)
+        ld (iy+10),l                    ; its colour and life
+        ld (iy+11),h
         push bc
         call zrand                      ; (zombie page)
+        ld a,(ps_fire)
+        or a
+        jr nz,.fire
         ld a,l
         and 7
         sub 4
@@ -449,7 +781,24 @@ part_burst:
         and 3
         add a,2
         ld (iy+8),a                     ; vy 2..5 (up)
-        pop bc
+        jr .v
+.fire:  ld a,l
+        and 15
+        sub 8
+        ld (iy+7),a                     ; vx -8..7
+        ld a,h
+        and 15
+        sub 8
+        ld (iy+9),a                     ; vz -8..7
+        ld a,l
+        rrca
+        rrca
+        rrca
+        rrca
+        and 7
+        sub 2
+        ld (iy+8),a                     ; vy -2..5
+.v:     pop bc
         dec c
         jr z,.done
 .nx:    ld de,PREC
@@ -458,8 +807,8 @@ part_burst:
 .done:  pop iy
         ret
 
-; Age every particle; past PART_LIFE it is freed.  Move the rest by their
-; velocity, with gravity, stopping on the ground.
+; Age every particle; past its life (+11) it is freed.  Move the rest by
+; their velocity, with gravity, stopping on the ground.
 part_update:
         ld ix,particles
         ld b,NPART
@@ -467,8 +816,11 @@ part_update:
         or a
         jr z,.nx
         inc a
-        cp PART_LIFE+1
-        jr c,.live
+        ld c,a
+        ld a,(ix+11)
+        cp c
+        ld a,c
+        jr nc,.live
         xor a                           ; gone
 .live:  ld (ix+0),a
         or a
@@ -548,6 +900,12 @@ bullet_step:
         ld (b_send),hl
         ld a,(ix+B_DMG)
         ld (b_dmg),a
+        ld a,(ix+B_KIND)                ; a proximity shell: monsters' hit
+        cp BK_PROX                      ; boxes PROX_R bigger every way
+        ld a,0
+        jr nz,.pr
+        ld a,PROX_R
+.pr:    ld (b_pr),a
         xor a
         ld (b_gnd),a
         ; does it reach the ground this frame?  s = y0 / -slope
@@ -671,9 +1029,9 @@ bullet_step:
 .hit:   ld hl,(b_shit)
         call b_move
         ld (ix+B_STATE),2               ; show the impact, then free it
-.burst: ld a,(ix+B_KIND)                ; a rocket bursts
-        cp BK_ROCKET
-        ret nz
+.burst: ld a,(ix+B_KIND)                ; a rocket, missile or shell bursts
+        or a
+        ret z
         jp rocket_blast
 
 ; HL = S7.8 direction component -> HL = path distance s between cell
@@ -751,8 +1109,11 @@ cell_hit:
         jr nz,.bld
         bit CELL_ZOMBIE_B,c             ; street: zombies there?
         ret z                           ; no (carry clear)
-        jr cell_zombies
+        ld hl,(b_send)                  ; any along this frame's path
+        ld (b_lim),hl
+        jp cell_zombies
 .bld:   ld a,c
+        ld (b_mapc),a                   ; (for monsters above the roof)
         call bld_height                 ; HL = roof height
         ld (b_h),hl
         ld hl,(b_sin_)                  ; below the roof where it enters?
@@ -766,7 +1127,7 @@ cell_hit:
         ld de,(b_h)
         or a
         sbc hl,de
-        ret p                           ; (carry clear)
+        jp p,.miss                      ; clear of the building
         ; drops through the roof: s = (y0 - h) / -slope
         ld hl,(b_slope)
         call neg_hl
@@ -784,21 +1145,41 @@ cell_hit:
         ld de,(b_sout)
         call min_u
         ld (b_shit),hl
-        scf
-        ret
+        jr .bhit
 .wall:  ld hl,(b_sin_)
+        ld (b_shit),hl
+.bhit:  ; it hits the building at b_shit: but first a monster flying over
+        ; the roof nearer than that?
+        ld a,(b_mapc)
+        bit CELL_ZOMBIE_B,a
+        scf
+        ret z                           ; none: the building
+        ld hl,(b_shit)
+        ld (b_bhit),hl
+        ld (b_lim),hl
+        call cell_zombies
+        ret c                           ; the monster
+        ld hl,(b_bhit)                  ; the building
         ld (b_shit),hl
         scf
         ret
+.miss:  ld a,(b_mapc)                   ; passes the building: a monster
+        bit CELL_ZOMBIE_B,a             ; above it?
+        ret z                           ; (carry clear)
+        ld hl,(b_send)
+        ld (b_lim),hl
+        ; fall through
 
-; Street cell (b_ci, b_cj) marked as holding zombies: the nearest zombie
-; standing in it that the path passes through (box ZHIT_R either side,
-; ZHIT_H tall).  The records are searched, highest index first.
+; Cell (b_ci, b_cj) marked as holding zombies or special monsters: the
+; nearest whose box (ZHIT_R either side, ZHIT_H tall from its feet, +21;
+; for a proximity shell instead within b_pr of its x, z and feet, as the
+; burst measures) the path passes through
+; before b_lim.  The records are searched, highest index first.
 cell_zombies:
         ld hl,$FFFF
         ld (b_shit),hl
         push iy
-        ld a,NZOMB
+        ld a,NMON
 .zl:    dec a
         ld (b_zi),a
         ld e,a
@@ -808,6 +1189,9 @@ cell_zombies:
         add iy,de
         bit 0,(iy+10)
         jp z,.zn                        ; already dead
+        ld a,(iy+16)
+        cp GM_DYING
+        jp z,.zn                        ; a ghost fading out
         ld a,(b_ci)                     ; in this cell?
         cp (iy+1)
         jp nz,.zn
@@ -837,9 +1221,9 @@ cell_zombies:
         pop de
         add hl,de
         bit 7,h
-        jr nz,.zn                       ; behind the start
+        jp nz,.zn                       ; behind the start
         ld (b_al),hl
-        ld de,(b_send)
+        ld de,(b_lim)
         or a
         sbc hl,de
         jr nc,.zn                       ; beyond this frame's path
@@ -855,17 +1239,40 @@ cell_zombies:
         or a
         sbc hl,de
         call abs_hl
-        ld de,ZHIT_R+1
+        ld a,(b_pr)                     ; (a proximity shell: within b_pr
+        or a                            ; of it instead)
+        jr nz,.wd
+        ld a,ZHIT_R
+.wd:    inc a
+        ld e,a
+        ld d,0
         or a
         sbc hl,de
         jr nc,.zn
         ; height there between the feet and the top of the box?
         ld hl,(b_al)
         call b_y_at
+        ld e,(iy+21)                    ; above its feet
+        ld d,(iy+22)
+        or a
+        sbc hl,de
+        ld a,(b_pr)                     ; (a proximity shell: from b_pr
+        add hl,a                        ; below the feet)
         bit 7,h
         jr nz,.zn
         ld de,ZHIT_H+1
-        or a
+        ld a,(iy+15)                    ; a ghoul: half as tall
+        cp ZT_GHOUL
+        jr nz,.zh
+        ld de,ZHIT_H/2+1
+.zh:    ld a,(b_pr)                     ; (a proximity shell: to b_pr above
+        or a                            ; the feet instead, as the burst
+        jr z,.zc                        ; measures)
+        add a,a
+        inc a
+        ld e,a
+        ld d,0
+.zc:    or a
         sbc hl,de
         jr nc,.zn
         ld hl,(b_al)                    ; nearest so far?
@@ -920,17 +1327,50 @@ zdamage:
         push iy
         pop ix
         call zblip_off
+        ld a,(ix+15)                    ; a ghost or banshee fades out
+        cp ZT_GHOST                     ; instead
+        jr nc,.ghost
         ld (ix+10),0
         call part_burst                 ; and spray particles from it
         pop ix
         ret
+.ghost: ld (ix+16),GM_DYING             ; (still drawn, and marked, while it
+        ld (ix+17),GHOST_FADE_FRAMES    ; fades: specials.asm)
+        pop ix
+        ret
 
 ;------------------------------------------------------------------------------
-; Rocket IX has stopped (at B_X, B_Y, B_Z): BLAST_DMG to every zombie, human
-; and base tile within BLAST_R of it on each axis.  Plain integer box tests:
-; anything more than BLAST_R away on any one axis is skipped.
+; Rocket, missile or Bofors shell IX has stopped (at B_X, B_Y, B_Z): its
+; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, BOFORS_DMG) to every zombie, human
+; and base tile within its reach (rb_r: BLAST_R, MISSILE_R, BOFORS_R) on
+; each axis, and its orange particles.  Plain integer box tests: anything
+; further than rb_r on any one axis is skipped.
 ;------------------------------------------------------------------------------
 rocket_blast:
+        ld a,(ix+B_KIND)
+        ld hl,BLAST_R                   ; a rocket
+        ld b,BLAST_DMG
+        ld c,BLAST_PARTS
+        cp BK_ROCKET
+        jr z,.k
+        ld hl,MISSILE_R                 ; a missile
+        ld b,MISSILE_DMG
+        ld c,MISSILE_PARTS
+        cp BK_MISSILE
+        jr z,.k
+        ld hl,BOFORS_R                  ; a Bofors shell
+        ld b,BOFORS_DMG
+        ld c,BOFORS_PARTS
+        cp BK_BOFORS
+        jr z,.k
+        ld hl,PROX_R                    ; a proximity shell
+        ld b,PROX_DMG
+        ld c,PROX_PARTS
+.k:     ld (rb_r),hl
+        ld a,b
+        ld (rb_dmg),a
+        ld a,c
+        ld (rb_parts),a
         ld l,(ix+B_X)
         ld h,(ix+B_X+1)
         ld (rb_x),hl
@@ -940,14 +1380,18 @@ rocket_blast:
         ld l,(ix+B_Z)
         ld h,(ix+B_Z+1)
         ld (rb_z),hl
-        ; zombies (standing on the road: y = 0 at their feet)
+        call fire_burst                 ; the orange shower
+        ; zombies and special monsters (their feet's height, +21)
         push iy
         ld iy,zombies
-        ld b,NZOMB
+        ld b,NMON
         ld c,0                          ; index
 .zl:    push bc
         bit 0,(iy+10)
         jr z,.zn                        ; gone
+        ld a,(iy+16)
+        cp GM_DYING
+        jr z,.zn                        ; a ghost fading out
         ld l,(iy+0)
         ld h,(iy+1)
         ld de,(rb_x)
@@ -959,13 +1403,16 @@ rocket_blast:
         call rb_near
         jr nc,.zn
         ld hl,(rb_y)
-        ld de,0
+        ld e,(iy+21)
+        ld d,(iy+22)
         call rb_near
         jr nc,.zn
         pop bc
         push bc
+        ld a,(rb_dmg)
+        ld b,a
         ld a,c
-        ld c,BLAST_DMG
+        ld c,b
         call zdamage
 .zn:    ld de,ZREC
         add iy,de
@@ -981,8 +1428,8 @@ rocket_blast:
         ld b,HUMAN_MAX
 .hl:    push bc
         ld a,(ix+6)
-        or a
-        jr z,.hn
+        cp HS_WAIT
+        jr nz,.hn
         ld l,(ix+0)
         ld h,(ix+1)
         ld de,(rb_x)
@@ -998,16 +1445,18 @@ rocket_blast:
         ld de,(rb_y)
         call rb_near
         jr nc,.hn
+        ld a,(rb_dmg)
+        ld c,a
         ld a,(ix+10)
-        sub BLAST_DMG
+        sub c
         jr z,.hk
         jr c,.hk
         ld (ix+10),a
         jr .hn
-.hk:    ld (ix+10),0                    ; killed: dot off, gone
+.hk:    ld (ix+10),0                    ; killed: dot off, dead
         ld c,0
         call hum_dot                    ; (map.asm)
-        ld (ix+6),0
+        ld (ix+6),HS_DEAD
         ld a,1
         ld (rb_hum),a
 .hn:    ld de,HREC
@@ -1022,16 +1471,18 @@ rocket_blast:
         call hum_flags                  ; (human.asm) no longer drawn
         pop ix
 .base:
-        ; base tiles: the cells from (x, z) - BLAST_R to (x, z) + BLAST_R, if
-        ; the burst is no more than BLAST_R above the tile's top
+        ; base tiles: the cells from (x, z) - rb_r to (x, z) + rb_r, if
+        ; the burst is no more than rb_r above the tile's top
         ld hl,(rb_z)
-        ld de,-BLAST_R
-        add hl,de
+        ld de,(rb_r)
+        or a
+        sbc hl,de
         ld a,h
         ld (rb_j),a
 .bj:    ld hl,(rb_x)
-        ld de,-BLAST_R
-        add hl,de
+        ld de,(rb_r)
+        or a
+        sbc hl,de
         ld a,h
         ld (rb_i),a
 .bi:    ld a,(rb_i)
@@ -1055,17 +1506,18 @@ rocket_blast:
         jr nz,.bn
         push de
         call bld_height                 ; HL = its top
-        ld de,BLAST_R
+        ld de,(rb_r)
         add hl,de
         ld de,(rb_y)
         or a
         sbc hl,de
         pop de
         jr c,.bn                        ; burst too high above it
-        ld c,BLAST_DMG
+        ld a,(rb_dmg)
+        ld c,a
         call base_damage                ; (zombie.asm)
-.bn:    ld hl,(rb_x)                    ; next column, up to x + BLAST_R
-        ld de,BLAST_R
+.bn:    ld hl,(rb_x)                    ; next column, up to x + rb_r
+        ld de,(rb_r)
         add hl,de
         ld a,(rb_i)
         cp h
@@ -1073,8 +1525,8 @@ rocket_blast:
         inc a
         ld (rb_i),a
         jr .bi
-.br:    ld hl,(rb_z)                    ; next row, up to z + BLAST_R
-        ld de,BLAST_R
+.br:    ld hl,(rb_z)                    ; next row, up to z + rb_r
+        ld de,(rb_r)
         add hl,de
         ld a,(rb_j)
         cp h
@@ -1083,12 +1535,13 @@ rocket_blast:
         ld (rb_j),a
         jr .bj
 
-; Carry set if |HL - DE| <= BLAST_R (signed)
+; Carry set if |HL - DE| <= rb_r (signed)
 rb_near:
         or a
         sbc hl,de
         call abs_hl
-        ld de,BLAST_R+1
+        ld de,(rb_r)
+        inc de
         or a
         sbc hl,de
         ret
@@ -1190,9 +1643,14 @@ udiv24:
 ; Weapons page data
 ;==============================================================================
 gun_wait:   db 0                        ; frames until the gun can fire again
+svc_on:     db 0                        ; pad_service: 1 once the counts started,
+svc_rep:    db 0                        ;   frames to the next hit point,
+svc_rel:    ds WPN_SLOTS                ;   and to each slot's next shot
 las_on:     db 0                        ; laser beam frames left
 las_cool:   db 0                        ; laser cool-down frames left
 sr_len:     dw 0                        ; spawn_round
+sr_sin:     dw 0                        ; spawn_round: its climb's sin, cos
+sr_cos:     dw 0
 cg_d:       dw 0                        ; chain_round
 cg_s:       dw 0
 b_x0:       dw 0                        ; start of this frame's path
@@ -1223,6 +1681,20 @@ b_rz:       dw 0
 b_al:       dw 0
 dd_sg:      db 0                        ; dda_axis
 b_dmg:      db 0                        ; damage of the round being moved
+b_lim:      dw 0                        ; cell_zombies: hits only before this s
+b_mapc:     db 0                        ; cell_hit: the building cell's map byte
+b_bhit:     dw 0                        ;   and where the path hits it
+b_pr:       db 0                        ; bullet_step: monster hit box margin
+sh_kind:    db 0                        ; gun_fire: the shell's kind
+rb_r:       dw 0                        ; rocket_blast: its reach on each axis,
+rb_dmg:     db 0                        ;   damage
+rb_parts:   db 0                        ;   and particles
+ps_x:       dw 0                        ; part_spray: where from,
+ps_y:       dw 0
+ps_z:       dw 0
+ps_col:     db 0                        ;   colour at age 1,
+ps_life:    db 0                        ;   life (frames; follows ps_col)
+ps_fire:    db 0                        ;   1: a burst's faster spread
 rb_x:       dw 0                        ; rocket_blast: where it burst
 rb_y:       dw 0
 rb_z:       dw 0

@@ -11,13 +11,16 @@
 ; Memory map (see README.md):
 ;   slot 0 $0000  Layer 2 sections (32 rows each) while drawing; the sine
 ;                 table (PAGE_SIN) whenever get_sin reads it
-;   slot 1 $2000  zombie page, always mapped
+;   slot 1 $2000  zombie page, always mapped: zombies, humans, the HUD
+;                 map, the IM 2 table
 ;   slot 2 $4000  occlusion data
-;   slot 3 $6000  city_col; $7000 humans, map (always mapped)
+;   slot 3 $6000  the city bank (always mapped): city_col at $6000,
+;                 city_map at $7000, loaded from the level's city file
 ;   slot 4 $8000  ULA screen (page 10, the first half of bank 5)
 ;   slot 5 $A000  resident main code, variables, stack (page 11, the unused
 ;                 second half of bank 5)
-;   slot 6 $C000  game logic pages, swapped: player, weapons, menu
+;   slot 6 $C000  game logic pages, swapped: player, weapons, menu, level
+;                 loading
 ;   slot 7 $E000  core function pages, swapped: city (Layer 2 drawing), HUD,
 ;                 keys, sprites; a sprite bank while it is loaded; the
 ;                 start-up set-up (initialise.asm) once
@@ -76,7 +79,7 @@ SIN_SLOT                equ MMU_SLOT_0
 SIN_MMU                 equ MMU_SLOT_0_REGISTER
 SIN_ADDR                equ membank0
 
-; slot 1: zombie.asm, always mapped
+; slot 1: zombie.asm, human.asm, map.asm, interrupts.asm, always mapped
 ZOMBIE_SLOT             equ MMU_SLOT_1
 ZOMBIE_MMU              equ MMU_SLOT_1_REGISTER
 ZOMBIE_ADDR             equ membank1
@@ -86,12 +89,12 @@ OCC_SLOT                equ MMU_SLOT_2
 OCC_MMU                 equ MMU_SLOT_2_REGISTER
 OCC_ADDR                equ membank2
 
-; slot 3: city_col (tables_col.inc) at $6000, then human.asm and map.asm
-; from $7000; always mapped
+; slot 3: the city bank, always mapped: city_col at $6000, city_map at
+; $7000, read from the level's city file (level_load.asm) in one go
 TABLES_SLOT             equ MMU_SLOT_3
 TABLES_MMU              equ MMU_SLOT_3_REGISTER
 TABLES_ADDR             equ membank3            ; city_col
-HUMAN_ADDR              equ membank3+$1000      ; human.asm onwards
+CITYMAP_ADDR            equ membank3+$1000      ; city_map
 
 ; slot 4: the ULA screen (bank 5's first 8K: bitmap and attributes)
 ULA_SLOT                equ MMU_SLOT_4
@@ -133,8 +136,8 @@ PAGE_WEAPONS            equ 4           ; weapons.asm: player weapons (slot 6)
 PAGE_ZOMBIE             equ 5           ; zombie.asm (slot 1, always)
 PAGE_OCC0               equ 6           ; occlusion buffer, draw list and
                                         ; building records (slot 2)
-PAGE_OCC1               equ 7           ; city_col, humans, map (slot 3,
-                                        ; always)
+PAGE_OCC1               equ 7           ; the city bank: city_col and
+                                        ; city_map (slot 3, always)
 PAGE_MENU               equ 8           ; menu.asm: main menu (slot 6)
 PAGE_SPR0               equ 9           ; sprite_data.asm: sprite pattern
                                         ; bank 0 (slot 7 while loading);
@@ -152,6 +155,15 @@ PAGE_INIT               equ 15          ; initialise.asm: start-up set-up,
 PAGE_FILE               equ 16          ; file_handler.asm: SD card loading
                                         ; and saving (slot 7)
 PAGE_AUDIO              equ 17          ; audio.asm: sound set-up (slot 7)
+PAGE_SPECIAL            equ 31          ; specials.asm: special monsters
+                                        ; (slot 6)
+PAGE_LOADOUT            equ 32          ; loadout.asm: the load-out screen
+                                        ; between levels (slot 6)
+PAGE_KEYDEF             equ 33          ; keydef.asm: the redefine keys
+                                        ; screen (slot 6)
+PAGE_LEVEL              equ 30          ; level_load.asm: level and city
+                                        ; files (slot 6); pages 18-29 are
+                                        ; the Layer 2 buffers
 
 ; Layer 2 double buffer, in 16K banks (NextReg $12 / $13 take banks; the
 ; pages are bank * 2).  Layer 2 is clipped to 192 rows, so each buffer

@@ -20,11 +20,17 @@
 ;   +11    frames until this zombie's next decision check
 ;   +12,+13  cell (x, z) of its blip on the street map
 ;   +14    1 = blip plotted
-;   +15    type: 0 = zombie, 1 = fast zombie (walks at twice the speed)
+;   +15    type: 0 = zombie, 1 = fast zombie (walks at twice the speed),
+;          ZT_GHOUL (a special: 5x, half height), ZT_GHOST, ZT_BANSHEE
 ;   +16    mode: 0 = walking, 1 = going for a base tile, 2 = attacking it
 ;   +17    frames to its next hit on the tile
 ;   +18    hit points left (ZHP, ZHP_FAST; weapons.asm zdamage)
 ;   +19,+20  cell (x, z) marked with CELL_ZOMBIE in city_map ($FF = none)
+;   +21,+22  height of its feet (0 for zombies; special monsters fly)
+;   +23..+30 special monsters' own fields (specials.asm)
+; Records 0..NZOMB-1 are the zombies, NZOMB..NMON-1 the special monsters
+; (specials.asm), which share the drawing, cell marks, map blips and weapon
+; hits; their type (+15) says which.
 ; zatk_flags (one byte per zombie, by index): TRUE while it attacks a base
 ; tile, when its map dot is red; FALSE again once the tile is destroyed.
 ;
@@ -69,17 +75,26 @@
 ; forward and left.  One byte per row, bit 7 = leftmost pixel.
 ;==============================================================================
 
-NZOMB           equ 20          ; number of zombies
-ZREC            equ 21          ; bytes per zombie record
+NZOMB           equ 30          ; zombie records: the most in a wave
+NSPEC           equ 8           ; most special monsters (5 ghosts, banshees)
+NMON            equ NZOMB+NSPEC ; records: zombies, then special monsters
+ZREC            equ 31          ; bytes per record
 ZT_FAST         equ 1           ; +15: fast zombie
+ZT_GHOUL        equ 2           ; +15: a ghoul: a special monster that walks
+                                ; as a zombie (zmove), half height, 5x speed
+ZT_GHOST        equ 3           ; +15: a ghost (specials.asm); types from
+ZT_BANSHEE      equ 4           ; here on fly (specials.asm moves them)
 ZHP             equ 5           ; hit points: a zombie (level 1)
 ZHP_FAST        equ 4           ; and a fast zombie
+GHOUL_HP        equ ZHP         ; and a ghoul
 ZSPEED_INIT     equ 10          ; starting zspeed: 0.63 units (4.9 cm) per
                                 ; frame, ~0.7 m/s at 14 fps
 ZSTEPS_INIT     equ 10          ; starting zsteps: decide every 10 frames
 ZMARGIN         equ 16          ; keep at least this far from walls: 1.25 m
 ZWAIT           equ 100         ; frames to stand still when stuck
 ZOMBIE_H        equ 26          ; height: 2 m (the same as the hit box, ZHIT_H)
+GHOUL_H         equ ZOMBIE_H/2  ; a ghoul's height: 1 m
+        ASSERT ZSPEED_INIT*5+15 < 256   ; a ghoul's step (zcalc_step) fits
 
         INCLUDE "tables_zombie.inc"     ; sprites, sizes, bitrev
 
@@ -103,16 +118,75 @@ zombie_init:
         bsrl de,b
         ld a,e
         ld (zbias_t),a
-        ld a,(level)                    ; this level's number of fast zombies
-        dec a
-        ld hl,zfast_lvl
-        add hl,a
-        ld a,(hl)
+        ld ix,zombies                   ; no zombies, no cells marked
+        ld b,NZOMB
+        ld de,ZREC
+.off:   ld (ix+10),0
+        ld (ix+14),0
+        ld (ix+19),$FF
+        add ix,de
+        djnz .off
+        ; fall through: the first wave
+
+;------------------------------------------------------------------------------
+; A wave: the level's LV_ZOMBIES zombies (level_cur; at most NZOMB), LV_FAST
+; of them fast, at random street positions; the other zombie records stay
+; inactive.  zombie_update calls it again when a wave is wiped out.  (The
+; records' cell marks, +19 / +20, are left to zflags: a zombie killed this
+; frame may still have one.)
+;------------------------------------------------------------------------------
+zombie_wave:
+        ld a,(level_cur+LV_FAST)
         ld (zi_fast),a
+        ld a,(level_cur+LV_ZOMBIES)
+        cp NZOMB+1
+        jr c,.n
+        ld a,NZOMB
+.n:     ld (zi_left),a
         ld ix,zombies
         ld b,NZOMB
         ld c,1                          ; first check frame, spread 1..zsteps
 .lp:    push bc
+        ld a,(zi_left)                  ; this wave's zombies placed?
+        or a
+        jr nz,.one
+        ld (ix+10),0                    ; the rest: inactive
+        pop bc
+        jp .nx
+.one:   dec a
+        ld (zi_left),a
+        call zplace
+        ld a,NZOMB                      ; not attacking
+        sub b
+        ld hl,zatk_flags
+        add hl,a
+        ld (hl),FALSE
+        ld a,(zi_fast)                  ; zi_fast are fast zombies
+        or a
+        jr z,.typ
+        dec a
+        ld (zi_fast),a
+        ld (ix+15),ZT_FAST
+        ld (ix+18),ZHP_FAST
+.typ:
+        call zblip
+        pop bc
+        ld (ix+11),c                    ; first decision check
+        ld a,(zsteps)
+        cp c
+        jr nz,.nc
+        ld c,0                          ; wrap after zsteps
+.nc:    inc c
+.nx:    ld de,ZREC
+        add ix,de
+        dec b
+        jp nz,.lp
+        jp zflags
+
+; Record IX: a zombie (type 0, ZHP) at a random street position, walking a
+; random heading, active; no blip yet (the caller sets the type, then
+; zblip), check frame and attack flag left to the caller.  Preserves BC.
+zplace:
 .try:   call zrand
         ld a,l
         and GRID-1
@@ -150,41 +224,41 @@ zombie_init:
         ld (ix+14),0                    ; no blip yet
         ld (ix+16),0                    ; walking
         ld (ix+17),0
-        ld (ix+19),$FF                  ; no cell marked yet
-        ld a,NZOMB                      ; and not attacking
-        sub b
-        ld hl,zatk_flags
-        add hl,a
-        ld (hl),FALSE
-        ld (ix+15),0                    ; a zombie, or the level's first
+        ld (ix+21),0                    ; on the ground
+        ld (ix+22),0
+        ld (ix+15),0                    ; a zombie
         ld (ix+18),ZHP
-        ld a,(zi_fast)                  ; zi_fast are fast zombies
-        or a
-        jr z,.typ
-        dec a
-        ld (zi_fast),a
-        ld (ix+15),ZT_FAST
-        ld (ix+18),ZHP_FAST
-.typ:
-        call zblip
-        pop bc
-        ld (ix+11),c                    ; first decision check
-        ld a,(zsteps)
-        cp c
-        jr nz,.nc
-        ld c,0                          ; wrap after zsteps
-.nc:    inc c
-        ld de,ZREC
-        add ix,de
-        dec b
-        jp nz,.lp
-        jp zflags
+        ret
 
 ;------------------------------------------------------------------------------
 ; Per frame: walk every zombie and mark the cells they stand in.  Call after
 ; setup_frame (uses cos_p/sin_p for the zombie height vector).
 ;------------------------------------------------------------------------------
 zombie_update:
+        ; a wave wiped out (no monster record active: zombies, ghosts and
+        ; banshees, a dying special still counting until it has faded)?
+        ; The next wave, or with none left the level is complete
+        ; (level_done; main_loop)
+        ld ix,zombies
+        ld b,NMON
+        ld de,ZREC
+.cnt:   bit 0,(ix+10)
+        jr nz,.alive
+        add ix,de
+        djnz .cnt
+        ld a,(level_cur+LV_WAVES)
+        ld hl,wave_number
+        cp (hl)
+        jr z,.done
+        jr c,.done
+        inc (hl)                        ; the next wave
+        ld a,1
+        ld (zwave_new),a                ; (spec_update: banshees on even ones)
+        call zombie_wave
+        jr .alive
+.done:  ld a,1
+        ld (level_done),a
+.alive:
         ld hl,zanim
         inc (hl)
         ld hl,ZOMBIE_H                  ; height vector (0, H cosP, H sinP)
@@ -207,15 +281,22 @@ zombie_update:
         ld (zlook),hl
         add hl,de                       ; fast zombies walk twice as far
         ld (zlook_fast),hl              ; between checks
-        ld ix,zombies
-        ld b,NZOMB
+        add hl,de                       ; ghouls five times
+        add hl,de
+        add hl,de
+        ld (zlook_ghoul),hl
+        ld ix,zombies                   ; the zombies, and ghouls in the
+        ld b,NMON                       ; special records
 .mv:    push bc
-        ld a,NZOMB                      ; this zombie's index (zatk_flags)
+        ld a,NMON                       ; this record's index (zatk_flags)
         sub b
         ld (zcur_i),a
         bit 0,(ix+10)
-        call nz,zmove                   ; active zombies only
-        pop bc
+        jr z,.mn                        ; active ones only
+        ld a,(ix+15)
+        cp ZT_GHOST
+        call c,zmove                    ; (not the fliers: specials.asm)
+.mn:    pop bc
         ld de,ZREC
         add ix,de
         djnz .mv
@@ -227,7 +308,7 @@ zombie_update:
 ; keep it marked, and one killed since the last pass loses its mark.
 zflags:
         ld ix,zombies
-        ld b,NZOMB
+        ld b,NMON
 .clr:   ld a,(ix+19)
         cp GRID
         jr nc,.cn                       ; none marked
@@ -243,7 +324,7 @@ zflags:
         add ix,de
         djnz .clr
         ld ix,zombies
-        ld b,NZOMB
+        ld b,NMON
 .set:   bit 0,(ix+10)
         jr z,.sn                        ; gone: no mark
         call zmap_ptr
@@ -290,9 +371,12 @@ zmove:
         call zjunction
         ld e,(ix+4)
         ld hl,(zlook)
-        bit 0,(ix+15)
-        jr z,.lk
+        ld a,(ix+15)
+        cp ZT_FAST
+        jr c,.lk
         ld hl,(zlook_fast)
+        jr z,.lk
+        ld hl,(zlook_ghoul)
 .lk:    call ztest
         jr nz,.blocked
 .step:  ld a,(zstep)                    ; step forwards
@@ -340,13 +424,21 @@ zmove:
         ld (ix+7),ZWAIT
         ret
 
-; This frame's distance for zombie IX (zspeed, twice for a fast zombie),
-; 4.4 fixed with the fraction kept -> zstep.  Keeps B.
+; This frame's distance for zombie IX (zspeed, twice for a fast zombie,
+; five times for a ghoul), 4.4 fixed with the fraction kept -> zstep.
+; Keeps B.
 zcalc_step:
+        ld a,(ix+15)
+        cp ZT_FAST
         ld a,(zspeed)                   ; distance this frame, 4.4 fixed
-        bit 0,(ix+15)
-        jr z,.reg
-        add a,a                         ; fast zombie: twice the speed
+        jr c,.reg
+        ld c,a
+        jr z,.fast
+        add a,a                         ; a ghoul: five times the speed
+        add a,a
+        add a,c
+        jr .reg
+.fast:  add a,a                         ; fast zombie: twice the speed
 .reg:   add a,(ix+6)
         ld c,a
         and 15
@@ -476,7 +568,7 @@ base_damage:
         ld a,d
         sub PAD_Z-TERRACE_R             ; its hit points: base_hp[row*5+col]
         cp 2*TERRACE_R+1
-        ret nc
+        jp nc,barr_damage               ; (not the base: a barricade?)
         ld b,a
         add a,a
         add a,a
@@ -485,7 +577,7 @@ base_damage:
         ld a,e
         sub PAD_X-TERRACE_R
         cp 2*TERRACE_R+1
-        ret nc
+        jp nc,barr_damage
         add a,b
         ld hl,base_hp
         add hl,a
@@ -570,7 +662,95 @@ base_init:
         ld a,d
         cp PAD_Z+TERRACE_R+1
         jr nz,.r
+        ; fall through: the barricades
+
+;------------------------------------------------------------------------------
+; Barricades: terrace tiles away from the base, improvised barricades.  Each
+; has its own hit points, in barr_tab (resident): NBARR entries of BARR_REC
+; bytes, x, z, hit points (0: none, or destroyed).  barricade_init fills it
+; at the level's start from the city map (after the level's map changes),
+; the first NBARR found; any more stay but can't be destroyed.  Zombies and
+; blasts damage them through base_damage (zbase: any terrace tile is a base
+; tile to them); destroyed, a barricade is road, as a base terrace tile.
+;------------------------------------------------------------------------------
+barricade_init:
+        ld hl,barr_tab                  ; none yet
+        ld b,NBARR*BARR_REC
+.cl:    ld (hl),0
+        inc hl
+        djnz .cl
+        xor a
+        ld (barr_n),a
+        ld de,barr_tab
+        ld hl,city_map
+        ld c,0                          ; z
+.row:   ld b,0                          ; x
+.cell:  ld a,(hl)
+        and CELL_CODE
+        cp TERRACE_CODE
+        jr nz,.nx
+        ld a,b                          ; the base's own terrace: not one
+        sub PAD_X-TERRACE_R
+        cp 2*TERRACE_R+1
+        jr nc,.add
+        ld a,c
+        sub PAD_Z-TERRACE_R
+        cp 2*TERRACE_R+1
+        jr c,.nx
+.add:   ld a,(barr_n)
+        cp NBARR
+        jr nc,.nx                       ; (the table is full)
+        inc a
+        ld (barr_n),a
+        ld a,b
+        ld (de),a                       ; x,
+        inc de
+        ld a,c
+        ld (de),a                       ; z,
+        inc de
+        ld a,TERRACE_HP
+        ld (de),a                       ; hit points
+        inc de
+.nx:    inc hl
+        inc b
+        ld a,b
+        cp GRID
+        jr nz,.cell
+        inc c
+        ld a,c
+        cp GRID
+        jr nz,.row
         ret
+
+; Tile (E, D) = (x, z), not the base's: if it is a barricade still standing,
+; it takes C damage; destroyed, it becomes road (base_damage.dead)
+barr_damage:
+        ld hl,barr_tab
+        ld b,NBARR
+.lp:    ld a,(hl)
+        cp e
+        jr nz,.nx
+        inc hl
+        ld a,(hl)
+        dec hl
+        cp d
+        jr nz,.nx
+        inc hl                          ; this one: its hit points
+        inc hl
+        ld a,(hl)
+        or a
+        ret z                           ; (already gone)
+        sub c
+        jp z,base_damage.dead
+        jp c,base_damage.dead
+        ld (hl),a
+        ret
+.nx:    inc hl
+        inc hl
+        inc hl
+        djnz .lp
+        ret                             ; not one (or past the table)
+        ASSERT BARR_REC == 3
 
 ; A = heading (mod 4): if the cell next to zombie IX that way is a street,
 ; or a base tile (so the road towards the pad can lead into the base and an
@@ -791,6 +971,32 @@ zcell_ofs:
         add hl,a
         ret
 
+; Frame chooser for a ghost or banshee (its sprite pointers in gfs_tab):
+; its sheet's 2 frames (a new one every 4 frames), never mirrored
+gfig_sel:
+        xor a
+        ld (zface),a
+        ld a,(zanim)
+        rrca
+        rrca
+        and 1                           ; frame
+        add a,a
+        add a,a
+        add a,a
+        ld hl,zlvl
+        add a,(hl)                      ; frame*8 + level
+        add a,a
+        ld hl,(gfs_tab)
+        add hl,a
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        ld (zrow),hl
+        jp zspr_rows
+
+        INCLUDE "tables_ghost.inc"      ; ghost sprites (gentables.py)
+
 ; HL = next 16-bit xorshift random number
 zrand:
         ld hl,(zseed)
@@ -831,8 +1037,8 @@ zombie_cell:
         ld a,h
         ld (zc_z),a
         push ix
-        ld ix,zombies+(NZOMB-1)*ZREC
-        ld b,NZOMB
+        ld ix,zombies+(NMON-1)*ZREC
+        ld b,NMON
 .lp:    ld a,(zc_x)
         cp (ix+1)
         jr nz,.nx
@@ -849,17 +1055,81 @@ zombie_cell:
         ret
         ASSERT GRID == 64
 
-; Project and draw zombie IX
+; Project and draw zombie IX (or a special monster)
 zombie_draw:
         bit 0,(ix+10)
         ret z                           ; killed this frame
+        ld a,(ix+15)
+        cp ZT_GHOST
+        jr nc,.ghost                    ; a flying special monster
         ld hl,0
         ld (fig_y),hl                   ; on the ground
         ld hl,zfig_sel
         ld (fig_sel),hl
         ld a,ZOMBIE_COL
         ld (zspr_rows.col+1),a
-        ; fall through
+        ld a,(ix+15)
+        cp ZT_GHOUL
+        jp nz,fig_draw
+        ld hl,(zh_y)                    ; a ghoul: half the height (its size,
+        push hl                         ; and its head when its feet are
+        sra h                           ; below the view)
+        rr l
+        ld (zh_y),hl
+        ld hl,(zh_z)
+        push hl
+        sra h
+        rr l
+        ld (zh_z),hl
+        ld hl,GHOUL_H
+        ld (fig_h),hl
+        call fig_draw
+        ld hl,ZOMBIE_H                  ; back to full height
+        ld (fig_h),hl
+        pop hl
+        ld (zh_z),hl
+        pop hl
+        ld (zh_y),hl
+        ret
+.ghost: ld l,(ix+21)                    ; a ghost: at its height, its sheet
+        ld h,(ix+22)
+        ld (fig_y),hl
+        ld hl,gfig_sel
+        ld (fig_sel),hl
+        ld a,(ix+15)                    ; ghost or banshee: its sprites, colour
+        cp ZT_BANSHEE                   ; and fade
+        ld hl,gho_ptr
+        ld de,gfade
+        ld c,GHOST_COL
+        jr nz,.gt
+        ld hl,bsh_ptr
+        ld de,bfade
+        ld c,BANSHEE_COL
+.gt:    ld (gfs_tab),hl
+        ld a,(ix+16)
+        cp GM_DYING
+        ld a,c
+        jr nz,.gcol
+        ld a,(ix+17)                    ; fading out: its colour by the
+        dec a                           ; frames left (1..GHOST_FADE_FRAMES)
+        ex de,hl
+        add hl,a
+        ld a,(hl)
+.gcol:  ld (zspr_rows.col+1),a
+        jr fig_draw
+
+; A dying ghost's colour, by its frames left - 1: the last 3 frames dark
+; grey, then grey, light grey, and white for the first 3
+gfade:      db GHOST_FADE, GHOST_FADE, GHOST_FADE
+            db MAP_GHOST_DARK, MAP_GHOST_DARK, MAP_GHOST_DARK
+            db MAP_GHOST_MID, MAP_GHOST_MID, MAP_GHOST_MID
+            db GHOST_COL, GHOST_COL, GHOST_COL
+        ASSERT $ - gfade == GHOST_FADE_FRAMES
+bfade:      db BANSHEE_FADE, BANSHEE_FADE, BANSHEE_FADE      ; a banshee's
+            db MAP_BANSHEE_DARK, MAP_BANSHEE_DARK, MAP_BANSHEE_DARK
+            db MAP_BANSHEE_MID, MAP_BANSHEE_MID, MAP_BANSHEE_MID
+            db BANSHEE_COL, BANSHEE_COL, BANSHEE_COL
+        ASSERT $ - bfade == GHOST_FADE_FRAMES
 
 ; Project and draw a figure whose x, z are at (IX+0..3) like a zombie's:
 ; feet at height fig_y, sprite frame chosen by the routine at fig_sel (it
@@ -981,8 +1251,11 @@ zfig_sel:
         or a
         ld a,0
         jr nz,.still                    ; standing still: hold the frame
+        ld a,(ix+15)
+        cp ZT_GHOUL
         ld a,(zanim)
-        rrca                            ; frame advances every 2 frames for
+        jr z,.still                     ; every frame for a ghoul,
+        rrca                            ; every 2 frames for
         bit 0,(ix+15)                   ; a fast zombie (legs keep pace)
         jr nz,.still
         rrca                            ; every 4 for a zombie
@@ -1072,7 +1345,7 @@ zspr_rows:
 ; Projected height from the last project's Z -> zlvl, zw, zh.
 ; Carry set if too small to draw.
 zsize:
-        ld hl,ZOMBIE_H
+        ld hl,(fig_h)
         call scale_comp
         ld (zhr),a                      ; true projected height (unclamped)
         cp 3
@@ -1115,7 +1388,7 @@ zstep:      db 0
 zlook:      dw 0
 zbias_t:    db 128                      ; junction bias towards the pad (/256)
 zcur_i:     db 0                        ; index of the zombie being moved
-zatk_flags: ds NZOMB                    ; per zombie: TRUE while attacking a base
+zatk_flags: ds NMON                    ; per zombie: TRUE while attacking a base
                                         ; tile (its map dot red), else FALSE
 zb_mask:    db 0                        ; zbest
 zb_h:       db 0
@@ -1126,12 +1399,14 @@ zbits:      db 1, 2, 4, 8               ; heading -> bit
 zdir_step:  db 0, 1,  1, 0,  0, -1,  -1, 0  ; heading -> (cell dx, dz)
 base_hp:    ds (2*TERRACE_R+1)*(2*TERRACE_R+1)  ; hit points, pad and terrace
 zlook_fast: dw 0                        ; (fast zombies: twice the walk)
-zi_fast:    db 0                        ; zombie_init: fast zombies still to make
-; fast zombies per level (level 1 first)
-zfast_lvl:  db 1
-zombies:    ds NZOMB*ZREC
+zlook_ghoul: dw 0                       ; (ghouls: five times)
+zi_fast:    db 0                        ; zombie_wave: fast zombies still to make
+zi_left:    db 0                        ;   and zombies still to place
+zombies:    ds NMON*ZREC
 zseed:      dw 1
 zanim:      db 0
+gfs_tab:    dw gho_ptr                  ; gfig_sel: the sprites being drawn
+zwave_new:  db 0                        ; 1: a new wave began (spec_update)
 zc_x:       db 0                        ; zombie_cell: the cell being drawn
 zc_z:       db 0
 zh_y:       dw 0
@@ -1148,4 +1423,5 @@ zh:         db 0
 zhr:        db 0
 zface:      db 0
 fig_y:      dw 0                        ; fig_draw: height of the feet
+fig_h:      dw ZOMBIE_H                 ; zsize: the figure's height
 fig_sel:    dw zfig_sel                 ; fig_draw: frame chooser

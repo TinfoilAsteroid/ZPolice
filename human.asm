@@ -1,6 +1,6 @@
 ;==============================================================================
-; Z-POLICE - humans to rescue (page 7, $7000-$7FFF: kept mapped in slot 3,
-; after city_col)
+; Z-POLICE - humans to rescue (in the zombie page, after zombie.asm: kept
+; mapped in slot 1)
 ;
 ; Up to HUMAN_MAX humans, nhumans of them placed at random at start-up (on a
 ; road, or on a roof low enough to land on).  They stand still, always face
@@ -20,7 +20,8 @@
 ;   +0,+1  x  (world units: high byte = cell, as for zombies)
 ;   +2,+3  z
 ;   +4,+5  y  height of its feet (roof height, or 0 on the road)
-;   +6     state: 0 = gone (rescued or unused), 1 = waiting
+;   +6     state (HS_*): 0 unused, 1 waiting in the city, 2 aboard the
+;          VTOL, 3 rescued (off at the landing pad), 4 dead
 ;   +7,+8  cell (x, z) of its map dot
 ;   +9     1 = map dot shown
 ;   +10    hit points left (HUMAN_HP; a rocket blast, weapons.asm)
@@ -34,6 +35,11 @@
 ;==============================================================================
 
 HREC            equ 13
+HS_NONE         equ 0               ; human states (+6)
+HS_WAIT         equ 1               ; waiting in the city to be rescued
+HS_ABOARD       equ 2               ; aboard the VTOL
+HS_SAVED        equ 3               ; rescued: off at the landing pad
+HS_DEAD         equ 4               ; killed (a rocket blast, a ghost)
 
         INCLUDE "tables_human.inc"      ; hum_ptr, waving stick men
 
@@ -96,7 +102,7 @@ human_init:
         and 127
         add a,64
         ld (ix+2),a
-        ld (ix+6),1                     ; waiting
+        ld (ix+6),HS_WAIT               ; waiting
         ld (ix+10),HUMAN_HP
         ld de,HREC
         add ix,de
@@ -146,8 +152,8 @@ hum_flags:
         ld ix,humans
         ld b,HUMAN_MAX
 .set:   ld a,(ix+6)
-        or a
-        jr z,.sn                        ; gone: no mark
+        cp HS_WAIT
+        jr nz,.sn                       ; not in the city: no mark
         call hum_map_ptr
         set CELL_HUMAN_B,(hl)
         ld a,(ix+1)
@@ -174,8 +180,8 @@ human_cell:
         ld b,HUMAN_MAX
 .lp:    push bc
         ld a,(ix+6)
-        or a
-        jr z,.nx
+        cp HS_WAIT
+        jr nz,.nx
         ld l,(ix+3)                     ; in this cell?
         ld h,0
         ROWOFS
@@ -228,6 +234,26 @@ hum_sel:
         jp zspr_rows
 
 ;------------------------------------------------------------------------------
+; The level complete (level_complete_screen): everyone aboard is rescued at
+; once, off the VTOL and counted as saved (before the salvage is worked out)
+;------------------------------------------------------------------------------
+hum_unload_all:
+        ld ix,humans
+        ld b,HUMAN_MAX
+        ld de,HREC
+.lp:    ld a,(ix+6)
+        cp HS_ABOARD
+        jr nz,.nx
+        ld (ix+6),HS_SAVED
+        ld hl,saved
+        inc (hl)
+.nx:    add ix,de
+        djnz .lp
+        xor a
+        ld (passengers),a
+        ret
+
+;------------------------------------------------------------------------------
 ; Per frame: map dots, and rescues while the craft is landed
 ;------------------------------------------------------------------------------
 human_update:
@@ -249,9 +275,9 @@ human_update:
         call z,hum_dots                 ; frame 3: hide
         jr .resc
 .dots:  call hum_dots
-.resc:  ; landed?  speed 0, resting on the floor under the craft
-        ld a,(speed)
-        or a
+.resc:  ; landed?  speed 0, resting on the floor under the craft (and
+        ; not a wreck: nobody runs to it or gets off)
+        call vtol_landed
         jr nz,.notpad
         call cam_cell_ptr
         ld a,(hl)
@@ -259,11 +285,6 @@ human_update:
         ld (hu_cell),a
         call bld_height
         ld (hu_floor),hl                ; height of the floor under it
-        call floor_y
-        ld de,(cam_y)
-        or a
-        sbc hl,de
-        jr nz,.notpad                   ; not resting on it
         ld a,(hu_cell)
         cp PAD_CODE
         jr nz,.field
@@ -279,6 +300,16 @@ human_update:
         dec (hl)
         ld hl,saved
         inc (hl)
+        ld ix,humans                    ; the first aboard is rescued
+        ld b,HUMAN_MAX
+        ld de,HREC
+.off:   ld a,(ix+6)
+        cp HS_ABOARD
+        jr z,.saved
+        add ix,de
+        djnz .off
+        ret
+.saved: ld (ix+6),HS_SAVED
         ret
 .notpad:
         ld a,DISEMBARK                  ; the first gets off a second after
@@ -293,8 +324,8 @@ human_update:
         cp PASSENGER_MAX
         jr nc,.full                     ; the craft is full: nobody runs
         ld a,(ix+6)
-        or a
-        jr z,.nx
+        cp HS_WAIT
+        jr nz,.nx
         call hum_rescue
 .nx:    ld de,HREC
         add ix,de
@@ -391,9 +422,9 @@ hum_rescue:
         ld (ix+2),l
         ld (ix+3),h
         ret
-.board: ld c,0                          ; in: dot off, gone, one more aboard
+.board: ld c,0                          ; in: dot off, aboard, one more
         call hum_dot
-        ld (ix+6),0
+        ld (ix+6),HS_ABOARD
         ld hl,passengers
         inc (hl)
         ret
