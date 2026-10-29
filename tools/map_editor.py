@@ -18,11 +18,15 @@ defences; away from the base, barricades: at most 30, counted below the
 map), Out of bounds.  View > Invert roads shows roads white (the view only:
 not the palette or the saved map).
 
-Colour families: each is shown as its 3 shades, the base colour (the facing
-side), the shaded side, the roof.  Only the buildings' families (00-61, each
-with a white border) can be picked; 62 and 63 are the terrace's and the pad's.
-A building on any other colour (or none) is invalid: "Show bad colours"
-flashes them red for 3 seconds.  Saving checks the map (tools/citymap.py validate):
+Colour families: each is shown as its 3 shades in palette order, SHADE_DARK
+(the family's base entry, family*4: what the game stores), SHADE_FACE,
+SHADE_ROOF.  Only the SHADE_DARK swatches of the buildings' families (01-61,
+each with a white border) can be picked; 00 is the perimeter wall's (the
+Outer wall tool), 62 and 63 the terrace's and the pad's.  A building whose
+colour is anything else (or none), and anything on the wall's colour that
+isn't perimeter wall (citymap.bad_walls), is invalid: "Show bad colours"
+flashes them red for 3 seconds, and Edit > Recolour off-wall wall colour
+gives those cells random building colours.  Saving checks the map (tools/citymap.py validate):
 the problems are shown, and gentables.py won't build a map that has any.
 After saving, build.bat (gentables.py) makes the city's ZPDATA files from it.
 """
@@ -39,10 +43,10 @@ MAP_DIR = os.path.join(ROOT, "maps")
 DATA_DIR = os.path.join(ROOT, "ZPDATA")
 BORDER = 8
 # The palette: each colour family as a group of its 3 shades, PAL_ORDER
-# (the base colour: the facing side, then the shaded side, then the roof;
-# entries +1, +0, +2 of the family's 4), PAL_COLS families a row
+# (SHADE_DARK, the family's base entry and the only one to pick, then
+# SHADE_FACE and SHADE_ROOF), PAL_COLS families a row
 SWATCH = 12                             # a shade's swatch, pixels
-PAL_ORDER = (1, 0, 2)
+PAL_ORDER = (cm.SHADE_DARK, cm.SHADE_FACE, cm.SHADE_ROOF)
 PAL_COLS = 4
 PAL_GX = 3 * SWATCH + 6                 # a family group's pitch: across,
 PAL_GY = SWATCH + 6                     #   and down
@@ -116,6 +120,8 @@ class Editor:
         mb.add_cascade(label="File", menu=fm)
         em = tk.Menu(mb, tearoff=0)
         em.add_command(label="Undo", command=self.cmd_undo, accelerator="Ctrl+Z")
+        em.add_separator()
+        em.add_command(label="Recolour off-wall wall colour", command=self.cmd_fix_walls)
         mb.add_cascade(label="Edit", menu=em)
         vm = tk.Menu(mb, tearoff=0)
         for n in (4, 8, 12):
@@ -226,19 +232,25 @@ class Editor:
         pc.delete("all")
         for f in range(cm.FAMILIES):
             x, y = self.pal_xy(f)
-            for k, e in enumerate(PAL_ORDER):   # base, shaded side, roof
+            for k, e in enumerate(PAL_ORDER):   # dark (base), face, roof
                 pc.create_rectangle(x + k * SWATCH, y, x + (k + 1) * SWATCH, y + SWATCH,
                                     fill=hex_rgb(self.pal[f * 4 + e]), width=0)
-            if f < cm.BLD_FAMILIES:     # a building colour: a white border
-                pc.create_rectangle(x - 1, y - 1, x + 3 * SWATCH + 1, y + SWATCH + 1,
+            if self.pickable(f):        # its SHADE_DARK, to pick: a white border
+                pc.create_rectangle(x - 1, y - 1, x + SWATCH + 1, y + SWATCH + 1,
                                     outline="white", width=1)
-            else:                       # the terrace's, the pad's: not for picking
+            else:                       # the wall's, terrace's, pad's: not for picking
                 pc.create_line(x, y + SWATCH, x + 3 * SWATCH, y, fill="#303030", width=2)
         x, y = self.pal_xy(self.family)
-        pc.create_rectangle(x - 3, y - 3, x + 3 * SWATCH + 3, y + SWATCH + 3, outline="yellow", width=2)
+        pc.create_rectangle(x - 3, y - 3, x + SWATCH + 3, y + SWATCH + 3, outline="yellow", width=2)
         notes = {cm.WALL_FAMILY: " (the wall's)"}
         self.fam_label.config(text=f"family {self.family:02d}{notes.get(self.family, '')}: "
-                                   "base, side, roof")
+                                   f"SHADE_DARK, entry {cm.city_col(self.family)}")
+
+    @staticmethod
+    def pickable(f):
+        """Family f can be picked for a building (not the wall's: the Outer
+        wall tool paints that; not the terrace's or pad's)."""
+        return f != cm.WALL_FAMILY and cm.is_bld_family(f)
 
     @staticmethod
     def pal_xy(f):
@@ -247,10 +259,12 @@ class Editor:
 
     @staticmethod
     def pal_family(x, y):
-        """The family whose group (or the gap round it) is at (x, y); None."""
+        """The family whose group (or the gap round it) is at (x, y), and
+        the shade there (PAL_ORDER; the gap counts as the nearest); None."""
         c, r = x // PAL_GX, y // PAL_GY
         if 0 <= c < PAL_COLS and 0 <= r < cm.FAMILIES // PAL_COLS:
-            return r * PAL_COLS + c
+            k = min(2, max(0, (x - c * PAL_GX - 3) // SWATCH))
+            return r * PAL_COLS + c, PAL_ORDER[k]
         return None
 
     # ------------------------------------------------------------- input
@@ -314,9 +328,11 @@ class Editor:
         i = at[1] * cm.GRID + at[0]
         code, fam = self.cells[i], self.fams[i]
         tools = {cm.ROAD: "road", cm.PAD: "pad", cm.TERRACE: "terrace", cm.VOID: "void"}
-        if cm.is_building(code):
+        if cm.is_wall(self.cells, self.fams, at[0], at[1]):
+            self.tool.set("wall")
+        elif cm.is_building(code):
             self.height.set(code)
-            if cm.is_bld_family(fam):
+            if self.pickable(fam):
                 self.family = fam
             self.tool.set("bld")
             self.draw_palette()
@@ -324,14 +340,23 @@ class Editor:
             self.tool.set(tools[code])
 
     def on_palette(self, ev):
-        f = self.pal_family(ev.x, ev.y)
-        if f is None:
+        at = self.pal_family(ev.x, ev.y)
+        if at is None:
             return
-        if f >= cm.BLD_FAMILIES:
+        f, shade = at
+        if f == cm.WALL_FAMILY:
+            self.status.config(text=f"family {f:02d} is the perimeter wall's: paint the wall "
+                               "with the Outer wall tool")
+        elif f >= cm.BLD_FAMILIES:
             whose = "terrace" if f == cm.TERRACE_FAMILY else "landing pad"
             self.status.config(text=f"family {f:02d} is the {whose}'s: not a building colour")
+        elif shade != cm.SHADE_DARK:
+            name = "SHADE_FACE" if shade == cm.SHADE_FACE else "SHADE_ROOF"
+            self.status.config(text=f"family {f:02d}'s {name} is shown, not picked: pick its "
+                               "SHADE_DARK (the first swatch, with the white border)")
         else:
             self.family = f
+            self.status.config(text=f"family {f:02d}: SHADE_DARK, palette entry {cm.city_col(f)}")
             self.tool.set("bld")
             self.draw_palette()
 
@@ -347,21 +372,49 @@ class Editor:
         if cm.is_building(code) and fam is not None:
             what += f", family {cm.family_text(fam)}"
         if cm.is_building(code) and not cm.is_bld_family(fam):
-            what += " (not a valid base colour)"
+            what += " (not a building family's SHADE_DARK)"
+        elif fam == cm.WALL_FAMILY and i in cm.bad_walls(self.cells, self.fams):
+            what += " (the wall's colour, but not perimeter wall)"
         self.status.config(text=f"x {at[0]}  z {at[1]}   {what}")
 
     # ---------------------------------------------------------- commands
     def cmd_bad_colours(self):
-        """Flash the buildings without a valid base colour red, for FLASH_MS."""
+        """Flash red, for FLASH_MS, the buildings whose colour isn't a
+        building family's SHADE_DARK."""
         bad = cm.bad_colours(self.cells, self.fams)
         if not bad:
-            self.status.config(text="every building has a valid base colour (family 00-"
-                               f"{cm.BLD_FAMILIES - 1:02d})")
+            self.status.config(text="every building's colour is a building family's "
+                               f"SHADE_DARK, and only perimeter wall has the wall's")
             return
-        self.status.config(text=f"{len(bad)} buildings without a valid base colour: flashing red")
+        nw = len(cm.bad_walls(self.cells, self.fams))
+        self.status.config(text=f"{len(bad)} bad colours ({len(bad) - nw} not a building "
+                           f"family's SHADE_DARK, {nw} the wall's off the perimeter wall): "
+                           "flashing red")
         self.stop_flash()
         self.flash = [FLASH_MS // FLASH_STEP, False, set(), None]
         self.flash_step()
+
+    def cmd_fix_walls(self):
+        """Edit > Recolour off-wall wall colour: every cell on the wall's
+        colour that isn't perimeter wall (bad_walls) a random building colour
+        (01-61), as one undoable stroke."""
+        import random
+        bad = cm.bad_walls(self.cells, self.fams)
+        if not bad:
+            self.status.config(text="only perimeter wall has the wall's colour: nothing to recolour")
+            return
+        stroke, n = [], 0
+        while bad:                      # (recolouring a wall tile can leave
+            for i in bad:               # its neighbours short of 2)
+                stroke.append((i, self.cells[i], self.fams[i]))
+                self.fams[i] = random.randrange(cm.WALL_FAMILY + 1, cm.BLD_FAMILIES)
+            n += len(bad)
+            bad = cm.bad_walls(self.cells, self.fams)
+        self.undo.append(stroke)
+        self.dirty = True
+        self.set_title()
+        self.redraw()
+        self.status.config(text=f"recoloured {n} cells off the perimeter wall (Ctrl+Z undoes)")
 
     def flash_step(self):
         """One step of the flash: the bad cells (looked for afresh, so one

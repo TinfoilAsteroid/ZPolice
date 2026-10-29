@@ -17,9 +17,11 @@ A city map is maps/CITYnn.json:
     T        terrace: round the pad, or anywhere as an improvised barricade
     X        out of bounds (outside the perimeter wall: never drawn)
 "colours": each cell's colour family, "00".."63" (an entry of the city's
-palette: 4 colours, the building's face is the second), or ".." for a road
-or out of bounds.  A building takes one of the building families,
-0..BLD_FAMILIES-1 (its base colour); the pad and terrace always take their
+palette: 4 colours, SHADE_DARK, SHADE_FACE, SHADE_ROOF and a fixed one), or
+".." for a road or out of bounds.  The game stores a cell's colour as its
+family's SHADE_DARK entry (city_col = family*4) and adds the shade when
+drawing, so a building's colour must be the SHADE_DARK entry of one of the
+building families, 0..BLD_FAMILIES-1; the pad and terrace always take their
 own families (62, 63).  A field that isn't any of these (a hand edit: "64",
 "7x") is kept as its text, so the map still loads; on a building it is a
 bad colour (bad_colours, validate).
@@ -37,6 +39,7 @@ TERRACE_R = 2                           # terrace: cells 1..2 out from it
 MAX_BARRICADES = 30                     # terrace away from the base (NBARR)
 FAMILIES = 64
 BLD_FAMILIES = 62                       # buildings' colour families: 0..61
+SHADE_DARK, SHADE_FACE, SHADE_ROOF = 0, 1, 2    # a family's 4 entries (zpolice.asm)
 WALL_FAMILY = 0                         # the perimeter wall's colour family
 TERRACE_FAMILY = 62
 PAD_FAMILY = 63
@@ -68,15 +71,72 @@ def pads(cells):
 
 
 def is_bld_family(f):
-    """A building's base colour: a family 0..BLD_FAMILIES-1 (not none, the
-    pad's or terrace's, or a field load couldn't read)."""
+    """A building's colour: a family 0..BLD_FAMILIES-1, whose SHADE_DARK
+    entry it is (not none, the pad's or terrace's, or a field load couldn't
+    read)."""
     return isinstance(f, int) and 0 <= f < BLD_FAMILIES
 
 
+def city_col(f):
+    """The city_col byte (palette entry) of colour family f: its SHADE_DARK."""
+    return f * 4 + SHADE_DARK
+
+
+def is_bld_col(col):
+    """Palette entry col is a building colour: the SHADE_DARK entry of a
+    building family (any other shade, or the pad's or terrace's, would draw
+    wrongly in the game)."""
+    return col % 4 == SHADE_DARK and col // 4 < BLD_FAMILIES
+
+
 def bad_colours(cells, fams):
-    """The buildings (cell indices) without a valid base colour: none, the
-    pad's or terrace's family, or an unreadable field."""
-    return [i for i, c in enumerate(cells) if is_building(c) and not is_bld_family(fams[i])]
+    """The buildings (cell indices) whose colour isn't the SHADE_DARK entry
+    of a building family (none, the pad's or terrace's family, or an
+    unreadable field), and the cells on the perimeter wall's colour that
+    aren't perimeter wall (bad_walls)."""
+    bad = {i for i, c in enumerate(cells) if is_building(c) and not is_bld_family(fams[i])}
+    return sorted(bad | set(bad_walls(cells, fams)))
+
+
+ORTH = ((1, 0), (-1, 0), (0, 1), (0, -1))
+AROUND = tuple((dx, dz) for dz in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dz)
+
+
+def is_wall(cells, fams, x, z):
+    """Cell (x, z) is wall: height WALL_H on the wall's colour (WALL_FAMILY)."""
+    i = z * GRID + x
+    return cells[i] == WALL_H and fams[i] == WALL_FAMILY
+
+
+def bad_walls(cells, fams):
+    """The cells (indices) on the perimeter wall's colour (WALL_FAMILY) that
+    aren't perimeter wall.  Only the perimeter wall may use that colour (the
+    game draws the sky in it).  A perimeter wall tile is wall (is_wall) with:
+      * at least 2 wall tiles next to it (left, right, above, below: the
+        wall runs on), and
+      * unless on the map's edge (the first or last row or column), at least
+        1 out of bounds tile among its 8 neighbours (diagonals too, for the
+        corners round an out of bounds area)."""
+    def inside(x, z):
+        return 0 <= x < GRID and 0 <= z < GRID
+    bad = []
+    for i, f in enumerate(fams):
+        if f != WALL_FAMILY or not is_building(cells[i]):
+            continue
+        x, z = i % GRID, i // GRID
+        if cells[i] != WALL_H:
+            bad.append(i)               # (a lower building on the wall's colour)
+            continue
+        if sum(1 for dx, dz in ORTH if inside(x + dx, z + dz)
+               and is_wall(cells, fams, x + dx, z + dz)) < 2:
+            bad.append(i)
+            continue
+        if x in (0, GRID - 1) or z in (0, GRID - 1):
+            continue
+        if not any(inside(x + dx, z + dz) and cells[(z + dz) * GRID + x + dx] == VOID
+                   for dx, dz in AROUND):
+            bad.append(i)
+    return bad
 
 
 def family_text(f):
@@ -164,10 +224,17 @@ def validate(cells, fams):
     nb = len(barricades(cells))
     if nb > MAX_BARRICADES:
         errs.append(f"{nb} barricades (terrace away from the base): at most {MAX_BARRICADES}")
+    # only the perimeter wall on the wall's colour (the game's sky colour)
+    bw = [(i % GRID, i // GRID) for i in bad_walls(cells, fams)]
+    if bw:
+        errs.append(f"the perimeter wall's colour (family {WALL_FAMILY:02d}) used off the perimeter "
+                    f"wall: {len(bw)} cells, e.g. {bw[0]} (a perimeter wall tile is height F with "
+                    "2 wall tiles next to it and, off the map's edge, out of bounds beside it)")
     # buildings need a building colour family (a base colour, 0..BLD_FAMILIES-1)
-    bad = [(i % GRID, i // GRID) for i in bad_colours(cells, fams)]
+    bwset = set(bad_walls(cells, fams))
+    bad = [(i % GRID, i // GRID) for i in bad_colours(cells, fams) if i not in bwset]
     if bad:
-        errs.append(f"buildings without a valid base colour (family 00..{BLD_FAMILIES - 1:02d}): "
+        errs.append(f"buildings whose colour isn't a building family's SHADE_DARK (00..{BLD_FAMILIES - 1:02d}): "
                     f"{len(bad)}, e.g. {bad[0]}")
     # out of bounds only behind the wall: every neighbour is out of bounds or wall
     leak = []

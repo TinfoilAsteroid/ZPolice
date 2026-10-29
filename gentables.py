@@ -416,8 +416,8 @@ def make_col(city, was_building, seed):
                 out.append(TERRACE_FAMILY * 4)
             elif city[j * GRID + i] == VOID_CODE:
                 out.append(GROUND_IDX)  # (out of bounds: no colour)
-            else:
-                out.append(crng.randrange(BLD_FAMILIES) * 4)
+            else:                       # (not the wall's: only the wall has it)
+                out.append(crng.randrange(WALL_FAMILY + 1, BLD_FAMILIES) * 4)
     return out
 
 def pal_pair(c):
@@ -615,6 +615,8 @@ assert (citymap.PAD, citymap.TERRACE, citymap.VOID) == (PAD_CODE, TERRACE_CODE, 
 assert (citymap.PAD_X, citymap.PAD_Z, citymap.TERRACE_R) == (PAD_X, PAD_Z, TERRACE_R)
 assert (citymap.WALL_FAMILY, citymap.TERRACE_FAMILY, citymap.PAD_FAMILY) == (WALL_FAMILY, TERRACE_FAMILY, PAD_FAMILY)
 assert citymap.BLD_FAMILIES == BLD_FAMILIES
+assert WALL_FAMILY == 0                         # (make_col: buildings 1..BLD_FAMILIES-1)
+assert citymap.SHADE_DARK == 0                  # (zpolice.asm SHADE_DARK: city_col = family*4)
 assert citymap.GROUND_IDX == GROUND_IDX
 
 def city_layout(n, name, s_map, s_rat, s_col):
@@ -632,8 +634,9 @@ def city_layout(n, name, s_map, s_rat, s_col):
     if errs:
         raise SystemExit(f"{path}: the map can't be used:\n  " + "\n  ".join(errs))
     city = m["cells"]
-    col = [GROUND_IDX if f is None else f * 4
+    col = [GROUND_IDX if f is None else citymap.city_col(f)
            for f in (citymap.family_for(c, f) for c, f in zip(m["cells"], m["fams"]))]
+    assert all(citymap.is_bld_col(k) for c, k in zip(city, col) if citymap.is_building(c))
     return city, col
 
 for n, (name, tod, sky, (s_map, s_rat, s_col, s_pal)) in enumerate(CITIES, 1):

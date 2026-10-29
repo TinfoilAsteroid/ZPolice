@@ -1212,25 +1212,49 @@ pad in the centre, and the perimeter wall.
       landing pad (the status line says why).
     * View > Invert roads draws roads white, to pick them out. It only
       changes the view, not the palette or the saved map.
-    * Colour families: each is shown as a group of its 3 shades, as the
-      game uses them: the base colour (the facing side, palette entry
-      family×4+1), then the shaded side (+0), then the roof (+2). There are
-      4 families a row, in family order (00–03 on the top row).
-    * Only the buildings' families, 00–61 (`BLD_FAMILIES`), can be picked:
-      click anywhere on the group. Each has a white border, and the selected
-      one a yellow one. 62 (the terrace's) and 63 (the pad's) have no
-      border and a line through them; clicking them only says whose they
-      are.
-    * A building (heights 1–15, walls included) without a valid base
-      colour is invalid. That's family 62 or 63, none (".."), or a field
-      that isn't a family at all, such as a hand-typed "64" or "7x". The
-      check (`citymap.bad_colours`, in `validate`) stops saving cleanly and
-      `build.bat`. The "Show bad colours" button flashes those buildings
-      red for 3 seconds; one repainted meanwhile stops flashing.
+    * Colour families: each is shown as a group of its 3 shades in palette
+      order: `SHADE_DARK` (family×4+0, the family's base entry), then
+      `SHADE_FACE` (+1), then `SHADE_ROOF` (+2). There are 4 families a
+      row, in family order (00–03 on the top row). The map itself still
+      shows each building's facing side (`SHADE_FACE`), as it looks in the
+      game.
+    * Only the `SHADE_DARK` swatch of the buildings' families, 01–61
+      (`BLD_FAMILIES`), can be picked. Each has a white border, and the
+      selected one a yellow one. The game stores a cell's colour as that
+      entry (`city_col` = family×4) and adds the shade bits when drawing,
+      so any other entry would draw the wrong colours. Clicking a face or
+      roof swatch only says to pick the dark one. 62 (the terrace's) and
+      63 (the pad's) have a line through them; clicking them only says
+      whose they are.
+    * A building (heights 1–15, walls included) whose colour isn't the
+      `SHADE_DARK` of a building family is invalid. That's family 62 or 63,
+      none (".."), or a field that isn't a family at all, such as a
+      hand-typed "64" or "7x". The check (`citymap.bad_colours`, in
+      `validate`) stops saving cleanly and `build.bat`; gentables also
+      asserts every building's `city_col` is such an entry
+      (`citymap.is_bld_col`). The "Show bad colours" button flashes those
+      buildings red for 3 seconds; one repainted meanwhile stops flashing.
+    * Only the perimeter wall may use the wall's colour (family 00,
+      `WALL_FAMILY`), since the game draws the sky in it. Family 00 can't be
+      picked for a building; the Outer wall tool paints it. A cell on family
+      00 is a perimeter wall tile only if (`citymap.bad_walls`):
+      * it is height F;
+      * at least 2 of the tiles left, right, above and below it are wall
+        (height F on family 00), so the wall runs on; and
+      * unless it is in the map's first or last row or column, at least 1 of
+        its 8 neighbours is out of bounds (diagonals count, for the corners
+        round an out of bounds area).
+
+      Anything else on family 00 is an error, flashed by "Show bad colours".
+      Edit > Recolour off-wall wall colour gives all such cells random
+      building colours (01–61) in one undoable step. It repeats until none
+      are left, since recolouring a wall tile can leave its neighbours with
+      fewer than 2. Right-clicking a perimeter wall tile selects the Outer
+      wall tool. gentables no longer gives generated buildings family 00.
     * An unreadable colour field no longer stops a map loading. It is kept
       as it was typed, so you can find it, and saved back unchanged. Such
       a building is drawn magenta, and hovering over it shows the field,
-      for example "family 7x (not a valid base colour)".
+      for example "family 7x (not a building family's SHADE_DARK)".
     * Left button paints (click or drag); right button picks up a cell's
       height and colour; Ctrl+Z undoes a stroke; View > Show heights
       shades buildings grey by height.
