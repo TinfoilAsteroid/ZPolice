@@ -11,7 +11,8 @@
 ;     city_map at $7000, one 8K read;
 ;   * the level's own map changes (x, z, cell code, city_col), for hand-made
 ;     layouts;
-;   * the city's palette and sky colour into the Layer 2 palette;
+;   * the city's palette and sky colour into the Layer 2 palette, then the
+;     level's own palette over it, if it has one (ZPDATA/LEVELnn.ZPP);
 ;   * view_r / dot_r from the draw distance (2..VIEW_R tiles).
 ; Loading the map also clears every cell's zombie and human marks.  The
 ; files must be in the ZPDATA folder beside zpolice.nex on the SD card.
@@ -28,8 +29,12 @@ LVF_MAX         equ LVF_CHG+4*LVF_CHG_MAX
 CTF_SKY         equ 14              ; sky colour: RRRGGGBB, low blue bit
 CTF_PAL         equ 32              ; the palette, 256 pairs
 CTF_DATA        equ CTF_PAL+512     ; then city_col, city_map
+; Level palette file (ZPDATA/LEVELnn.ZPP, optional: tools/levelpal.py)
+LPF_PAL         equ 8               ; the palette, 256 pairs
+LPF_SIZE        equ LPF_PAL+512
 LEVEL_VERSION   equ 2               ; the files' format versions (+4): the
 CITY_VERSION    equ 1               ;   level file's 2 (specials by wave)
+LPAL_VERSION    equ 1
 LDERR_BADFILE   equ 255             ; error code: not a valid file
 
 ;------------------------------------------------------------------------------
@@ -123,22 +128,39 @@ load_level:
         add ix,de
         djnz .chg
 .pal:   ; the city's palette (the first Layer 2 palette), then its sky
-        nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
-        nextreg $40,0
         ld hl,ll_cbuf+CTF_PAL
-        ld b,0                          ; 256 entries
-.pl:    ld a,(hl)
-        inc hl
-        nextreg $44,a                   ; RRRGGGBB
-        ld a,(hl)
-        inc hl
-        nextreg $44,a                   ; low blue bit
-        djnz .pl
+        call ll_palette
         nextreg $40,SKY_COL
         ld a,(ll_cbuf+CTF_SKY)
         nextreg $44,a
         ld a,(ll_cbuf+CTF_SKY+1)
         nextreg $44,a
+        ; the level's own palette, if it has one (ZPDATA/LEVELnn.ZPP, from
+        ; levels/LEVELnn_PAL.json): in place of the city's.  None, or not a
+        ; whole palette file: the city's stays.  (Into ll_cbuf: the city's
+        ; header is done with.)
+        ld a,(ll_level+12)
+        ld (ll_lpal+12),a
+        ld a,(ll_level+13)
+        ld (ll_lpal+13),a
+        ld hl,ll_lpal
+        ld de,ll_cbuf
+        ld bc,LPF_SIZE
+        call fh_load
+        jr c,.view                      ; (none)
+        ld hl,-LPF_SIZE
+        add hl,bc
+        ld a,h
+        or l
+        jr nz,.view                     ; (not all of it)
+        ld hl,ll_cbuf
+        ld de,ll_pmagic
+        ld c,LPAL_VERSION
+        call ll_check
+        jr c,.view
+        ld hl,ll_cbuf+LPF_PAL
+        call ll_palette
+.view:
         ; the draw distance, 2..VIEW_R tiles; the ground dots one less
         ld a,(level_cur+LV_VIEW_R)
         cp 2
@@ -157,6 +179,20 @@ load_level:
         call fh_close
         pop af
         scf
+        ret
+
+; HL -> 256 palette pairs (RRRGGGBB, low blue bit): into Layer 2 palette 0
+ll_palette:
+        nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
+        nextreg $40,0
+        ld b,0                          ; 256 entries
+.pl:    ld a,(hl)
+        inc hl
+        nextreg $44,a                   ; RRRGGGBB
+        ld a,(hl)
+        inc hl
+        nextreg $44,a                   ; low blue bit
+        djnz .pl
         ret
 
 ; HL -> a file's first bytes, DE -> its 4-byte magic: carry clear if they
@@ -182,7 +218,11 @@ ll_check:
 ;==============================================================================
 ll_level:   db "ZPDATA/LEVEL00.ZPL", 0  ; digits at +12, +13
 ll_city:    db "ZPDATA/CITY00.ZPC", 0   ; digits at +11, +12
+ll_lpal:    db "ZPDATA/LEVEL00.ZPP", 0  ; digits at +12, +13 (as ll_level's)
 ll_lmagic:  db "ZPLV"
 ll_cmagic:  db "ZPCY"
+ll_pmagic:  db "ZPPL"
 ll_lbuf:    ds LVF_MAX                  ; the level file
-ll_cbuf:    ds CTF_DATA                 ; the city file's header and palette
+ll_cbuf:    ds CTF_DATA                 ; the city file's header and palette;
+                                        ; then the level's palette file
+        ASSERT LPF_SIZE <= CTF_DATA

@@ -10,6 +10,52 @@
         ALIGN 256
 vtx:        ds 8*16                     ; X,Y,Z,oc,sx,sy + pad
 p2buf:      ds 4*16                     ; x,y,edge flag,pad
+; (the rest of this 256 bytes, and of push_blk's: clipping variables)
+df_ptr:     dw 0
+df_or:      db 0
+df_mask:    db 0
+df_m:       db 0
+df_cur:     db 0
+clip_n:     db 0
+clip_on:    db 0
+clip_cnt:   db 0
+clip_plane: db 0
+clip_src:   dw 0
+clip_dst:   dw 0
+clip_s:     dw 0
+clip_e:     dw 0
+clip_ds:    dw 0
+clip_de:    dw 0
+clip_if:    db 0
+ci_a:       dw 0
+ci_t:       dw 0
+    IFDEF CLIP_2D
+c2_or:      db 0                        ; clip2d: the planes to clip against,
+c2_off:     db 0                        ;   the one now (coordinate, bound)
+c2_hi:      db 0
+; the 2D planes, in c2_or's bit order: coordinate (0 x, 2 y), bound (0: a
+; lower bound of 0, else an upper bound)
+c2_planes:  db 0,0, 0,255, 2,0, 2,VIEW_H-1
+    ENDIF
+pj_sx:      db 0
+mf_sign:    db 0
+p2n:        db 0
+fy0:        db 0
+fy1:        db 0
+fe_cnt:     db 0
+line_col:   db 0
+seg_page:   db 0                        ; page now in slot 0
+cs_sky:     db 0
+and_oc:     db 0
+bot_oc:     db 0
+bc_oc:      db 0                        ; bul_clip
+bc_t:       dw 0
+bc_pl:      db 0
+dot_i:      db 0
+dot_j:      db 0
+dot_rows:   db 0
+dot_cols:   db 0
+        ASSERT $ <= vtx + 256
 
         ALIGN 256
 ; Unrolled span writer: entry = push_end - 1 - pairs (pairs 1..128).  SP is
@@ -40,6 +86,8 @@ push_next:                              ; (a 1-pixel span: SP never borrowed)
         ld (seg_page),a
         nextreg L2SEC_MMU,a
         jp fs_loop
+clipA:      ds 8*12                     ; (in the rest of these 256 bytes)
+        ASSERT $ <= push_blk + 256
 
         ALIGN 256
 TA:         ds 256                      ; x of downward edges per row
@@ -123,22 +171,34 @@ mul_frac:
         jp neg_hl
 
 ; IX = (HL << 16) / DE   with HL < DE (unsigned) -> 0.16 fraction
-div_frac:
-        ld ix,0
-        ld a,16
-.lp:    add ix,ix
+; Restoring division, unrolled: each quotient bit goes in inverted, as the
+; carry (set: the divisor didn't fit), 8 into A, which is complemented:
+; the high byte, then the low.  Keeps BC.
+    MACRO DIVBIT q
         add hl,hl
-        jr c,.sub
-        or a
+        jr c,$+9                        ; (17-bit remainder: it fits)
+        sbc hl,de                       ; (carry clear)
+        jr nc,$+9                       ; fits: bit 1 (carry clear)
+        add hl,de                       ; doesn't: put it back (carry set)
+        jr $+6
+        or a                            ; (from the jr c)
         sbc hl,de
-        jr nc,.set
-        add hl,de
-        jr .nx
-.sub:   or a
-        sbc hl,de
-.set:   inc ix
-.nx:    dec a
-        jr nz,.lp
+        or a                            ; bit 1
+        q                               ; (all the jumps land here)
+    ENDM
+div_frac:
+        push bc
+        ld b,2
+.lp:    REPT 8
+        DIVBIT rla
+        ENDR
+        cpl
+        ld ixl,a
+        dec b
+        jr z,.d
+        ld ixh,a                        ; (the high byte)
+        jp .lp
+.d:     pop bc
         ret
 
 ; E = A / C, A = A mod C  (8-bit unsigned)
@@ -275,6 +335,320 @@ zpatch:
         ld (scale_comp.r16+2),a
         ret
 
+    IFDEF CLIP_2D
+;==============================================================================
+; 2D clip of the current face (df_ptr, df_mask), no corner behind the near
+; plane.  Carry set: a corner is outside the guard band (nothing drawn, clip
+; it in 3D).  Else p2buf / p2n hold the clipped polygon (p2n < 3: none).
+; The corners go into clipA as x, y (16-bit screen), pad, edge flag (+6),
+; pad, and are clipped by clip_poly with clip_plane = $80: plane_dist and
+; clip_isect then work on the 2D plane c2_off / c2_hi, one of x >= 0,
+; x <= 255, y >= 0, y <= VIEW_H-1, and only those some corner is outside.
+;==============================================================================
+clip2d:
+        ld hl,(df_ptr)
+        ld iy,clipA
+        ld a,(df_mask)
+        ld (df_m),a
+        xor a
+        ld (c2_or),a                    ; the planes the corners cross
+        ld b,4
+.cp:    push bc
+        ld a,(hl)
+        inc hl
+        push hl
+        ld l,a
+        ld a,(vtx_hi)
+        ld h,a
+        push hl
+        pop ix                          ; IX -> the corner
+        ld a,(ix+6)
+        or a
+        jr nz,.off
+        ld a,(ix+7)                     ; on screen: its cached sx, sy
+        ld (iy+0),a
+        ld (iy+1),0
+        ld a,(ix+8)
+        ld (iy+2),a
+        ld (iy+3),0
+        jr .fl
+.off:   call guard_proj
+        jp c,.fail
+.fl:    ld a,(df_m)                     ; edge flag from the mask
+        ld e,a
+        and 1
+        ld (iy+6),a
+        ld a,e
+        rrca
+        ld (df_m),a
+        ld de,8
+        add iy,de
+        pop hl
+        pop bc
+        djnz .cp
+
+        ld a,4
+        ld (clip_n),a
+        ld hl,clipA
+        ld (clip_src),hl
+        ld hl,clipB
+        ld (clip_dst),hl
+        ld a,$80
+        ld (clip_plane),a               ; (a 2D plane)
+        ld hl,c2_planes
+.pl:    ld a,(c2_or)
+        srl a
+        ld (c2_or),a
+        jr nc,.skip
+        ld a,(hl)
+        ld (c2_off),a
+        inc hl
+        ld a,(hl)
+        ld (c2_hi),a
+        dec hl
+        push hl
+        call clip_poly
+        pop hl
+        ld a,(clip_n)
+        cp 3
+        jr c,.none
+.skip:  inc hl
+        inc hl
+        ld a,(c2_or)
+        or a
+        jr nz,.pl
+
+        ld hl,(clip_src)                ; to p2buf: all on screen, 8-bit
+        ld de,p2buf
+        ld a,(clip_n)
+        ld (p2n),a
+        ld b,a
+.o:     ld a,(hl)                       ; x
+        ld (de),a
+        inc de
+        inc hl
+        inc hl
+        ld a,(hl)                       ; y
+        ld (de),a
+        inc de
+        ld a,4
+        add hl,a
+        ld a,(hl)                       ; edge flag
+        ld (de),a
+        inc de
+        inc de
+        inc hl
+        inc hl
+        djnz .o
+        or a
+        ret
+.none:  xor a                           ; (carry clear)
+        ld (p2n),a
+        ret
+.fail:  pop hl
+        pop bc
+        scf
+        ret
+
+; IX -> corner (X, Y, Z; Z >= NEAR) -> its screen x, y (16-bit) at IY+0, +2,
+; the screen planes it is outside ORed into c2_or.  Carry set (nothing
+; stored) if outside the guard band |X| <= 2Z, |Y| <= Z.
+guard_proj:
+        ld l,(ix+4)
+        ld h,(ix+5)
+        push hl                         ; Z
+        ld l,(ix+0)
+        ld h,(ix+1)
+        call abs_hl
+        ex de,hl                        ; |X|
+        pop hl
+        push hl
+        add hl,hl                       ; 2Z (carry: over 65535, so more)
+        jr c,.g1
+        sbc hl,de
+        jr c,.out
+.g1:    ld l,(ix+2)
+        ld h,(ix+3)
+        call abs_hl
+        ex de,hl                        ; |Y|
+        pop hl
+        push hl
+        or a
+        sbc hl,de
+        jr c,.out
+        pop hl
+        ld a,l                          ; (zpatch tests HL = 0 with A = L)
+        call zpatch
+        ld l,(ix+0)
+        ld h,(ix+1)
+        ld de,128
+        ld bc,255<<8|1                  ; x: 0..255, c2_or bits 0, 1
+        call c2_scr                     ; 128 + 128X/Z
+        ld (iy+0),l
+        ld (iy+1),h
+        ld l,(ix+2)
+        ld h,(ix+3)
+        call neg_hl
+        ld de,VIEW_CY
+        ld bc,(VIEW_H-1)<<8|4           ; y: 0..VIEW_H-1, c2_or bits 2, 3
+        call c2_scr                     ; VIEW_CY - 128Y/Z
+        ld (iy+2),l
+        ld (iy+3),h
+        or a
+        ret
+.out:   pop hl
+        scf
+        ret
+
+; HL = component, DE = the screen centre, B = the upper bound, C = the lower
+; plane's c2_or bit (the upper's is the next) -> HL = DE + 128 HL / Z (the
+; Z patched in by zpatch), and the plane it is outside, if any, into c2_or
+c2_scr:
+        push bc
+        push de
+        ld a,h
+        push af
+        call scomp16
+        pop af
+        rla
+        call c,neg_hl
+        pop de
+        add hl,de
+        pop bc
+        ld a,h
+        or a
+        jr z,.z
+        jp m,.lo                        ; < 0
+        jr .hi                          ; > 255
+.z:     ld a,b
+        cp l
+        ret nc                          ; inside
+.hi:    sla c
+.lo:    ld a,(c2_or)
+        or c
+        ld (c2_or),a
+        ret
+
+; HL = signed component -> HL = round(|HL| * 128 / Z), |HL| <= 2Z: as
+; scale_comp (the same shift and reciprocal, patched into it by zpatch),
+; with a 10-bit Xn and a 16-bit result
+scomp16:
+        call abs_hl
+        ld a,(scale_comp.sh+1)
+        or a
+        jr z,.sd
+        ex de,hl
+        jp m,.l
+        ld b,a
+        bsrl de,b
+        ex de,hl
+        jr .sd
+.l:     neg
+        ld b,a
+        bsla de,b
+        ex de,hl
+.sd:    ld a,h
+        cp 4
+        jr c,.ok
+        ld hl,1023                      ; (rounding at the guard band's edge)
+.ok:    ld b,h                          ; bits 8-9 of Xn
+        ld a,(scale_comp.rl+1)
+        ld e,a
+        ld d,l
+        mul d,e                         ; Xl*Rl
+        ld c,d
+        ld a,(scale_comp.rh+1)
+        ld e,a
+        ld d,l
+        mul d,e                         ; Xl*Rh
+        ld a,c
+        add a,e
+        ld l,a
+        ld a,d
+        adc a,0
+        ld h,a                          ; HL = (Xl*R) >> 8
+        ld c,0
+        ld a,b
+        or a
+        jr z,.nh
+        ld de,(scale_comp.r16+1)
+.ad:    add hl,de                       ; + (256 * Xh * R) >> 8
+        jr nc,.a1
+        inc c
+.a1:    djnz .ad
+.nh:    inc h                           ; + rounding (0.5 after >>9)
+        jr nz,.nr
+        inc c
+.nr:    ld l,h
+        ld h,c
+        srl h
+        rr l                            ; HL = (C:H) >> 1 = P >> 9
+        ret
+
+; clip_isect for a 2D plane: the point where the edge S-E crosses it, out
+; at IY (IY and clip_on advanced).  Worked out from the edge's inside end,
+; so an edge two faces share is cut at the same point whichever way it
+; runs: t = d_in / (|dS| + |dE|), the other coordinate o_in + t (o_out -
+; o_in), this one exactly on the bound.
+c2_isect:
+        ld hl,(clip_s)
+        ld de,(clip_e)
+        ld a,(clip_ds+1)
+        rla
+        jr nc,.sin
+        ex de,hl                        ; S outside: E is the inside end
+.sin:   ld a,(c2_off)
+        xor 2                           ; the other coordinate
+        add hl,a
+        ld c,(hl)
+        inc hl
+        ld b,(hl)                       ; o_in
+        ex de,hl
+        add hl,a
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a                          ; o_out
+        or a
+        sbc hl,bc                       ; o_out - o_in
+        jr z,.same                      ; (a vertical / horizontal edge: o_in)
+        push bc
+        push hl
+        ld hl,(clip_ds)
+        call abs_hl
+        ex de,hl
+        ld hl,(clip_de)
+        call abs_hl
+        add hl,de
+        ex de,hl                        ; |dS| + |dE|
+        ld hl,(clip_ds)
+        bit 7,h
+        jr z,.di
+        ld hl,(clip_de)
+.di:    call div_frac                   ; t = d_in / (|dS| + |dE|)
+        pop hl                          ; o_out - o_in
+        push ix
+        pop de
+        call mul_frac
+        pop bc
+.same:  add hl,bc                       ; o_in + t (o_out - o_in)
+        ld a,(c2_off)
+        or a
+        jr nz,.y
+        ld (iy+2),l                     ; an x plane: y worked out
+        ld (iy+3),h
+        ld a,(c2_hi)
+        ld (iy+0),a
+        ld (iy+1),0
+        jr .f
+.y:     ld (iy+0),l                     ; a y plane: x worked out
+        ld (iy+1),h
+        ld a,(c2_hi)
+        ld (iy+2),a
+        ld (iy+3),0
+.f:     jp clip_isect.nz                ; its edge flag, IY and clip_on on
+    ENDIF
+
 ; HL = signed component -> A = round(|HL| * 128 / Z)
 ; The shift and reciprocal for this Z are patched in by project.
 scale_comp:
@@ -391,8 +765,36 @@ calc_oc:
         or 16
         ret
 
+    IFDEF CLIP_2D
+; plane_dist for a 2D plane (clip2d): IX -> 2D vertex -> HL = its distance
+; inside c2_off / c2_hi (>= 0: inside)
+c2_dist:
+        ld a,(c2_off)
+        push ix
+        pop hl
+        add hl,a
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        ld a,(c2_hi)
+        or a
+        ret z                           ; v >= 0: v
+        ex de,hl
+        ld l,a
+        ld h,0
+        or a
+        sbc hl,de                       ; v <= bound: bound - v
+        ret
+    ENDIF
+
 ; Signed distance of vertex IX to clip plane (clip_plane bit). >= 0 is inside.
 plane_dist:
+    IFDEF CLIP_2D
+        ld a,(clip_plane)
+        rla
+        jr c,c2_dist                    ; (bit 7: a 2D plane)
+    ENDIF
         ld l,(ix+4)
         ld h,(ix+5)
         ld a,(clip_plane)
@@ -467,13 +869,14 @@ clip_poly:
         ld a,(ix+6)
         ld (clip_if),a
         call clip_isect
-.ein:   ld ix,(clip_e)
-        ld b,8                          ; whole vertex, with its corner byte
-.cpy:   ld a,(ix+0)
-        ld (iy+0),a
-        inc ix
-        inc iy
-        djnz .cpy
+.ein:   ld hl,(clip_e)                  ; whole vertex, with its corner byte
+        push iy                         ; (LDI: 16 T a byte)
+        pop de
+        REPT 8
+        ldi
+        ENDR
+        push de
+        pop iy
         ld hl,clip_on
         inc (hl)
         jr .next
@@ -496,10 +899,19 @@ clip_poly:
         jr nz,.loop
         ld a,(clip_on)
         ld (clip_n),a
+        ld hl,(clip_src)                ; the output is the next pass's input
+        ld de,(clip_dst)
+        ld (clip_src),de
+        ld (clip_dst),hl
         ret
 
 ; Output S + t*(E-S) at IY, t = dS/(dS-dE)
 clip_isect:
+    IFDEF CLIP_2D
+        ld a,(clip_plane)
+        rla
+        jp c,c2_isect                   ; (bit 7: a 2D plane)
+    ENDIF
     IFDEF LEVEL_FAST_PATH
         ; Level flight: a vertical building edge (S and E share X and Z)
         ; meets the top or bottom plane at (X, +-0.5Z, Z) - no divide or
@@ -682,6 +1094,26 @@ draw_face:
         jp .render
 
 .clip:  ld (df_or),a
+    IFDEF CLIP_2D
+        rra
+        jr c,.clip3                     ; crosses the near plane: in 3D
+        ld c,a
+        ld a,(pitch)
+        or a
+        jr nz,.c2d                      ; pitched: in 2D
+        ld a,c
+        dec a
+        and c                           ; (the lowest plane's bit cleared)
+        jr z,.clip3                     ; level, one plane: in 3D, as quick
+.c2d:   call clip2d                     ; (its vertical-edge shortcut, and
+                                        ; no corners off screen to project)
+        jr c,.clip3                     ; outside the guard band: in 3D
+        ld a,(p2n)
+        cp 3
+        ret c                           ; clipped away
+        jp .render
+.clip3:
+    ENDIF
         ld a,(df_mask)
         ld (df_m),a
         ld hl,(df_ptr)
@@ -690,16 +1122,22 @@ draw_face:
 .cp:    ld a,(hl)
         inc hl
         ld (df_cur),a
-        ld ixl,a
-        ld a,(vtx_hi)
-        ld ixh,a
-        ld c,6
-.cpb:   ld a,(ix+0)
-        ld (iy+0),a
-        inc ix
-        inc iy
-        dec c
-        jr nz,.cpb
+        push hl
+        push bc
+        ld l,a                          ; the corner's X, Y, Z into the clip
+        ld a,(vtx_hi)                   ; buffer (LDI: 16 T a byte)
+        ld h,a
+        push iy
+        pop de
+        REPT 6
+        ldi
+        ENDR
+        push hl
+        pop ix                          ; IX -> the corner's outcode (+6)
+        push de
+        pop iy
+        pop bc
+        pop hl
         ld a,(df_m)
         ld e,a
         and 1
@@ -731,10 +1169,6 @@ draw_face:
         ld a,(clip_n)
         cp 3
         ret c
-        ld hl,(clip_src)
-        ld de,(clip_dst)
-        ld (clip_src),de
-        ld (clip_dst),hl
 .skip:  ld a,(clip_plane)
         add a,a
         cp 32
@@ -897,14 +1331,14 @@ walk_edge:
         jr nc,.pdv
         ld ixl,a                        ; steep: q = 0, r = dx
         call .setup
-        jr .p0
+        jr .p0s
 .pdv:   call div8                       ; E = q, A = r
         ld ixh,e
         ld ixl,a
         call .setup
         ld a,ixh
         or a
-        jr z,.p0
+        jr z,.p0s
 .pl:    ld (hl),d
         inc l
         ld a,d
@@ -918,15 +1352,16 @@ walk_edge:
 .pl1:   ld e,a
         djnz .pl
         ret
+; (no x step: the accumulator kept in A and the remainder in E, not IXL)
+.p0s:   ld a,e
+        ld e,ixl
 .p0:    ld (hl),d
         inc l
-        ld a,e
-        add a,ixl
+        add a,e
         jr nc,.p01
         add a,c
         inc d
-.p01:   ld e,a
-        djnz .p0
+.p01:   djnz .p0
         ret
 
 .neg:   neg
@@ -934,14 +1369,14 @@ walk_edge:
         jr nc,.ndv
         ld ixl,a
         call .setup
-        jr .n0
+        jr .n0s
 .ndv:   call div8
         ld ixh,e
         ld ixl,a
         call .setup
         ld a,ixh
         or a
-        jr z,.n0
+        jr z,.n0s
 .nl:    ld (hl),d
         inc l
         ld a,d
@@ -955,15 +1390,15 @@ walk_edge:
 .nl1:   ld e,a
         djnz .nl
         ret
+.n0s:   ld a,e
+        ld e,ixl
 .n0:    ld (hl),d
         inc l
-        ld a,e
-        add a,ixl
+        add a,e
         jr nc,.n01
         add a,c
         dec d
-.n01:   ld e,a
-        djnz .n0
+.n01:   djnz .n0
         ret
 
 ; A vertical edge: the same x on every row (as the steep walk gives it with
@@ -2994,8 +3429,6 @@ o_tcov:     db 0
 o_zmin:     dw 0
 o_zmax:     dw 0
     ENDIF
-and_oc:     db 0
-bot_oc:     db 0
 rk_pt:      ds 6                        ; draw_rocket: a point behind it
 rk_d:       db 0
 rk_sx:      db 0                        ; screen point 1 m behind the head
@@ -3006,58 +3439,17 @@ bp_z:       dw 0
 bl_x:       db 0
 bl_y:       db 0
 bh_cam:     ds 6                        ; end of the drawn path, camera space
-bc_oc:      db 0                        ; bul_clip
-bc_t:       dw 0
-bc_pl:      db 0
-dot_i:      db 0
-dot_j:      db 0
-dot_rows:   db 0
-dot_cols:   db 0
 tmpv:       ds 8
 
-; --- projection ---
-pj_x:       dw 0
-pj_y:       dw 0
-pj_sh:      db 0
-pj_r:       dw 0
-pj_sx:      db 0
-mf_sign:    db 0
-
-; --- clipping ---
-df_ptr:     dw 0
-df_or:      db 0
-df_mask:    db 0
-df_m:       db 0
-df_cur:     db 0
+; --- clipping (and the variables after p2buf) ---
 bld_vis:    db 0                        ; bld_vis .. col_top: kept together
 bld_mx:     db 0                        ; (occlusion records copy them)
 bld_mz:     db 0
 col_x:      db 0
 col_z:      db 0
 col_top:    db 0
-clip_n:     db 0
-clip_on:    db 0
-clip_cnt:   db 0
-clip_plane: db 0
-clip_src:   dw 0
-clip_dst:   dw 0
-clip_s:     dw 0
-clip_e:     dw 0
-clip_ds:    dw 0
-clip_de:    dw 0
-clip_if:    db 0
-ci_a:       dw 0
-ci_t:       dw 0
-clipA:      ds 8*12
 clipB:      ds 8*12
 
 ; --- polygon / line / clear ---
-p2n:        db 0
-fy0:        db 0
-fy1:        db 0
-fe_cnt:     db 0
-line_col:   db 0
-seg_page:   db 0                        ; page now in slot 0
-cs_sky:     db 0
 
         INCLUDE "layer2_cls.asm"        ; zxnDMA equates + fill command block

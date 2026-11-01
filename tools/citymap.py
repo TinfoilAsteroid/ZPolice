@@ -44,7 +44,9 @@ PAD_X = PAD_Z = GRID // 2               # the base: the landing pad's cell
 TERRACE_R = 2                           # terrace: cells 1..2 out from it
 MAX_BARRICADES = 30                     # terrace away from the base (NBARR)
 FAMILIES = 64
-BLD_FAMILIES = 62                       # buildings' colour families: 0..61
+BLD_FAMILIES = 16                       # buildings' colour families: 0..15
+                                        # (00 the wall's); 16..61 are kept
+                                        # free (HUD, monsters: later)
 SHADE_DARK, SHADE_FACE, SHADE_ROOF = 0, 1, 2    # a family's 4 entries (zpolice.asm)
 WALL_FAMILY = 0                         # the perimeter wall's colour family
 TERRACE_FAMILY = 62

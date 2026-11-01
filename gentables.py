@@ -132,6 +132,9 @@ lines.append("")
 #             none), then how many of each.  Wave 1 is the level's start.
 #   +119 1    number of map changes, then 4 bytes each: x, z, cell code,
 #             city_col (hand-made layout changes for this level)
+# ZPDATA/LEVELnn.ZPP (only for a level with levels/LEVELnn_PAL.json): the
+#   level's own Layer 2 palette, loaded over its city's; the format is in
+#   tools/levelpal.py.
 #
 # Every 8th row/column of a map is an open boulevard.  The player's base: a
 # 7x7 central plaza laid over the normal layout, open road with the landing
@@ -143,7 +146,8 @@ PAD_X = PAD_Z = GRID // 2
 PAD_FAMILY = 63                            # white: reserved for the pad
 TERRACE_FAMILY = 62                        # green: reserved for the terrace
 TERRACE_R = 2                              # terrace: cells 1..2 out from the pad
-BLD_FAMILIES = 62                          # ordinary buildings: families 0..61
+BLD_FAMILIES = 16                          # ordinary buildings: families 0..15
+                                           # (the wall's 0); 16..61 kept free
 WALL_FAMILY = 0                            # the perimeter wall's colour family
 BASE_YAW = 0                               # start heading: north (+z), up the
                                            # middle boulevard (0 = +z, 64 = +x)
@@ -697,7 +701,8 @@ def level_generate(lv):
     changes = []                       # (x, z, code, col): none
     return level_text(lv, cn, CITIES[cn - 1][0], values, waves_specials, changes)
 
-hand = 0
+import levelpal
+hand = level_pals = 0
 for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
     path = os.path.join(LEVEL_DIR, f"LEVEL{lv:02d}.TXL")
     if not os.path.exists(path):
@@ -722,8 +727,28 @@ for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
     assert level_from_text(text) == (lv, data)
     write_data(f"LEVEL{lv:02d}.ZPL", data)
     write_data(f"LEVEL{lv:02d}.TXL", text.encode("ascii"))
+    # its own palette, if it has one (levels/LEVELnn_PAL.json, from the map
+    # editor): ZPDATA/LEVELnn.ZPP, loaded over the city's (tools/levelpal.py)
+    ppath = levelpal.path_for(LEVEL_DIR, lv)
+    zpp = os.path.join(DATA_DIR, f"LEVEL{lv:02d}.ZPP")
+    if os.path.exists(ppath):
+        try:
+            pd = levelpal.load(ppath)
+            errs = levelpal.problems(lv, pd, d["cn"])
+        except ValueError as e:
+            errs = [str(e)]
+        if errs:
+            raise SystemExit(f"{ppath}: the palette can't be used:\n  " + "\n  ".join(errs))
+        write_data(f"LEVEL{lv:02d}.ZPP", levelpal.binary(lv, pd["pal"]))
+        level_pals += 1
+    elif os.path.exists(zpp):          # (its palette file was removed)
+        try:
+            os.remove(zpp)
+            print(f"removed {zpp} (no {ppath} now)")
+        except OSError:
+            print(f"could not remove {zpp} (in use): level {lv} would still use it, delete it")
 print(f"levels: {LEVEL_DIR}/LEVEL01..{CITY_LEVELS * len(CITIES):02d}.TXL -> {DATA_DIR}/.ZPL and .TXL"
-      f" ({hand} differing from the rules)")
+      f" ({hand} differing from the rules); {level_pals} with their own palette (.ZPP)")
 lines.append(f"LEVEL_LAST      equ {CITY_LEVELS * len(CITIES)}      ; the last level (gentables.py)")
 lines.append(f"CITY_LEVELS     equ {CITY_LEVELS}       ; levels played in each city (gentables.py)")
 

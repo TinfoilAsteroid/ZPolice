@@ -5,7 +5,9 @@ building:
 
 The city maps (maps/CITYnn.json: citymap.validate, the hand-set palette
 shades too) and the level files (levels/LEVELnn.TXL: levelfile.level_check,
-the map changes checked against their city).  Prints each file's problems,
+the map changes checked against their city), and the level palettes
+(levels/LEVELnn_PAL.json: levelpal.problems, the level's city too).  Prints
+each file's problems,
 or OK; the exit code is 1 if any file has problems, so a script can stop on
 it.
 """
@@ -16,6 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import citymap as cm
 import levelfile as lf
+import levelpal as lp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,15 +37,29 @@ def main():
             errs = [str(e)]
         bad += report(name, errs)
     levels = sorted(glob.glob(os.path.join(ROOT, "levels", "LEVEL*.TXL")))
+    level_city = {}
     for p in levels:
         name = os.path.relpath(p, ROOT)
         try:
             lv = int(os.path.basename(p)[5:7])
-            errs = lf.level_check(lv, lf.read(p), cities)
+            d = lf.read(p)
+            level_city[lv] = d["cn"]
+            errs = lf.level_check(lv, d, cities)
         except (OSError, ValueError, IndexError) as e:
             errs = [str(e)]
         bad += report(name, errs)
-    print(f"{len(maps)} city maps, {len(levels)} levels: "
+    pals = sorted(glob.glob(os.path.join(ROOT, "levels", "LEVEL*_PAL.json")))
+    for p in pals:
+        name = os.path.relpath(p, ROOT)
+        try:
+            lv = int(os.path.basename(p)[5:7])
+            errs = lp.problems(lv, lp.load(p), level_city.get(lv))
+            if lv not in level_city:
+                errs.append(f"there is no levels/LEVEL{lv:02d}.TXL")
+        except (OSError, ValueError, IndexError) as e:
+            errs = [str(e)]
+        bad += report(name, errs)
+    print(f"{len(maps)} city maps, {len(levels)} levels, {len(pals)} level palettes: "
           + (f"{bad} with problems" if bad else "all OK"))
     return 1 if bad else 0
 

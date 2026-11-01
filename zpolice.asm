@@ -77,6 +77,15 @@
 ; Command line: -DLEVEL_FAST_PATH
         DEFINE LEVEL_FAST_PATH
 
+; CLIP_2D: a face that crosses only the screen's sides, top or bottom, and is
+; within a guard band (|X| <= 2Z, |Y| <= Z), has its corners projected to
+; 16-bit screen coordinates and is clipped against the screen in 2D, not in
+; 3D (no new points to project, one multiply per new point, not three).
+; Faces crossing the near plane, or outside the guard band, are clipped in
+; 3D as before.  Comment it out to clip every face in 3D.
+; Command line: -DCLIP_2D
+        DEFINE CLIP_2D
+
         INCLUDE "memory_bank_defs.asm"  ; MMU slots, registers, addresses, pages
 
 ;------------------------------------------------------------------------------
@@ -556,6 +565,7 @@ boot:
         ld sp,boot_stack
         nextreg MAIN_MMU,PAGE_MAIN
         jp start
+boot_stack_bottom:        
             ds 16                       ; the loader's stack, until start
 boot_stack:
 

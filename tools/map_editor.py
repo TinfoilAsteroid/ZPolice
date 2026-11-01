@@ -38,15 +38,24 @@ perimeter wall gets a random building colour.
 
 Colour families: each is shown as its 3 shades in palette order, SHADE_DARK
 (the family's base entry, family*4: what the game stores), SHADE_FACE,
-SHADE_ROOF.  Only the SHADE_DARK swatches of the buildings' families (01-61,
+SHADE_ROOF.  Only the SHADE_DARK swatches of the buildings' families (01-15,
 each with a white border) can be picked; 00 is the perimeter wall's (the
-Outer wall tool), 62 and 63 the terrace's and the pad's.  "Show bad colours"
+Outer wall tool), 16-61 are kept free (later: the HUD and monsters), 62
+and 63 the terrace's and the pad's.  "Show bad colours"
 flashes red, for 3 seconds, buildings whose colour isn't a building
 family's SHADE_DARK and anything on the wall's colour that isn't perimeter
 wall.  "Edit colours..." (and Edit > Edit colour family) sets a family's 3
 shades by hand (r, g, b 0..7 each), saved with the map ("palette") and laid
 over the generated palette by gentables.py; Reset puts the generated shades
 back (maps/generated/CITYnn.pal).
+
+In level mode (below) "Edit colours..." changes that level's own palette,
+not the city's: Save writes it, the whole palette, to levels/LEVELnn_PAL.json
+(tools/levelpal.py), started from the city's colours; gentables.py makes
+ZPDATA/LEVELnn.ZPP from it, which the game loads over the city's palette
+when the level starts.  Reset puts a family back to the city's shades; when
+none differs from the city's, Save removes the file (Level > Use the city's
+colours does that for the whole level).
 
 Level menu: "Edit a level's map changes" shows the city as one of its levels
 changes it; painting then changes that level only (its CHANGES, at most 64,
@@ -74,6 +83,7 @@ from tkinter import filedialog, messagebox, simpledialog
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import citymap as cm
 import levelfile as lf
+import levelpal as lp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_DIR = os.path.join(ROOT, "maps")
@@ -166,7 +176,9 @@ class Editor:
         self.fams = [None] * (G * G)
         self.pal_over = {}              # shades set by hand: family -> 3 (r, g, b)
         self.pal_gen = grey_palette()   # the palette as generated (Reset)
-        self.pal = grey_palette()       # as shown: pal_gen with pal_over
+        self.pal = grey_palette()       # as shown: pal_gen with pal_over (or lpal)
+        self.lpal = None                # level mode: the level's own palette
+                                        #   (256 (r, g, b)), None: the city's
         self.dirty = False
         self.undo = []                  # changes: lists of (index, code, family)
         self.stroke = None              # the change being made
@@ -223,6 +235,8 @@ class Editor:
         lm = tk.Menu(mb, tearoff=0)
         lm.add_command(label="Edit a level's map changes...", command=self.cmd_level_mode)
         lm.add_command(label="Back to the city map", command=self.cmd_city_mode)
+        lm.add_command(label="Use the city's colours (no level palette)",
+                       command=self.cmd_level_city_colours)
         lm.add_separator()
         lm.add_command(label="Level settings...", command=self.cmd_level_settings)
         mb.add_cascade(label="Level", menu=lm)
@@ -397,12 +411,13 @@ class Editor:
                                     outline="white", width=1)
             else:                       # the wall's, terrace's, pad's: not for picking
                 pc.create_line(x, y + SWATCH, x + 3 * SWATCH, y, fill="#303030", width=2)
-            if f in self.pal_over:      # shades set by hand: a mark under it
+            if self.family_set(f):      # shades set by hand: a mark under it
                 pc.create_line(x, y + SWATCH + 2, x + 3 * SWATCH, y + SWATCH + 2, fill="orange")
         x, y = self.pal_xy(self.family)
         pc.create_rectangle(x - 3, y - 3, x + SWATCH + 3, y + SWATCH + 3, outline="yellow", width=2)
         notes = {cm.WALL_FAMILY: " (the wall's)"}
-        hand = ", set by hand" if self.family in self.pal_over else ""
+        hand = ((", the level's own" if self.level is not None else ", set by hand")
+                if self.family_set(self.family) else "")
         self.fam_label.config(text=f"family {self.family:02d}{notes.get(self.family, '')}: "
                                    f"SHADE_DARK, entry {cm.city_col(self.family)}{hand}")
 
@@ -648,8 +663,9 @@ class Editor:
         if f == cm.WALL_FAMILY:
             self.say(f"family {f:02d} is the perimeter wall's: paint the wall with the Outer wall tool")
         elif f >= cm.BLD_FAMILIES:
-            whose = "terrace" if f == cm.TERRACE_FAMILY else "landing pad"
-            self.say(f"family {f:02d} is the {whose}'s: not a building colour")
+            whose = {cm.TERRACE_FAMILY: "the terrace's", cm.PAD_FAMILY: "the landing pad's"}.get(
+                f, f"kept free (buildings use 01..{cm.BLD_FAMILIES - 1:02d})")
+            self.say(f"family {f:02d} is {whose}: not a building colour")
         elif shade != cm.SHADE_DARK:
             name = "SHADE_FACE" if shade == cm.SHADE_FACE else "SHADE_ROOF"
             self.say(f"family {f:02d}'s {name} is shown, not picked: pick its "
@@ -772,7 +788,7 @@ class Editor:
     def cmd_fix_walls(self):
         """Edit > Recolour off-wall wall colour: every cell on the wall's
         colour that isn't perimeter wall (bad_walls) a random building colour
-        (01-61), as one undoable change."""
+        (01-15), as one undoable change."""
         bad = cm.bad_walls(self.cells, self.fams)
         if not bad:
             return self.say("only perimeter wall has the wall's colour: nothing to recolour")
@@ -823,15 +839,67 @@ class Editor:
         self.set_title()
 
     # -------------------------------------------------------- the palette
+    def city_palette(self):
+        """The city's palette: as generated, with its hand-set shades."""
+        return cm.apply_palette(list(self.pal_gen), self.pal_over)
+
+    def ref_palette(self):
+        """What a family's Reset goes back to: the generated palette (the
+        city map), or the city's (a level)."""
+        return self.city_palette() if self.level is not None else self.pal_gen
+
+    def family_set(self, f):
+        """Family f's shades are set here: by hand on the city, or differ
+        from the city's in this level's own palette."""
+        if self.level is None:
+            return f in self.pal_over
+        if self.lpal is None:
+            return False
+        ref = self.city_palette()
+        return any(tuple(self.lpal[f * 4 + k]) != tuple(ref[f * 4 + k]) for k in range(4))
+
+    def set_family(self, f, shades):
+        """Family f's 3 shades (None: back to the reference's)."""
+        ref = self.ref_palette()
+        if shades is None:
+            shades = [tuple(ref[f * 4 + k]) for k in range(3)]
+        if self.level is None:
+            if list(shades) == [tuple(ref[f * 4 + k]) for k in range(3)]:
+                self.pal_over.pop(f, None)      # (as generated: no need to keep it)
+            else:
+                self.pal_over[f] = list(shades)
+        else:
+            if self.lpal is None:
+                self.lpal = list(self.city_palette())
+            for k, c in enumerate(shades):
+                self.lpal[f * 4 + k] = tuple(c)
+            if [tuple(c) for c in self.lpal] == [tuple(c) for c in ref]:
+                self.lpal = None                # (all the city's: none of its own)
+
     def set_palette(self):
-        self.pal = cm.apply_palette(list(self.pal_gen), self.pal_over)
+        if self.level is not None and self.lpal is not None:
+            self.pal = list(self.lpal)
+        else:
+            self.pal = self.city_palette()
         self.redraw()
 
     def cmd_palette(self):
-        """Edit a colour family's 3 shades (Edit colours...)."""
-        if self.level is not None:
-            return self.say("colours belong to the city: Level > Back to the city map first")
+        """Edit a colour family's 3 shades (Edit colours...): the city's, or
+        in level mode the level's own palette."""
         PaletteDialog(self)
+
+    def cmd_level_city_colours(self):
+        """Level > Use the city's colours: drop the level's own palette."""
+        if self.level is None:
+            return self.say("only for a level: Level > Edit a level's map changes first")
+        if self.lpal is None:
+            return self.say(f"level {self.level} already uses the city's colours")
+        self.lpal = None
+        self.dirty = True
+        self.set_title()
+        self.set_palette()
+        self.say(f"level {self.level} back to the city's colours (Save removes "
+                 f"{rel(lp.path_for(LEVEL_DIR, self.level))})")
 
     # -------------------------------------------------------------- levels
     def cmd_level_mode(self):
@@ -871,11 +939,23 @@ class Editor:
                 self.cells[z * G + x] = code
                 self.fams[z * G + x] = None if col == lf.GROUND_IDX else col // 4
         self.level, self.level_path = lv, path
+        self.lpal, pnote = None, ""
+        ppath = lp.path_for(LEVEL_DIR, lv)
+        if os.path.exists(ppath):
+            try:
+                pd = lp.load(ppath)
+                errs = lp.problems(lv, pd, self.city)
+                self.lpal = pd["pal"]
+                pnote = f"; its own colours from {rel(ppath)}"
+                if errs:
+                    messagebox.showwarning("Level palette", f"{rel(ppath)}:\n\n- " + "\n- ".join(errs))
+            except (OSError, ValueError) as e:
+                messagebox.showerror("Can't read the level palette", f"{rel(ppath)}: {e}")
         self.undo, self.dirty, self.sel = [], False, None
-        self.redraw()
+        self.set_palette()
         self.set_title()
-        self.say(f"level {lv}: {len(d['changes'])} map changes; painting changes this level "
-                 "only (File > Save writes them to " + rel(path) + ")")
+        self.say(f"level {lv}: {len(d['changes'])} map changes{pnote}; painting and colours change "
+                 "this level only (File > Save writes them to " + rel(path) + ")")
 
     def cmd_city_mode(self):
         if self.level is None:
@@ -883,9 +963,9 @@ class Editor:
         if not self.ask_discard():
             return
         self.cells, self.fams = list(self.base[0]), list(self.base[1])
-        self.level = self.base = None
+        self.level = self.base = self.lpal = None
         self.undo, self.dirty, self.sel = [], False, None
-        self.redraw()
+        self.set_palette()
         self.set_title()
         self.say("the city map")
 
@@ -934,6 +1014,10 @@ class Editor:
                 js, str(x), str(z), "--heading", str(heading), "--height", str(height), "--out", png]
         if self.level is not None:
             args += ["--level", str(self.level)]
+            if self.lpal is not None:   # (its own colours, saved or not)
+                pj = os.path.join(tmp, "palette.json")
+                lp.save(pj, self.level, self.city, self.lpal)
+                args += ["--palette", pj]
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.say(f"drawing the view from ({x}, {z}), heading {heading:g}, height {height} "
                  "in the emulator...")
@@ -1038,13 +1122,24 @@ class Editor:
             return messagebox.showerror("Can't read the level", f"{rel(self.level_path)}: {e}")
         d["changes"] = self.changes()
         errs = lf.level_check(self.level, d, self.city_for_checks())
+        ppath = lp.path_for(LEVEL_DIR, self.level)
         try:
             lf.write(self.level_path, d)
-        except OSError as e:
+            if self.lpal is not None:   # its own colours: the whole palette
+                lp.save(ppath, self.level, self.city, self.lpal)
+                errs += lp.problems(self.level, lp.load(ppath), self.city)
+                pnote = f" and its colours to {rel(ppath)}"
+            elif os.path.exists(ppath):  # the city's colours again
+                os.remove(ppath)
+                pnote = f" (removed {rel(ppath)}: the city's colours)"
+            else:
+                pnote = ""
+        except (OSError, ValueError) as e:
             return messagebox.showerror("Can't save the level", str(e))
         self.dirty = False
         self.set_title()
-        self.say(f"saved level {self.level}'s {len(d['changes'])} map changes to {rel(self.level_path)}")
+        self.say(f"saved level {self.level}'s {len(d['changes'])} map changes to "
+                 f"{rel(self.level_path)}{pnote}")
         if errs:
             messagebox.showwarning("Saved, with problems",
                                    "The level is saved, but the game can't use it until these are "
@@ -1106,7 +1201,10 @@ class PaletteDialog:
             gen = tk.Canvas(top, width=18, height=18, highlightthickness=1)
             gen.grid(row=2 + k, column=5)
             self.swatches.append(gen)
-        tk.Label(top, text="(set / generated)").grid(row=5, column=4, columnspan=2)
+        tk.Label(top, text="(set / city's)" if ed.level is not None else "(set / generated)").grid(
+            row=5, column=4, columnspan=2)
+        if ed.level is not None:
+            w.title(f"Colour family - level {ed.level}'s own palette")
         bf = tk.Frame(w, padx=8, pady=6)
         bf.pack()
         tk.Button(bf, text="Apply", command=self.apply).pack(side=tk.LEFT)
@@ -1140,10 +1238,14 @@ class PaletteDialog:
         f = self.family()
         for k, c in enumerate(self.shades()):
             self.swatches[2 * k].config(bg=hex_rgb(c))
-            self.swatches[2 * k + 1].config(bg=hex_rgb(self.ed.pal_gen[f * 4 + k]))
+            self.swatches[2 * k + 1].config(bg=hex_rgb(self.ed.ref_palette()[f * 4 + k]))
         notes = {cm.WALL_FAMILY: "the wall's (and the sky's)", cm.TERRACE_FAMILY: "the terrace's",
                  cm.PAD_FAMILY: "the landing pad's"}
-        hand = "set by hand" if f in self.ed.pal_over else "as generated"
+        if self.ed.level is not None:
+            hand = (f"level {self.ed.level}'s own" if self.ed.family_set(f)
+                    else f"the city's (level {self.ed.level})")
+        else:
+            hand = "set by hand" if self.ed.family_set(f) else "as generated"
         self.note.config(text=f"  {notes.get(f, 'a building colour')}: {hand}")
 
     def apply(self):
@@ -1152,25 +1254,23 @@ class PaletteDialog:
         if bad:
             return messagebox.showerror("Transparent", f"{', '.join(bad)}: (7, 0, 6) and (7, 0, 7) are "
                                         "Layer 2's transparent colour, never shown", parent=self.win)
-        gen = [tuple(self.ed.pal_gen[f * 4 + k]) for k in range(3)]
-        if sh == gen:
-            self.ed.pal_over.pop(f, None)       # (as generated: no need to keep it)
-        else:
-            self.ed.pal_over[f] = sh
-        self.changed(f"family {f:02d}'s shades {'set' if f in self.ed.pal_over else 'as generated'}")
+        self.ed.set_family(f, sh)
+        self.changed(f"family {f:02d}'s shades {'set' if self.ed.family_set(f) else 'as before'}")
 
     def reset(self):
         f = self.family()
-        self.ed.pal_over.pop(f, None)
+        self.ed.set_family(f, None)
+        self.ed.set_palette()
         self.load()
-        self.changed(f"family {f:02d} back to its generated shades")
+        self.changed(f"family {f:02d} back to the {'city' if self.ed.level is not None else 'generated'} shades")
 
     def changed(self, what):
         self.ed.dirty = True
         self.ed.set_title()
         self.ed.set_palette()
         self.show()
-        self.ed.say(what + " (File > Save keeps it; build.bat puts it in the game)")
+        where = (f" in level {self.ed.level}'s own palette" if self.ed.level is not None else "")
+        self.ed.say(what + where + " (File > Save keeps it; build.bat puts it in the game)")
 
 
 class LevelDialog:

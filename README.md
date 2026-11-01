@@ -610,7 +610,8 @@ allows.
 * **Terrace:** around the pad, every cell 1 or 2 tiles from it
   (`TERRACE_R`, the 5×5 square less the pad) is a green terrace: map code
   `TERRACE_CODE` (17), 0.25 height units (32 units) high, in colour family 62,
-  which is reserved and green. Ordinary buildings use families 0–61. The
+  which is reserved and green. Ordinary buildings use families 1–15 (0 is the
+  perimeter wall's); 16–61 are kept free for the HUD and monsters later. The
   plaza's outer ring, 3 tiles out, stays road, so the streets still join up
   round the base. The terrace can be landed on like any low roof.
 * **No humans on the base:** humans never spawn on the pad or the terrace
@@ -1511,6 +1512,27 @@ pad in the centre, and the perimeter wall.
       (`maps/generated/CITYnn.pal`, written by the build). Layer 2's
       transparent colour can't be used. A family set by hand has an orange
       line under it in the palette.
+    * Level colours: in level mode (below), "Edit colours..." changes that
+      level's own palette, not the city's.
+      * It starts from the city's colours. Reset puts a family back to the
+        city's shades, and the orange line marks families that differ from
+        the city's.
+      * Save writes the whole palette to `levels/LEVELnn_PAL.json` (format
+        in `tools/levelpal.py`: 64 families of 4 colours, r g b 0–7), along
+        with the level's map changes.
+      * If no family differs from the city's, Save removes the file. Level >
+        **Use the city's colours** drops it for the whole level.
+      * `gentables.py` checks each palette file and makes
+        `ZPDATA/LEVELnn.ZPP` from it: `"ZPPL"`, version 1, the level number,
+        2 reserved bytes, then the 512-byte Layer 2 palette. When the palette
+        file is gone, the build deletes the `.ZPP`.
+      * The game's `load_level` sets the city's palette and sky. Then, if
+        the level has a `.ZPP`, it loads it into `ll_cbuf` and puts it in the
+        city palette's place (`ll_palette`). A missing or bad file leaves the
+        city's colours.
+      * The preview draws the level in its own colours, saved or not
+        (`preview.py --palette`). `tools/check_maps.py` checks the palette
+        files too.
     * Level menu: **Edit a level's map changes** shows the city as one of
       its levels changes it; painting then changes that level only, and
       Save writes its `CHANGES` (at most 64; counted below the map) to
@@ -1533,14 +1555,23 @@ pad in the centre, and the perimeter wall.
       row, in family order (00–03 on the top row). The map itself still
       shows each building's facing side (`SHADE_FACE`), as it looks in the
       game.
-    * Only the `SHADE_DARK` swatch of the buildings' families, 01–61
+    * Only the `SHADE_DARK` swatch of the buildings' families, 01–15
       (`BLD_FAMILIES`), can be picked. Each has a white border, and the
       selected one a yellow one. The game stores a cell's colour as that
       entry (`city_col` = family×4) and adds the shade bits when drawing,
       so any other entry would draw the wrong colours. Clicking a face or
-      roof swatch only says to pick the dark one. 62 (the terrace's) and
-      63 (the pad's) have a line through them; clicking them only says
-      whose they are.
+      roof swatch only says to pick the dark one. 16–61 (kept free for the
+      HUD and monsters), 62 (the terrace's) and 63 (the pad's) have a line
+      through them; clicking them only says whose they are.
+    * Building colours are limited to families 01–15 (`BLD_FAMILIES` = 16,
+      in `tools/citymap.py` and `gentables.py`). A building on any other
+      family fails the check (`validate`) and the build.
+    * `tools/remap_families.py` moved every map's buildings onto 01–15
+      (2026-11-01). Each building on family 16 or above took the family
+      among 01–15 whose dark, face and roof shades are nearest in r g b, in
+      the city's built palette. The levels' map changes are remapped the
+      same way (none needed it). Run it again if `BLD_FAMILIES` changes
+      (`--dry-run` only reports).
     * A building (heights 1–15, walls included) whose colour isn't the
       `SHADE_DARK` of a building family is invalid. That's family 62 or 63,
       none (".."), or a field that isn't a family at all, such as a
@@ -1562,7 +1593,7 @@ pad in the centre, and the perimeter wall.
 
       Anything else on family 00 is an error, flashed by "Show bad colours".
       Edit > Recolour off-wall wall colour gives all such cells random
-      building colours (01–61) in one undoable step. It repeats until none
+      building colours (01–15) in one undoable step. It repeats until none
       are left, since recolouring a wall tile can leave its neighbours with
       fewer than 2. Right-clicking a perimeter wall tile selects the Outer
       wall tool. gentables no longer gives generated buildings family 00.
@@ -1881,7 +1912,11 @@ behind.
 * **Faces fully on screen:** fill and outline straight from the cached
   projected corners.
 * **Faces crossing the frustum:**
-  * Each such face is clipped in 3D against 5 planes with
+  * With `CLIP_2D`, pitched faces, and level-flight faces crossing two or
+    more planes, are clipped on screen in 2D, provided they don't cross the
+    near plane and stay within a guard band. See "Performance", "Face
+    drawing".
+  * Otherwise the face is clipped in 3D against 5 planes with
     Sutherland–Hodgman. The planes are near `Z=16`, `X=±Z` (90° horizontal
     field of view) and `Y=±0.5Z` (the 128-row viewport).
   * Intersection parameters use a 32/16 fixed-point divide, and new points
@@ -2107,6 +2142,50 @@ to 9% at street level, mostly its column-by-column cover check). So:
   have to be kept: about 0–1% at best) and walking a building's shared
   vertical edge once (about 0.5%: vertical edges already take the fast
   fill).
+
+**Face drawing (2026-11-01):** a further 3.7% off the frame, 8.7% in all
+against the first profile (ten views: 17,039,249 → 15,564,686 T).
+* Exact (pixel-identical) changes, 2.7%:
+  * The clipper copies vertices with `LDI`.
+  * `div_frac` is unrolled 8 steps at a time (about 1,050 T rather than
+    1,550).
+  * `walk_edge` keeps a steep edge's accumulator in A and its step in E
+    rather than IXL.
+  * `lerp_c` was looked at and left alone (about 60 T an intersection).
+* 2D clipping (`CLIP_2D`), 1.1% more, up to 4.3% in pitched views. The
+  following faces are clipped on screen rather than in 3D (`clip2d`):
+  * every face, when pitched;
+  * in level flight, faces crossing two or more planes.
+
+  In both cases a face that crosses the near plane, or has a corner outside
+  the guard band |X| ≤ 2Z, |Y| ≤ Z, is still clipped in 3D.
+
+  How the 2D clip works:
+  * The off-screen corners are projected to 16-bit screen coordinates
+    (`guard_proj`, `scomp16`).
+  * `clip_poly` then runs with `clip_plane = $80`, so `plane_dist` and
+    `clip_isect` work on x ≥ 0, x ≤ 255, y ≥ 0 and y ≤ 127. It runs only
+    against the planes some corner is outside.
+  * Each new point is exactly on the screen edge. One coordinate is worked
+    out with one multiply, from the edge's inside end, so a shared edge is
+    cut at the same point whichever way it runs. An edge parallel to the
+    plane needs no divide.
+
+  Level-flight faces crossing a single plane stay in 3D. There the
+  vertical-edge shortcut makes them as cheap, with no off-screen corners to
+  project.
+
+  Results:
+  * Not pixel-identical. The pitched views differ in 14–145 pixels (0.04–0.44%),
+    all of them 1-pixel shifts along clipped edges.
+  * A thin strip that the 3D clip broke into dashes is now drawn whole.
+  * The level views are unchanged.
+  * Identical with and without interrupts.
+  * To make room in the city page:
+    * clipA and the small variables sit in the two `ALIGN 256` gaps;
+    * `clip_poly` swaps its own buffers;
+    * four unused variables (`pj_x`, `pj_y`, `pj_sh`, `pj_r`) were removed.
+  * About 10 bytes of the page are left.
 
 ## Tuning
 
