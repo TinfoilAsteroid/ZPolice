@@ -128,6 +128,19 @@ ula_init:
         ld a,GLYPH_A
         ld de,ULA_ROW_LBL+ALT_GCOL
         call print_glyph_at
+        ld a,(boost_fitted)             ; the booster's fuel, once fitted: B,
+        or a                            ; and its cells transparent too
+        jr z,.nb
+        ld a,GLYPH_B
+        ld de,ULA_ROW_LBL+BST_GCOL
+        call print_glyph_at
+        ld hl,ULA_ATTR + 17*32 + BST_GCOL
+        ld b,GAUGE_H/8
+.gb:    ld (hl),0
+        ld a,32
+        add hl,a
+        djnz .gb
+.nb:
         ld hl,ULA_ATTR + 17*32 + SPD_GCOL  ; the gauges' cells: transparent,
         ld b,GAUGE_H/8                  ; showing the Layer 2 bars
 .ga:    ld (hl),0
@@ -353,20 +366,38 @@ draw_hud:
 
 ; The gauges, GAUGE_H (48) pixels tall:
 ;   S  speed, 8 wide: (speed * 55) / 32 pixels, so SPEED_MAX 28 fills it;
-;      green, red when reversing
+;      green, red when reversing, amber while boosting (full: BOOST_SPEED is
+;      past the top)
 ;   A  left 4 pixels: altitude, green; right 4: the height of the city tile
 ;      under the craft (0 on a road), amber.  Both 1 pixel per 4 units, so
 ;      the ceiling (MAX_Y 1.5 height units, 192) fills the bar; the ground
 ;      under the craft is always lower, so the gap between them is the
 ;      clearance.
+;   B  the booster's fuel, 8 wide: fuel * 62 / 256 pixels, so BOOST_FUEL_MAX
+;      (200) fills it; green.  Drawn always, but its cells are opaque panel
+;      until the booster is fitted (ula_init).
 draw_gauges:
+        ld a,(boost_fuel)
+        ld d,a
+        ld e,62
+        mul d,e
+        ld a,d
+        call g_clamp
+        ld (g_fuel),a
+        ASSERT BOOST_FUEL_MAX*62/256 >= GAUGE_H
         ld a,(speed)
         ld c,HUD_COL
         bit 7,a
         jr z,.sp
         neg
         ld c,HUD_WARN
-.sp:    ld d,a
+.sp:    ld b,a
+        ld a,(boost_on)
+        or a
+        ld a,b
+        jr z,.nbo
+        ld c,GAUGE_AMBER                ; boosting
+.nbo:   ld d,a
         ld e,55
         mul d,e
         ld b,5
@@ -431,6 +462,16 @@ draw_gauges:
         ld (hl),a
         inc l
         ENDR
+        ld l,BST_GCOL*8                 ; the booster's fuel
+        ld a,(g_fuel)
+        cp b
+        ld a,HUD_COL
+        jr nc,.f
+        ld a,MAP_BG
+.f:     REPT 8
+        ld (hl),a
+        inc l
+        ENDR
         inc c
         ld a,c
         cp GAUGE_H
@@ -482,6 +523,7 @@ g_spd:      db 0                        ; draw_gauges: bar heights (pixels)
 g_spdc:     db 0                        ;   and the speed bar's colour
 g_alt:      db 0
 g_gnd:      db 0
+g_fuel:     db 0
 
 ; 8x8 glyphs: digits 0-9, then F, P, S, space
 GLYPH_F     equ 10

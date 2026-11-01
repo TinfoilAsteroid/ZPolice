@@ -64,6 +64,7 @@ class Cpu:
         self.nr_sel = 0
         self.nextreg = {}
         self.keys = set()
+        self.joy = {}                   # Kempston / Mega Drive ports $1F, $37: byte, 1 = pressed
         self.on_flip = None
         self.iff = 0
         self.palettes = {}              # sel -> {index: 9-bit RGB333}
@@ -167,6 +168,8 @@ class Cpu:
                         if k in self.keys:
                             v &= ~(1 << bit)
             return v | 0xE0
+        if lo in (0x1F, 0x37):                  # joysticks (Kempston / Mega Drive)
+            return self.joy.get(lo, 0)
         if port == 0x253B:
             line = (self.t // T_PER_LINE) % LINES_PER_FRAME
             if self.nr_sel == 0x1E:
@@ -489,7 +492,10 @@ class Cpu:
             if (mode & 0x0C) == 0x04 and exists: return err(self.ESX_ERR_EXISTS)
             fm = "r+b" if exists and (mode & 0x0C) != 0x0C else "w+b"
             if (mode & 0x0C) == 0x00 and not (mode & 2): fm = "rb"
-            f = open(path, fm)
+            try:
+                f = open(path, fm)
+            except OSError:                             # (no such folder, ...)
+                return err(self.ESX_ERR_NOFILE)
             h = self.esx_next; self.esx_next += 1
             self.esx_files[h] = f
             ok(h)
@@ -685,6 +691,10 @@ class Cpu:
             else:
                 if y == 0:                              # LD I,A
                     self.i = r[7]
+                elif y == 2:                            # LD A,I: P/V = IFF2
+                    a = getattr(self, "i", 0)
+                    r[7] = a
+                    r[6] = (r[6] & FC) | (a & FS) | (FZ if a == 0 else 0) | (FPV if self.iff else 0)
                 self.t += 9
             return
         if x == 2 and y in (4, 6) and z == 3:   # OUTI OTIR

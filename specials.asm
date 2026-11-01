@@ -5,11 +5,13 @@
 ; Special monsters use the zombie records after the zombies' own (NZOMB ..
 ; NMON-1, zombie.asm), so they share the zombies' drawing (zombie_cell,
 ; fig_draw), map blips, cell marks (zflags), weapon hits and zdamage.  The
-; record's type (+15) says which monster it is.  spec_init places the
-; level's specials (level_cur: LV_SPECIAL of them, ids up to
-; LV_SPECIAL_MAX); spec_update moves them each frame, after zombie_update.
+; record's type (+15) says which monster it is.  Each wave's specials come
+; from the level file (level_cur, LV_WAVE_DATA: up to LV_SPEC_SLOTS types,
+; SPEC_*, and how many of each), placed by spec_wave as the wave starts;
+; the level's start is wave 1 (spec_init).  spec_update moves them each
+; frame, after zombie_update.
 ;
-; The ghost (ZT_GHOST, special monster id 0): a stick man under a white
+; The ghost (ZT_GHOST, special monster id SPEC_GHOST): a stick man under a white
 ; sheet.  It can't attack the base.  It flies at twice the zombies' speed,
 ; at any angle, and up and down between the ground and the VTOL's ceiling
 ; (MAX_Y), over buildings lower than it.
@@ -57,57 +59,38 @@ GHOST_FADE_FRAMES equ 12            ; the fade: 4 steps of 3 frames
 TG_NONE         equ $FF             ; targets (+30)
 TG_VTOL         equ $FE
 TG_BASE         equ $C0             ; + a base tile's index (base_hp, 0..24)
-; The banshee (ZT_BANSHEE, special monster id 1): a ghost that flies twice
-; as fast, reaches BANSHEE_R (0.5 tile), does BANSHEE_DMG a blow and also
-; attacks the base (the terrace and pad tiles).  One spawns at the start of
-; every even wave up to level 10, two up to level 30, three after that.
-; The ghoul (ZT_GHOUL, zombie.asm): a half-height zombie walking at five
-; times the zombies' speed.  It is placed here (spec_wave) but moved, drawn
-; and hit as a zombie.  One spawns at the start of every odd wave on levels
-; 21-29, two on levels 30-39, three from level 40.
+; The banshee (ZT_BANSHEE, id SPEC_BANSHEE): a ghost that flies twice as
+; fast, reaches BANSHEE_R (0.5 tile), does BANSHEE_DMG a blow and also
+; attacks the base (the terrace and pad tiles).
+; The ghoul (ZT_GHOUL, id SPEC_GHOUL, zombie.asm): a half-height zombie
+; walking at five times the zombies' speed.  It is placed here (spec_wave)
+; but moved, drawn and hit as a zombie.
+; (Which waves have which is the level files' business: gentables.py.)
 BANSHEE_HP      equ 8
 BANSHEE_DMG     equ 5
 BANSHEE_R       equ TILE_UNITS/2
 BASE_TILES      equ (2*TERRACE_R+1)*(2*TERRACE_R+1)
 
 ;------------------------------------------------------------------------------
-; New game: place the level's special monsters (all ghosts for now: the only
-; special, id 0), leave the other special records inactive
+; A level's start: every special record inactive, then wave 1's specials
+; (the level's start is wave 1, as any other: spec_wave)
 ;------------------------------------------------------------------------------
 spec_init:
-        xor a
-        ld (zwave_new),a
-        ld a,ZT_GHOST                   ; the level's ghosts
-        ld (sp_type),a
-        ld a,(level_cur+LV_SPECIAL)
-        cp NSPEC+1
-        jr c,.n
-        ld a,NSPEC
-.n:     ld (sp_left),a
         ld ix,zombies+NZOMB*ZREC
         ld b,NSPEC
         ld c,NZOMB                      ; record index
-.lp:    push bc
-        ld a,c
-        ld (sp_idx),a
+.lp:    ld a,c
         ld hl,zatk_flags                ; not attacking
         add hl,a
         ld (hl),FALSE
         ld (ix+10),0                    ; inactive,
         ld (ix+14),0                    ; no blip,
         ld (ix+19),$FF                  ; no cell marked
-        ld a,(sp_left)
-        or a
-        jr z,.nx
-        dec a
-        ld (sp_left),a
-        call ghost_init
-.nx:    ld de,ZREC
+        ld de,ZREC
         add ix,de
-        pop bc
         inc c
         djnz .lp
-        call spec_wave                  ; wave 1's ghouls
+        call spec_wave                  ; wave 1's specials (wave_number 1)
         jp zflags                       ; (zombie.asm) mark their cells
 
 ; Special monster IX (record sp_idx) of type sp_type: at a random street
@@ -220,41 +203,53 @@ ghost_move:
         ret nz
         jp zblip
 
-; A new wave began (zwave_new, zombie.asm; spec_init for wave 1): into
-; free special records, on an even wave banshees: 1 up to level 10, 2 up to
-; level 30, 3 after; on an odd wave ghouls: 1 on levels 21-29, 2 on 30-39,
-; 3 from 40
+; A new wave began (zwave_new, zombie.asm; spec_init for wave 1): its
+; specials from the level file (level_cur, LV_WAVE_DATA: wave_number's
+; record), each of its LV_SPEC_SLOTS types (SPEC_NONE: none) as many as it
+; says, into free special records.  Waves past LV_MAX_WAVES have none.
 spec_wave:
         xor a
         ld (zwave_new),a
         ld a,(wave_number)
-        and 1
-        jr nz,.odd
-        ld a,(level)
-        ld c,1
-        cp 11
-        jr c,.n
-        inc c
-        cp 31
-        jr c,.n
-        inc c
-.n:     ld a,ZT_BANSHEE
-        jr .go
-.odd:   ld a,(level)
-        ld c,0
-        cp 21
-        ret c                           ; no ghouls before level 21
-        inc c
-        cp 30
-        jr c,.g
-        inc c
-        cp 40
-        jr c,.g
-        inc c
-.g:     ld a,ZT_GHOUL
-.go:    ld (sp_type),a
-        ld a,c
+        dec a
+        cp LV_MAX_WAVES
+        ret nc
+        ld e,a
+        ld d,LV_WAVE_REC
+        mul d,e
+        ld hl,level_cur+LV_WAVE_DATA
+        add hl,de
+        ld (sw_ptr),hl                  ; -> this wave's types
+        ld b,LV_SPEC_SLOTS
+.sl:    push bc
+        ld hl,(sw_ptr)
+        ld a,(hl)                       ; a type
+        cp SPEC_IDS
+        jr nc,.ns                       ; (SPEC_NONE, or not a type)
+        ld de,spec_types
+        add de,a
+        ld a,(de)
+        ld (sp_type),a                  ; its record type (ZT_*)
+        ld a,LV_SPECIAL-LV_SPECIAL_ID
+        add hl,a
+        ld a,(hl)                       ; how many
         ld (sp_left),a
+        call spec_place
+.ns:    ld hl,(sw_ptr)
+        inc hl
+        ld (sw_ptr),hl
+        pop bc
+        djnz .sl
+        ret
+
+; Special type (SPEC_*, the level files) -> record type (ZT_*)
+spec_types: db ZT_GHOST, ZT_BANSHEE, ZT_GHOUL
+        ASSERT $ - spec_types == SPEC_IDS
+        ASSERT SPEC_GHOST == 0 && SPEC_BANSHEE == 1 && SPEC_GHOUL == 2
+
+; sp_left monsters of record type sp_type into free special records (as
+; many as there's room for)
+spec_place:
         ld ix,zombies+NZOMB*ZREC
         ld b,NSPEC
         ld c,NZOMB
@@ -1026,7 +1021,8 @@ gp_dmg:     db 0                        ; its blow
 gp_base:    db 0                        ; 1: it attacks the base
 sp_type:    db 0                        ; ghost_init: the type to place
 sp_idx:     db 0                        ; the record being moved
-sp_left:    db 0                        ; spec_init: specials still to place
+sp_left:    db 0                        ; spec_place: specials still to place
+sw_ptr:     dw 0                        ; spec_wave: -> the wave's next type
 gs_x:       ds 3                        ; g_step: the old position
 gs_z:       ds 3
 gs_dx:      dw 0                        ; g_sight: steps and point

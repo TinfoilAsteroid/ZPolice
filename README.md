@@ -17,7 +17,8 @@ it, use CSpect or real Next hardware.
 
 ```
 build.bat          # gentables.py -> the generated tables and ZPDATA/, then sjasmplus -> zpolice.nex
-build.bat run      # ...and launch CSpect
+build.bat run      # ...and launch CSpect (sound off: CSpect's -sound)
+build.bat runsound # ...and launch CSpect with sound on
 ```
 
 **The game needs its data files.** The levels and cities are files in the
@@ -136,6 +137,10 @@ and Z all the way up. `LEVEL_FAST_PATH` uses that in two places:
   the crossing point is simply (X, ±0.5Z, Z). It needs no divide and no
   interpolation. Vertical edges can't cross the near or side planes at
   pitch 0, so that covers every crossing they make.
+* **No multiplies by the pitch** (always, not a switch): at pitch 0, cosP is
+  exactly 1.0 (256) and sinP 0, so `draw_bld` takes the frustum test's
+  |X|·c as |X|, the vertical edge vector as (0, h, 0), and `rot_pitch`
+  gives Y = yb, Z = zb + Z1, with no `fmul` (5 a building).
 
 Separately, at any pitch, building corners that pass through the clipper
 unchanged and are already on screen reuse their cached projection, rather
@@ -158,10 +163,32 @@ After start-up the game shows a main menu:
 
 | Key | Option |
 |-----|--------|
-| 1 | **New game**: starts level 1 (`newGame` in `zpolice.asm`) |
-| 2 | Save game (not yet) |
-| 3 | Load game (not yet) |
+| 1 | **New game**: the load-out screen, then level 1 (`newGame` in `zpolice.asm`) |
+| 2 | **Continue saved game**: the game saved with save and quit, at its level and wave (NO SAVED GAME if there isn't one) |
 | 9 | Redefine keys (`keydef.asm`) |
+
+## Save games
+**Save and quit:** pause (BREAK), then **S** (shown as S: SAVE AND QUIT under
+PAUSED). The game is saved to `ZPDATA/SAVEGAME.ZPS` on the SD card and the
+main menu comes back. If it can't be written, SAVE FAILED shows and the game
+stays paused. A wreck can't be saved. There is one save: saving again
+replaces it.
+* **Saved** (`sg_fields`, zpolice.asm): the level and wave, the salvage, the
+  VTOL's integrity (`vtol_hp`), its weapon slots (type and ammo each) and
+  the selected one, the store (`wpn_stock`, `wpn_unlocked`), and the
+  booster (fitted, fuel). The file is "ZPSV", a version byte
+  (`SG_VERSION`, 1), then those fields: 41 bytes.
+* **Continue** (main menu 2): `load_save` reads and checks the file (its
+  size, "ZPSV", the version, the level 1–50), then `continue_game` starts a
+  new game (`game_reset`, as `newGame` without the load-out screen), lays
+  the saved fields over it (`sg_copy`) and starts the saved level at the
+  saved wave (`resume_wave`, which `next_level` uses once; kept within the
+  level's waves).
+* **Not saved:** the level carries on afresh at that wave: its zombies and
+  specials are placed new, as are the humans, and this level's rescues so
+  far start again from 0 (restoring them with new humans would let the same
+  ones be rescued twice). The base is at full strength, as at any level's
+  start.
 
 **Game over:** when the landing pad is destroyed, the main loop goes to
 `game_over_screen` (`menu.asm`). It shows GAME OVER for `GAME_OVER_FR` (500)
@@ -196,6 +223,156 @@ would otherwise look like line 0 and end a frame early.
   * zombies and humans (passengers and saved = 0). Each first clears its
     marks in `city_map` (bits 7 and 6), since a new game reuses the map.
 
+## Engine sound
+
+The VTOL's engines are jet turbines, so they make a steady roar and whine
+rather than a rotor's chop. They have AY 1 to themselves, all three
+channels (`audio.asm`); AY 2 and 3 are free for sound effects and music.
+* **Never off in play:** at zero throttle the engines idle, sounding as at
+  speed 1. Reversing sounds by the speed's size.
+* **Pitch and volume rise with speed.** From n = |speed|, at least 1 and at
+  most `SPEED_MAX` (28):
+  * **Channel A, the roar:** noise, period 29 − n×13/16 (29 at idle, a
+    rumble; 7 flat out, a hiss), volume 4 + n×7/32 (4 to 10).
+  * **Channel B, the turbine whine:** a tone of period 222 − 3n, about
+    500 Hz at idle to 790 Hz flat out (the Next's AYs run at 1.75 MHz: a
+    period P is 109375/P Hz), volume 2 + n×7/32 (2 to 8).
+  * **Channel C, the shimmer:** the same whine 2 periods lower and 2
+    quieter (silent at idle). The two beat against each other, as twin
+    turbines do.
+  * (Since the first version: the top pitch is down from 1.9 kHz to 985 Hz,
+    then to 790 Hz, 80% of that. Every volume is 2 levels lower, about half
+    as loud, and the full-speed volume a further level lower, about 80%:
+    the AY's levels are roughly 2–3 dB apart. The rise with speed is
+    `ENG_VOL_MUL`/32 a step.)
+* **Spooling up and down:** the interrupt routine plays the engines, 50
+  times a second (`engine_tick`, interrupts.asm). `eng_cur` is the speed
+  the engines sound at, in sixteenths of a speed step (`ENG_FRAC`). Each
+  interrupt it moves towards the VTOL's n by at most `ENG_SPIN_UP` (4/16)
+  going up and `ENG_SPIN_DOWN` (2/16) going down. So the turbines spool up
+  over about 2 seconds from idle to full speed, and run down more slowly,
+  about 4 seconds, instead of jumping with the speed.
+  * The whine's period uses the fractions, so it glides; the roar's noise
+    and the volumes use the whole steps (m = `eng_cur` / 16) in the
+    formulas above, in place of n.
+  * At the start of a level `eng_cur` is 0, so the engines spool up to the
+    idle.
+* **When:** `next_level` calls `engine_start`: AY 1's mixer (A noise only, B
+  and C tones only), `eng_cur` 0, then `eng_on` 1. The interrupt writes the
+  registers only when `eng_cur` moves, and nothing while `eng_on` is 0.
+  Every menu screen silences all three chips (`menu_clear` calls
+  `init_audio`, which first sets `eng_on` to 0).
+* **Tuning:** the `ENG_*` constants at the top of `audio.asm`, with
+  `ASSERT`s that keep periods and volumes in range.
+* While paused the engines keep the sound they had.
+
+## Sound effects
+
+Sound effects play from the interrupt routine (`sfx_tick`, interrupts.asm),
+on three voices, so none cuts another: the weapons on AY 2, explosions on
+AY 3's channels A and B, and splats on AY 3's channel C. The engines keep
+AY 1. (Music would need AY 3 back.)
+* **Asking for one:** the game puts the sound's number in a voice's request
+  byte: `sfx_req` for the weapons, `sfx2_req` for explosions, `sfx3_req` for
+  splats (`ld a,SFX_MG` / `ld (sfx_req),a`). That's one byte, so it is safe from any page at any time,
+  and only the interrupt writes the AY chips (see "Interrupts"). Each voice
+  plays one sound at a time: a new one cuts the last (`sfx_voice`).
+* **Format:** a sound is a list of steps, one per interrupt (20 ms). Each
+  step is AY register / value pairs, ended by `SFX_STEP` (the next step at
+  the next interrupt) or `SFX_END` (the sound is over). `sfx_table` lists
+  the sounds by number (`SFX_*`, audio.asm). The sounds are in
+  `sfx_data.asm`, in the resident main page (slot 5, always mapped, so the
+  interrupt can read them whatever else is paged in).
+* **Silent in menus:** nothing plays while `eng_on` is 0, and `init_audio`
+  clears any request or sound in progress.
+* **Machine gun (`SFX_MG`, `sfx_mg`):** a heavy machine gun, one short sound
+  per round (`gun_fire`, weapons.asm), 80 ms long:
+  * channel A: noise, a sharp crack (noise period 4, volume 13) dropping
+    into a deep boom (period 18, then 26) as it fades;
+  * channel B: a low thump, a tone of about 70 Hz (period 1563), fading
+    with it (11, 9, 5, 2);
+  * then silent. The gun fires every `GUN_INTERVAL` (4) game frames, about
+    a quarter of a second apart, so each round's sound is over before the
+    next.
+* **Chain gun (`SFX_CHAIN`, `sfx_chain`):** the machine gun's sound 25%
+  higher in pitch: every period 4/5 of it (the thump about 88 Hz, period
+  1250; noise 3, 14, 21). It fires every game frame, so each round cuts the
+  last one's tail after 3 or 4 steps: a rattle.
+* **Laser (`SFX_LASER`, `sfx_laser`):** a zap at the start of each pulse
+  (`laser_update`): a tone sweeping down from about 2.7 kHz to 470 Hz
+  (periods 40 to 235) on channel A, with a second one 2 periods flat on
+  channel B, beating against it as a buzz. It fades over 140 ms (the
+  `SFX_ZAP` macro builds each step). Pulses come about 0.7 s apart.
+* **Bofors cannon (`SFX_BOFORS`, `sfx_bofors`):** the machine gun's sound,
+  deeper and louder: the thump 30 Hz (period 3646), the noise periods
+  doubled, and every volume 2 levels up, about twice as loud (crack 15 /
+  13, then 12 / 11, 8 / 7, 5 / 4). The AY's noise period stops at 31, so
+  the boom's later steps (18 and 26 doubled) are 31, and its volume at
+  15. The proximity cannon fires its shells
+  the same way, so it has this sound too.
+* **Rocket (`SFX_ROCKET`, `sfx_rocket`):** a short woosh, 200 ms: noise only
+  on channel A, swelling (7 to 13) and fading, brightening (noise period 12
+  to 6) then darkening (to 20) as it goes. The `SFX_WOOSH` macro builds
+  each step.
+* **Missile (`SFX_MISSILE`, `sfx_missile`):** a longer woosh, 320 ms, a
+  little deeper (period 14 to 8 to 26), its roar held at its loudest (13)
+  for longer before it fades.
+* **Explosions (`SFX_BOOM_*`, on AY 3):** wherever a rocket, missile,
+  Bofors or proximity shell bursts (`rocket_blast`). A deep noise darkening
+  as it goes (period 16 to 30) over a low rumble (about 40 Hz), fading to
+  nothing. The `SFX_BOOM` macro builds each from its peak and length.
+  * Loudness is in proportion to the blast's size, damage × reach (game
+    units): missile 15 × 256 = 3840, rocket 20 × 64 = 1280, Bofors 4 × 38
+    = 152, proximity 3 × 25 = 75. The AY's levels are logarithmic, about 2
+    levels each doubling, so the peak is 15 + 2·log₂(size ÷ the
+    missile's): 15, 12, 6 and 4.
+  * The bigger the blast, the longer it rumbles: 2 steps (40 ms) per level,
+    600, 480, 240 and 160 ms.
+  * The levels fall in a straight line, which on the AY's logarithmic scale
+    is an exponential fade.
+* **Splat (`SFX_SPLAT`, `sfx_splat`, on AY 3 channel C):** whenever a
+  zombie, fast zombie or ghoul takes damage (`zdamage`: a round, a laser
+  beam frame or a blast); not ghosts or banshees. A squelch: a tone lurching
+  down and up as it falls (periods 160, 320, 210, 450, 280, 620, 400, 850:
+  about 680 Hz to 130 Hz), a wet gargle, fading from 12 over 160 ms. Each
+  hit cuts the last one's splat, so a chain gun raking zombies restarts it
+  each time. (`SFX_SPLAT_STEP` builds each step.)
+  * Channel C shares AY 3 with the explosions, and the chip's noise
+    generator is theirs, so the splat is a tone only. It writes only
+    channel C's tone and volume, and the explosions set AY 3's mixer with
+    C's tone on (`SFX_MIX_BOOM`) and leave channel C alone, so the two play
+    together.
+* **Room:** the player is in slot 1 with the interrupt routine (about 100
+  bytes left); the sounds are in the resident page.
+
+## Interrupts
+
+Interrupts are on from the main menu onwards, in IM 2 (`interrupts.asm`),
+50 a second. The routine plays the engines (see "Engine sound").
+* **Its own stack:** `im2_routine` saves SP and switches to `isr_stack` at
+  once, before any PUSH, then keeps every register it uses.
+* **The span filler borrows SP** (city.asm): it points SP into a Layer 2
+  span and fills it with PUSHes. An interrupt there pushes its return
+  address just below SP, into the part of the span still to be filled,
+  which the PUSHes then overwrite. That fails only after the last PUSH, so
+  interrupts are off (`push_blk`: a `DI` before the last PUSH, `EI` once SP
+  is back) for those few instructions. One arriving meanwhile waits: the
+  interrupt line is held far longer. A 1-pixel span doesn't borrow SP at
+  all (`push_next`).
+* **File loads:** `fh_rom_in` turns interrupts off over esxDOS calls (the
+  ROM covers slot 1, where the routine is), and `fh_rom_out` turns them
+  back on if they were on.
+* **Shared hardware:** the routine writes only the AY ports, never `$243B`
+  (the main code's NextReg select), so the main code's NextReg reads are
+  safe. Code outside the routine writes the AY chips only while `eng_on`
+  is 0 (`init_audio`, `engine_start`); future sound effects on AY 2 and 3
+  must do the same, or turn interrupts off around their writes.
+* **Tested** in the emulator: with interrupts at 50 Hz, and with over
+  60,000 interrupts in 30 frames (one every ~2,000 T-states, and 25,000
+  forced at the last moment before the `DI`), every frame's Layer 2 was
+  identical to a run with none. (The emulator enables interrupts at `EI`
+  at once; the test allows for the Z80's one-instruction delay.)
+
 ## Controls
 
 | Key | Action          | Key | Action          |
@@ -208,6 +385,15 @@ would otherwise look like line 0 and end a frame early.
 | SPACE | fire the selected weapon (hold) | 1–5 | select weapon slot: 1 = centre, 2–5 = wing pylons |
 | R   | tilt the centre gun up | F   | tilt the centre gun down |
 | V   | recentre the centre gun | 0 / 9 | debug: kill all / next city (see below) |
+| 8   | debug: change the centre gun (see below) | | |
+| BREAK | pause / resume | X | boost on / off (once the booster is fitted: see below) |
+
+**Joystick:** Kempston or Mega Drive (3 or 6 buttons), in either joystick
+port, set up in the Next's own joystick settings. By default joystick 1's
+stick turns and climbs or descends and FIRE fires. On a Mega Drive pad, C and
+A are speed up and down and START pauses; on a 6-button pad, X is the air
+brake, Y / Z nose up and down, and MODE the boost. Every control can be given any key and any
+joystick input on the redefine keys screen (main menu, 9). See "Input" below.
 
 **Debug kill all (keys 0 and 9, `DEBUG_KILLALL` in `zpolice.asm`):** pressing 0
 in flight wipes out the wave at once:
@@ -227,15 +413,29 @@ level of the next city (`CITY_LEVELS`, 5 levels each): level 2 goes to 6,
 follows at once and moves `level` on by one as usual. From the last city
 (levels 46–50) it goes to the game complete screen.
 
-The keys are fixed (`KB_0`, `KB_9`, read with `key_code_pressed`, in
-`debug_killall`, weapons.asm). They aren't on the redefine keys screen, so
-don't define 0 or 9 as a control while they are on. Set `DEBUG_KILLALL equ 0`
-for a release: the code and the key go.
+**Key 8** changes the gun in the centre slot (slot 1): machine gun, then
+laser, then chain gun, then the machine gun again. Anything else there
+becomes the machine gun. The new gun has its full (infinite) load, and the
+centre slot is selected, so SPACE fires it at once (`debug_gun_cycle`).
 
-**Keyboard (`keys.asm`):** the keys are redefinable. The game asks about
-*actions* (`K_FIRE`, `K_LEFT`, …), and `key_defs` holds the key for each.
-* **Key codes:** a key is a 16-bit code (`KB_Q`, `KB_UP`, …): the key bank
-  in the high byte, the bit mask in the low byte.
+The keys are fixed (`KB_0`, `KB_9`, `KB_8`, read with `key_code_pressed`,
+in `debug_killall` and `debug_gun_cycle`, weapons.asm). They aren't on the
+redefine keys screen, so don't define 0, 8 or 9 as a control while they are
+on. Set `DEBUG_KILLALL equ 0` for a release: the code and the keys go.
+
+**Debug load-out (`DEBUG_LOADOUT` in `zpolice.asm`):** a new game starts with
+every weapon unlocked and `DEBUG_STOCK` (4) of each in store, so they can all
+be fitted on the load-out screen before level 1. The bomb is left out: it has
+no weapon yet and fits no slot. The machine gun is still fitted in slot 1 as
+well. Set `DEBUG_LOADOUT equ 0` for a release, and a new game starts with
+the machine gun only.
+
+**Input (`input.asm`): keyboard and joysticks.** Every control is
+redefinable. The game asks about *actions* (`K_FIRE`, `K_LEFT`, …). Each
+action has a key (`key_defs`) and a joystick input (`joy_defs`, 0 for
+none), and either one works.
+* **Input codes:** an input is a 16-bit code (`KB_Q`, `KB_UP`, `J1_FIRE`,
+  …): the input bank in the high byte, the bit mask in the low byte.
   * Banks 0–7 are the ZX Spectrum half-rows (port `$xxFE`, address line
     A8+bank low): `$FEFE` SHIFT Z X C V up to `$7FFE` SPACE SYM M N B.
     These read 0 = pressed.
@@ -243,47 +443,111 @@ for a release: the code and the key go.
     `,`, `"`, `;` (bits 0–7).
   * Bank 9 is NextReg `$B1`, Extended Keys 1: EXTEND, CAPS LOCK, GRAPH,
     TRUE VIDEO, INV VIDEO, BREAK, EDIT, DELETE.
-  * The extended banks read 1 = pressed.
-* **Scan:** `kbd_scan`, at the top of the main loop, reads all ten banks
+  * Bank 10 is port `$1F`, Kempston 1 or Mega Drive 1 (`J1_*`): RIGHT,
+    LEFT, DOWN, UP, FIRE (Mega Drive B), C, A, START (bits 0–7).
+  * Bank 11 is port `$37`, Kempston 2 or Mega Drive 2 (`J2_*`), the same.
+  * Bank 12 is NextReg `$B2`, the 6-button Mega Drive pads' extra buttons:
+    MODE, Y, Z, X of the left connector (`J1_*`, bits 0–3), then of the
+    right (`J2_*`, bits 4–7).
+  * Banks 8–12 read 1 = pressed.
+* **Which joysticks:** the Next's own joystick settings choose each
+  joystick's mode (NextReg `$05`, set in the Next's set-up, not by the
+  game).
+  * Kempston 1 and Mega Drive 1 are read through port `$1F`; Kempston 2 and
+    Mega Drive 2 through `$37`. A Mega Drive mode also reads `$B2`.
+  * `kbd_scan` reads a joystick bank only while some joystick is in a mode
+    that uses it; otherwise the bank is 0. A port that reads left and
+    right at once (no stick can) is taken as nothing there and also reads
+    0. So an unused port can't read as every button pressed.
+  * Sinclair 1 and 2 and Cursor modes enter keys (6–0, 1–5, 5–8), so those
+    joysticks are read as keys and are defined in the KEY column.
+* **Joystick defaults** (`JOY_DEFAULTS`), on joystick 1:
+  * the stick turns (left, right) and climbs and descends (up, down);
+  * FIRE (Mega Drive B) fires;
+  * Mega Drive C is speed up, A speed down, and START pauses;
+  * a 6-button pad's X is the air brake, Y nose up, Z nose down and MODE
+    the boost;
+  * the gun tilt and weapon slots have no joystick input by default.
+* **Scan:** `kbd_scan`, at the top of the main loop, reads all 13 banks
   into `key_now`, keeping the previous scan in `key_prev`. It inverts the
   ZX rows, so every bank holds 1 = pressed.
-* **Tests:** `key_held` (A = action) is NZ while its key is down.
-  `key_pressed` is NZ only on the frame it goes down.
-* **Redefining:** `key_define` (A = action, HL = key code) changes an
-  action's key. `key_find` returns the code of any key being held.
-* **Defaults:** `key_defaults` holds the default key of each action, the
-  same list as `key_defs` starts with (the `KEY_DEFAULTS` macro builds
-  both).
+* **Tests:** `key_held` (A = action) is NZ while its key or joystick input
+  is down. `key_pressed` is NZ only on the frame either goes down.
+* **Redefining:** `key_define` (A = action, HL = input code) changes an
+  action's key, or its joystick input if the code is a joystick's (bank 10
+  on). `key_find` returns the code of any input being held.
+* **Defaults:** `key_defaults` and `joy_defaults` hold the defaults. The
+  `KEY_DEFAULTS` and `JOY_DEFAULTS` macros build both sets. The four tables
+  sit one after another, `key_defs`, `joy_defs`, `key_defaults`,
+  `joy_defaults`, so putting the defaults back is one copy.
 * **Redefine keys screen (`keydef_screen`, keydef.asm, `PAGE_KEYDEF` page
   33 in slot 6):** option 9 on the main menu (`keydef_go`, resident, pages
-  it in). It lists every control with its key: white, the highlighted one
-  green.
+  it in). It lists every control (20, BOOST the last) with its key and
+  joystick input ("-" for none): white, the highlighted one green. The
+  title shares the top row with the KEY and JOYSTICK headings, to fit
+  them all.
   * **Q / A** move the highlight up and down.
-  * **SPACE** shows SELECT KEY, waits a second, then the next key pressed
-    (any of the ten banks: `kd_new_key`) becomes the control's key. If
-    another control already uses it, KEY ALREADY IN USE shows (red, for a
-    second) and nothing changes. A control's own key can be pressed again.
-  * **0** puts every key back to its default (`key_defaults`).
+  * **SPACE** shows PRESS A KEY OR JOYSTICK and waits a second. The next
+    input (any bank: `kd_new_key`) then becomes the control's key, or its
+    joystick input if it came from a joystick. If another control already
+    uses it, KEY ALREADY IN USE shows (red, for a second) and nothing
+    changes. A control's own input can be pressed again.
+  * **0** puts every key and joystick input back to its default.
   * **1** goes back to the main menu (`menu_go`, resident).
-  * These keys are fixed, whatever the controls are set to. The new keys
-    last until the machine is reset: they aren't saved to the SD card yet.
+  * These keys are fixed, whatever the controls are set to. The new
+    controls last until the machine is reset: they aren't saved to the SD
+    card yet.
+* **Pause (`K_PAUSE`):** BREAK, or a Mega Drive pad's START, by default.
+  * `main_loop` checks it after each scan. `game_pause` (resident) puts
+    PAUSED, white in an opaque black ULA box, over the view, and waits,
+    reading the input each video frame, until the pause control is pressed
+    again. Then it puts the viewport's transparent cells back.
+  * Nothing moves while paused, and the screen keeps its last frame.
+  * **S** while paused saves and quits to the main menu (see "Save games").
+    S is fixed there, whatever the controls are.
 * **Doubling:** the Next normally also enters the extended keys into the
-  ordinary rows (cursor LEFT shows up as CAPS SHIFT + 5).
+  ordinary rows (cursor LEFT shows up as CAPS SHIFT + 5, BREAK as CAPS
+  SHIFT + SPACE).
   * `kbd_double_on` stops this: it sets `KBD_STOP_DOUBLING` to `TRUE` and
-    NextReg `$68` bit 4 to 1.
+    NextReg `$68` bit 4 to 1. Start-up calls it. Otherwise BREAK, the pause
+    key, would also fire (SPACE), and the redefine screen would take it as
+    CAPS SHIFT.
   * `kbd_double_off` (alias `kdb_double_off`) sets it back to `FALSE` and
-    bit 4 to 0. That's the default, applied at start-up.
+    bit 4 to 0.
   * Both keep `$68`'s other bits.
 
 The craft moves horizontally along its heading. Pitch only aims the view, as
 for a hovering VTOL, and height is set with W/S. A gunsight marks the
-centre of the view. At the left of the panel below are two vertical
-gauges, filled from the bottom:
-* **S:** speed, turning red when reversing.
+centre of the view. At the left of the panel below are vertical gauges,
+filled from the bottom:
+* **S:** speed, turning red when reversing and amber while boosting.
 * **A:** split in two. The left half is the altitude (green). The right
   half is the height of the city tile under the craft (amber), on the same
   scale, and is empty over a road. The gap between the two tops is your
   clearance.
+* **B:** the booster's fuel (green), 200 filling it. It appears once the
+  booster module is fitted (`ula_init` makes its cells see-through and
+  labels it); until then the panel covers it.
+
+**Booster module:** a salvage reward at 45 points, fitted at once with a
+full tank (`boost_fitted`, `boost_fuel`; constants `BOOST_*` in
+zpolice.asm).
+* **X** (the boost control, `K_BOOST`, redefinable) turns it on if the VTOL
+  is going forwards at half speed or more (`BOOST_MIN`, 14) and there's
+  fuel. The speed jumps at once to twice the top speed (`BOOST_SPEED`, 56
+  units a frame, about 4.4 m).
+* While boosting, Q, A and Z don't change the speed, and each frame burns 1
+  fuel.
+* **X** again turns it off, and the speed goes back to what it was before
+  (`boost_spd`). Running out of fuel does the same. Without fuel, X does
+  nothing.
+* A collision that stops the VTOL ends the boost (the speed is no longer
+  `BOOST_SPEED`), and a wreck has none.
+* **Refuelling:** landed on the base pad, 1 fuel a frame up to 200
+  (`pad_service`, with the repairs and reloads).
+* The engines' sound tops out at `SPEED_MAX` (the boost sounds flat out),
+  and a crash at boost speed does 56 ÷ 4 = 14 damage.
+* `DEBUG_LOADOUT` also fits the booster with a full tank, for testing.
 
 **The VTOL:** the player's craft is 10 m long and 3 m wide (`VTOL_LEN_M`,
 `VTOL_WID_M`). Its position (`cam_x`, `cam_z`, the camera) is its centre.
@@ -318,14 +582,15 @@ the brake acts, then brings the nose back to level.
 **Pitch damper:** with neither E nor D held, the nose eases back to level.
 Pitch is a signed 8.8 value (`pitch_frac`/`pitch`). The renderer uses only
 the whole part, so the level fast path still applies once it reaches 0.
-* Every `PDAMP_FRAMES` (4) frames, the pitch moves towards 0 by
-  `max(PDAMP_MIN, |pitch|·PDAMP_K)`. That is about 1/6 of what is left,
-  but never less than 1/8 of a unit.
-* The steps shrink as the nose nears level, so it slows down as it gets
-  there. It never overshoots, and it stops exactly at 0.
-* From full pitch (±24) it takes 111 frames to level, about 8 seconds at
-  14 fps. It goes 24 → 11.7 → 5.9 → 3.0 → 1.7 → 1.0 → 0.5 → 0, one value
-  every 16 frames.
+* Every `PDAMP_FRAMES` (1) frame, the pitch moves towards 0 by
+  `max(PDAMP_MIN, |pitch|·PDAMP_K)`. With `PDAMP_K` 0 that is a steady
+  `PDAMP_MIN`, 128/256: half a pitch unit a frame, half the rate of the
+  nose keys (1 unit a frame), however far the nose is from level.
+* It never overshoots, and it stops exactly at 0. From full pitch (±24) it
+  takes 48 frames to level, twice as long as pitching up took.
+* (Before: `PDAMP_K` 43, about 1/6 of what is left a frame, so from full
+  pitch it came back at up to 4 units a frame, slowing as it neared level.
+  Setting `PDAMP_K` above 0 again brings that back.)
 * The step is calculated with the Z80N `MUL` rather than read from a table.
   It's just as fast, and the curve stays adjustable through the equates.
 * While E or D is held, pitch moves in whole steps as before, and the
@@ -705,10 +970,22 @@ Special monsters use the zombie records after the zombies' own: records
 drawing, cell marks, map blips, weapon hits and `zdamage`. The record's
 type (+15) says which monster it is: `ZT_GHOUL` (2), `ZT_GHOST` (3) or
 `ZT_BANSHEE` (4). Types below `ZT_GHOST` walk as zombies; from it up they fly.
-* **How many:** `spec_init` (at the level's start) places the level's
-  `LV_SPECIAL` ghosts, from its level file: 0 on levels 1–4, rising to 5.
-  Banshees and ghouls come with the waves (below). All of them count as
-  part of the wave: it isn't wiped out until they are dead too.
+* **How many, and when:** from the level file, wave by wave. Each wave's
+  data (`LV_WAVE_DATA`, `LV_WAVE_REC` 10 bytes, for up to `LV_MAX_WAVES`
+  10 waves) holds up to 5 special types (`LV_SPECIAL_ID`: `SPEC_GHOST` 0,
+  `SPEC_BANSHEE` 1, `SPEC_GHOUL` 2; `SPEC_NONE` 255 for none) and how many
+  of each (`LV_SPECIAL`). The level's start is wave 1, like any other:
+  `spec_init` makes every special record inactive and calls `spec_wave`,
+  which `spec_update` also calls when a new wave starts (`zwave_new`). It
+  places each type's count into free special records (`spec_place`; at
+  most `NSPEC`, 8, at once), mapping the type to the record's (`spec_types`:
+  `ZT_GHOST`, `ZT_BANSHEE`, `ZT_GHOUL`). All of them count as part of the
+  wave: it isn't wiped out until they are dead too.
+* **The generated levels** (gentables.py) keep the old built-in rules: in
+  wave 1, ghosts from level 5 (1, rising to 5 by level 13); a banshee on
+  every even wave (2 from level 11, 3 from 31); ghouls on every odd wave
+  from level 21 (2 from 30, 3 from 40). Edit a level's file to change
+  them.
 * **Each frame:** `spec_update` moves them, after `zombie_update`, from
   its own game logic page (`PAGE_SPECIAL`). `g_params` sets the monster's
   speed, attack reach, damage and whether it goes for the base, so both
@@ -770,10 +1047,10 @@ ghost (roaming, sight, chasing, attacking, fading out), except:
   zombie's. The line-of-sight check ignores samples over the target's own
   cell, so a tile's top doesn't hide itself.
 * **Hit points:** `BANSHEE_HP` (8).
-* **Spawning:** `spec_wave`, when a new wave starts (`zwave_new`, set by
-  `zombie_update`), on even wave numbers only: 1 banshee up to level 10,
-  2 up to level 30, then 3. They go into free special records (there may
-  be fewer if ghosts fill them).
+* **Spawning:** with the waves the level file gives it (see "How many, and
+  when" above): the generated levels have 1 banshee on each even wave up to
+  level 10, 2 up to level 30, then 3. They go into free special records
+  (there may be fewer if others fill them).
 * **Map blip:** yellow shades (`bshades`). Its death fade runs yellow to
   dark (`bfade`, `BANSHEE_FADE`).
 
@@ -788,9 +1065,10 @@ ghost (roaming, sight, chasing, attacking, fading out), except:
   change frame every frame.
 * **Hits:** its box is half as tall (`ZHIT_H`/2). It has `GHOUL_HP` (5, as
   a zombie), and killed it bursts like one. Its map blip is a zombie's.
-* **Spawning:** `spec_wave` at the start of each odd wave (wave 1 from
-  `spec_init`): 1 on levels 21–29, 2 on 30–39, 3 from 40, into free special
-  records (`ghoul_init`, placing it with `zplace`, zombie.asm).
+* **Spawning:** with the waves the level file gives it: the generated
+  levels have ghouls on each odd wave (wave 1 included), 1 on levels 21–29,
+  2 on 30–39, 3 from 40, into free special records (`ghoul_init`, placing
+  it with `zplace`, zombie.asm).
 
 ### The VTOL destroyed
 At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
@@ -999,8 +1277,9 @@ sprites over the border its PNGs are the full 320 × 256.
 The frame rate is shown as `nn FPS` in the top left of the ULA screen,
 which sits above Layer 2 (layer priority S-U-L, NextReg `$15`). ULA paper
 palette entries 16 and 24 are set to the global transparency colour `$E3`,
-so only the white text covers the 3D view. Interrupts stay off because the
-span filler borrows SP, so time comes from the raster instead:
+so only the white text covers the 3D view. Time comes from the raster (it
+was written when interrupts were off; the interrupt routine now leaves the
+NextReg select alone, so this still works):
 * `vtick` reads the video line (NextReg `$1E/$1F`) and counts a new 50 Hz
   frame each time the line number goes backwards. It runs between the
   main-loop stages and once per building, so it is sampled more often than
@@ -1018,18 +1297,18 @@ span filler borrows SP, so time comes from the raster instead:
 | `hud.asm` | HUD page (`PAGE_HUD`, runs at `$E000`): all ULA (Layer 1) code, font and labels |
 | `zombie.asm` | zombie page (`PAGE_ZOMBIE`, stays mapped at `$2000`): zombie records, seeding, walking, the zombie marks in `city_map` (`zflags`) and the scaled sprite drawer |
 | `menu.asm` | main menu page (`PAGE_MENU`, page 8, game logic at `$C000`): menu screen, per-frame random seed stirring, starts `newGame` |
-| `keys.asm` | keyboard engine (`PAGE_KEYS`, page 12, core function at `$E000`): scans the 8 ZX half-rows and the 2 Next extended-key registers each frame; redefinable action keys |
+| `input.asm` | input engine (`PAGE_INPUT`, page 12, core function at `$E000`): scans the 8 ZX half-rows, the 2 Next extended-key registers and the joysticks (ports `$1F`, `$37`, NextReg `$B2`) each frame; redefinable action keys and joystick inputs, the pause control |
 | `sprites.asm` | hardware sprites, Layer 3 (`PAGE_SPRITES`, page 13, core function at `$E000`): set-up, pattern and palette loading, a shadow attribute table and its per-frame upload, positions on the 320 × 256 sprite screen |
-| `levels.asm` | the current level's record, `level_cur` (resident): level number, 8-character city name, the numbers of zombies, waves, fast zombies and special monsters, the highest special monster id, and the draw distance (`LV_SIZE` 15 bytes); `level_entry` → HL = it. Loaded from the level's file. The current wave is `wave_number` (resident, 1 at a new game) |
-| `specials.asm` | special monsters (`PAGE_SPECIAL`, page 31, game logic at `$C000`): the ghost and banshee behaviour, `spec_init`, `spec_wave` (banshees on even waves, ghouls on odd ones) and `spec_update` |
-| `keydef.asm` | redefine keys screen (`PAGE_KEYDEF`, page 33, game logic at `$C000`): list the controls and their keys, change one, put the defaults back |
-| `loadout.asm` | load-out screen (`PAGE_LOADOUT`, page 32, game logic at `$C000`): between levels, fit unlocked weapons from the store into the 5 slots |
+| `levels.asm` | the current level's record, `level_cur` (resident): level number, 8-character city name, the numbers of zombies a wave, waves and fast zombies, the draw distance, and each wave's special monsters (up to 5 types and counts, 10 waves) (`LV_SIZE` 113 bytes); the special type ids (`SPEC_*`); `level_entry` → HL = it. Loaded from the level's file. The current wave is `wave_number` (resident, 1 at a new game) |
+| `specials.asm` | special monsters (`PAGE_SPECIAL`, page 31, game logic at `$C000`): the ghost and banshee behaviour, `spec_init` (wave 1), `spec_wave` (each wave's specials from the level file) and `spec_update` |
+| `keydef.asm` | redefine keys screen (`PAGE_KEYDEF`, page 33, game logic at `$C000`): list the controls with their keys and joystick inputs, change one, put the defaults back |
+| `loadout.asm` | load-out screen (`PAGE_LOADOUT`, page 32, game logic at `$C000`): before the first level and between levels, fit unlocked weapons from the store into the 5 slots |
 | `text.asm` | text screens (resident): `menu_clear`, `menu_print`, `menu_char`, `menu_frame` and the menu font, shared by the menu and load-out pages; `MENU_ATTR`, `MENU_TITLE`, `MENU_OK`, `MENU_BAD` |
 | `level_load.asm` | level loading (`PAGE_LEVEL`, page 30, game logic at `$C000`): `load_level` (A = level) reads `ZPDATA/LEVELnn.ZPL` and its city's `ZPDATA/CITYnn.ZPC` with the file handler: the record, the city bank, the level's map changes, the palette and sky colour, the draw distance |
 | `ZPDATA/` | the level and city data files, made by `gentables.py`: `LEVEL01`–`LEVEL50.ZPL`, `CITY01`–`CITY10.ZPC`. Copy beside `zpolice.nex` |
 | `file_handler.asm` | SD card file handling (`PAGE_FILE`, page 16, at `$E000` in slot 7), general purpose over the esxDOS / NextZXOS API (`RST $08`): `fh_init`, `fh_open`, `fh_close`, `fh_read`, `fh_write`, `fh_seek`, `fh_size`, `fh_load`, `fh_save`, `fh_exists`, `fh_delete`. Carry set on error with A = the esxDOS error code. Each call pages the ROM into slots 0–1 for the `RST $08` (the divMMC only traps it then) and puts the game's pages back. Call from outside slot 7; names and buffers in `$4000`–`$DFFF`. The emulator (`tools/nexsim.py`) models these calls on a host folder (`cpu.esx_root`) |
-| `interrupts.asm` | interrupt mode 2 (page 7 after `map.asm`, always mapped): `im2_table`, 256 words at a 256-byte boundary all pointing at `im2_routine`, which sits at an address with equal high and low bytes (`$7B7B`) so any data-bus byte, odd or even, reaches it; `im2_routine` (placeholder: `ei`, `reti`); `im2_init` (I = the table's high byte, `IM 2`), called by `start` after `init_audio`. Interrupts stay disabled for now |
-| `audio.asm` | sound (`PAGE_AUDIO`, page 17, at `$E000` in slot 7): `init_audio`, called once by `start` after `initgame`, puts the three TurboSound AY chips in a known silent state (both outputs on, every register 0, then the mixer to tones only with noise off and the envelope to attack-and-hold), leaving AY 1 selected. Helpers: `ay_select` (A = `AY_CHIP_n`), `ay_write` (A = register, E = value). The emulator records AY register writes (`cpu.ay`) |
+| `interrupts.asm` | interrupt mode 2 (page 7 after `map.asm`, always mapped): `im2_table`, 256 words at a 256-byte boundary all pointing at `im2_routine`, which sits at an address with equal high and low bytes (`$xyxy`) so any data-bus byte, odd or even, reaches it; `im2_init` (I = the table's high byte, `IM 2`), called by `start` after `init_audio`. `start` enables interrupts before the main menu. `im2_routine` (50 a second) switches to its own stack and plays the engines (`engine_tick`, with its own AY writer `isr_ay`). See "Interrupts" |
+| `audio.asm` | sound (`PAGE_AUDIO`, page 17, at `$E000` in slot 7): `init_audio`, called by `start` after `initgame` and by every menu screen (`menu_clear`), puts the three TurboSound AY chips in a known silent state (both outputs on, every register 0, then the mixer to tones only with noise off and the envelope to attack-and-hold), leaving AY 1 selected. The VTOL's engines on AY 1 (`engine_start`, `engine_sound`: see "Engine sound"). Helpers: `ay_select` (A = `AY_CHIP_n`), `ay_write` (A = register, E = value). The emulator records AY register writes (`cpu.ay`) |
 | `initialise.asm` | start-up set-up (`PAGE_INIT`, page 15, at `$E000` in slot 7): `initgame`, called once by `start`, sets the CPU speed, Layer 2 mode, transparency, layer priority, Layer 2 scroll and clip window, the always-mapped slots and the border |
 | `sprite_data.asm` | sprite pattern banks (8K pages from `PAGE_SPR0`, page 9, assembled at `$E000` and swapped into slot 7 to load): a count, a first pattern number and the patterns; bank 0 has the human status sprites |
 | `map.asm` | the city map (page 7 after `human.asm`, always mapped): drawing it into both Layer 2 buffers, the ULA set-up over it, the player's flashing dot, zombie blips, human dots |
@@ -1076,21 +1355,22 @@ $C000-$DFFF  game logic page, swapped with NextReg $56 (LOGIC_MMU):
 $E000-$FFFF  core function page, swapped with NextReg $57 (CODE_MMU):
                PAGE_CITY    (page 1)  city.asm    - Layer 2 drawing
                PAGE_HUD     (page 2)  hud.asm     - ULA HUD
-               PAGE_KEYS    (page 12) keys.asm    - keyboard
+               PAGE_INPUT   (page 12) input.asm   - keyboard, joysticks
                PAGE_SPRITES (page 13) sprites.asm - hardware sprites
                PAGE_SPR0    (page 9)  sprite_data.asm - a sprite bank, while
                                       spr_load_bank copies its patterns
                PAGE_INIT    (page 15) initialise.asm - start-up set-up
                                       (initgame), once
                PAGE_FILE    (page 16) file_handler.asm - SD card files
-               PAGE_AUDIO   (page 17) audio.asm - sound set-up
+               PAGE_AUDIO   (page 17) audio.asm - sound set-up, engines
 ```
 
 **Code pages:** the names are in `memory_bank_defs.asm`.
 * **Two swapped slots:** game logic runs in slot 6 (`$C000`) and core
   functions in slot 7 (`$E000`), so logic can call a core page directly.
   `main_loop`:
-  1. pages `PAGE_KEYS` into slot 7 and calls `kbd_scan`;
+  1. pages `PAGE_INPUT` into slot 7 and calls `kbd_scan`, and pauses
+     (`game_pause`) if the pause control was pressed;
   2. runs `PAGE_PLAYER` and then `PAGE_WEAPONS` in slot 6. They test keys
      with `key_held` / `key_pressed`, which are still in slot 7.
   3. pages `PAGE_CITY` into slot 7 for the clear, the dots, the city, the
@@ -1204,9 +1484,44 @@ pad in the centre, and the perimeter wall.
     in an 8-pixel white border, and on the right the tools, the building
     height (1–15) and the city's 64 colour families, read from its built
     `ZPDATA/CITYnn.ZPC` (grey until it's built).
-    * Tools: Building (the selected height and colour family), Road, Outer
+    * Paint: Building (the selected height and colour family), Road, Outer
       wall (height 15, the wall's family), Landing pad, Terrace, Out of
       bounds.
+    * Change (with the Building tool): **Both** (height and colour, as
+      before), **Colour only** (buildings keep their height and take the
+      selected colour family) or **Height only** (buildings keep their
+      colour and take the selected height). Roads, terrace, the pad and out
+      of bounds are left alone by Colour only and Height only; the other
+      tools always change the whole cell. It works with every draw mode
+      (Fill too: a road clicked with Colour only says so).
+    * Draw (how): Pencil (click or drag), Line, Box (a rectangle's
+      outline), Rectangle (filled), Fill (the area of cells like the one
+      clicked, joined side to side), Select (drag a rectangle). Each is one
+      change for Ctrl+Z, and none makes a second pad or a 31st barricade.
+    * Edit menu: Select all (Ctrl+A), Copy the selection (Ctrl+C), Paste
+      (Ctrl+V, then click where its top left goes), Mirror the selection
+      left-right or top-bottom; Esc drops the selection or stops pasting.
+    * Edit > Wall round out of bounds: perimeter wall on every cell next to
+      out of bounds (diagonals too) that isn't wall or out of bounds
+      already, then says if any wall still breaks the wall rule.
+    * Colours: "Edit colours..." (or Edit > Edit colour family) sets a
+      family's 3 shades by hand, r g b 0–7 each, beside the generated ones.
+      They're saved in the map file (`"palette"`) and `gentables.py` lays
+      them over the generated palette; Reset puts the generated shades back
+      (`maps/generated/CITYnn.pal`, written by the build). Layer 2's
+      transparent colour can't be used. A family set by hand has an orange
+      line under it in the palette.
+    * Level menu: **Edit a level's map changes** shows the city as one of
+      its levels changes it; painting then changes that level only, and
+      Save writes its `CHANGES` (at most 64; counted below the map) to
+      `levels/LEVELnn.TXL`, not the city. The landing pad can't be touched
+      there. **Back to the city map** returns. **Level settings** edits a
+      level's zombies, waves, fast zombies, draw distance and each wave's
+      special monsters (ghosts, banshees, ghouls), checked before saving.
+    * View > **Preview from a point**: click the map, give a heading and a
+      height, and the game draws that view in the emulator, in the
+      background (`tools/preview.py`), from the map as it is in the editor,
+      saved or not (in level mode, with the level's changes).
     * Below the map: "Barricades: n / 30 placed" and "Landing pad: n / 1"
       (red when over). Painting won't place a 31st barricade or a second
       landing pad (the status line says why).
@@ -1258,9 +1573,22 @@ pad in the centre, and the perimeter wall.
     * Left button paints (click or drag); right button picks up a cell's
       height and colour; Ctrl+Z undoes a stroke; View > Show heights
       shades buildings grey by height.
-    * File menu: Load map, Save map, Save map as, Check map. Saving checks
-      the map and lists any problems (it saves anyway, so work can be
-      kept). Then `build.bat` makes the game's files from it.
+    * File menu: Load map, Save, Save map as, Check. Saving checks the map
+      (or in level mode the level) and lists any problems (it saves anyway,
+      so work can be kept). Then `build.bat` makes the game's files from it.
+  * **Preview from the command line:** `python tools/preview.py
+    maps/CITYnn.json X Z [--heading DEG] [--height UNITS] [--level N]
+    [--out FILE.png]` draws the game's view from cell (X, Z) (heading 0
+    north, up the map; 90 east) into a PNG. It builds a temporary SD card
+    with that map in place of the built city, starts the game in the
+    emulator and puts the VTOL there. The game must be built.
+  * **Check everything:** `python tools/check_maps.py` checks every city map
+    (`citymap.validate`, with its hand-set shades) and every level file
+    (`levelfile.level_check`, the map changes against their city), prints
+    each file's problems or OK, and exits 1 if any has problems.
+  * **Shared code:** `tools/citymap.py` (the map files), `tools/levelfile.py`
+    (the level files' text and binary forms and their checks), used by
+    `gentables.py`, the editor and the tools.
 * **Text forms (for editing):** beside each binary file, `gentables.py`
   writes a plain text copy holding exactly the same data: `CITYnn.TXC` for
   `CITYnn.ZPC` and `LEVELnn.TXL` for `LEVELnn.ZPL`. They're the start of a
@@ -1272,7 +1600,9 @@ pad in the centre, and the perimeter wall.
     the landing pad, `T` its terrace); `COLOURS`: 64 lines of 64 fields,
     each cell's colour family `00`–`63` or `..` for a road; `END`.
   * **`LEVELnn.TXL`:** `LEVEL`, `CITY`, `NAME`, `ZOMBIES`, `WAVES`, `FAST`,
-    `SPECIAL`, `SPECIAL_MAX`, `VIEW`; `CHANGES n` then n lines
+    `VIEW`; then a line for each wave, `WAVE n` and up to 5 type / count
+    pairs (`GHOST`, `BANSHEE`, `GHOUL`), e.g. `WAVE 1 GHOST 5 GHOUL 2`;
+    then `CHANGES n` and n lines
     `x z code family` (the map cells changed for the level, in the same
     characters as the city file); `END`.
   * Lines starting `;` are comments. `city_from_text` and
@@ -1305,9 +1635,11 @@ pad in the centre, and the perimeter wall.
 
 * **Levels:** `LEVELnn.ZPL`. Each holds:
   * its city's number;
-  * the level record (`levels.asm`): the city name, the numbers of zombies,
-    waves, fast zombies and special monsters, the highest special monster
-    id, and the draw distance;
+  * the level record (`levels.asm`, 113 bytes): the city name, the numbers
+    of zombies a wave, waves and fast zombies, the draw distance, and each
+    wave's special monsters (up to 5 types and how many of each, for up to
+    10 waves; wave 1 is the level's start). The level file is format
+    version 2 (`LEVEL_VERSION`; the city file stays 1, `CITY_VERSION`);
   * a list of map changes (x, z, cell code, colour, up to 64), applied after
     the city loads, for hand-made layout changes on that level.
 * **Draw distance:** 2–6 tiles (`view_r`; the street dots' radius `dot_r`
@@ -1315,9 +1647,31 @@ pad in the centre, and the perimeter wall.
   (the old `VIEW_R`) for now.
 * **Making them:** `gentables.py` makes the cities from seeds (city 1 keeps
   the original seeds, so it's the original city) and writes the 50 level
-  files, using the old level table's values as placeholders. The file
-  formats are described at the top of its "Cities and levels" section. A
-  generated file can be replaced by a hand-made one.
+  files. The file formats are described at the top of its "Cities and
+  levels" section.
+* **Hand-edited levels:** each level's source is `levels/LEVELnn.TXL`, the
+  text form (below), edited by hand as the city maps are in `maps/`.
+  * A level without one is generated from the rules (the old level table's
+    values, as placeholders) and its source written once; from then on
+    `gentables.py` reads the file, so edits stay.
+  * Set the draw distance (`VIEW`, 2–6 tiles) for night or fog, the
+    zombies, waves and fast zombies, each wave's specials (`WAVE n` lines),
+    and map changes for that level only (`CHANGES n`, then `x z code
+    family` lines, e.g. `32 40 T 62` for a terrace barricade, `20 20 6 12`
+    for a height-6 building in colour family 12, `5 9 . ..` for road).
+  * `level_check` stops the build on anything the game can't use, saying
+    which file and what: a level number that isn't the file's, a city that
+    doesn't exist, zombies over 30, waves outside 1–10, more fast zombies
+    than zombies, a draw distance outside 2–6, an unknown special type,
+    over 5 types or 8 specials in a wave, over 64 map changes, a change
+    outside the map, on or adding a landing pad, or in the wrong colour
+    for its cell (a building in a building colour, a road or out of bounds
+    in none, terrace in its own), and, with the changes made, over 30
+    barricades or the wall's colour off the perimeter wall.
+  * `ZPDATA/LEVELnn.TXL` is a copy of the source, beside the binary
+    `LEVELnn.ZPL` the game loads. The build says how many levels differ
+    from the rules.
+  * To regenerate a level from the rules, delete its source and build.
 * **Sky colour:** it's written to palette slot `SKY_COL`. While
   `SKY_IS_WALL` is on, the sky area is filled with the perimeter wall's
   colour instead, which is tinted with the city.
@@ -1339,8 +1693,10 @@ pad in the centre, and the perimeter wall.
   * The level's ghosts are placed with the first wave, so it lasts until
     they are killed. Banshees spawned with an even wave belong to it.
 * **Level complete:** `main_loop` shows LEVEL COMPLETE
-  (`level_complete_screen`, menu.asm) for 10 seconds, then the load-out
-  screen (below). Then it starts the next level (`next_level`,
+  (`level_complete_screen`, menu.asm), with PRESS SPACE TO CONTINUE on the
+  bottom row, until SPACE is pressed: a new press, so SPACE held down for
+  firing as the level ended doesn't skip it. Then the load-out screen
+  (below). Then it starts the next level (`next_level`,
   zpolice.asm) with the level's files loaded and the city set up afresh.
   * The VTOL goes back onto the pad, level and still.
   * Its hit points and weapons carry on. Its ammunition is replenished:
@@ -1352,7 +1708,8 @@ pad in the centre, and the perimeter wall.
     (`saved`) adds 1 to `salvage_points`. Every total in `salvage_tab`
     reached gives its rewards: a weapon unlocked (one more in `wpn_stock`,
     a resident count per weapon type, for the load-out screen) and/or
-    a full repair (`vtol_hp` = `VTOL_HP`). After 145 (`SALVAGE_TAIL`),
+    a full repair (`vtol_hp` = `VTOL_HP`, `SA_REPAIR`) or the booster module
+    (`SA_BOOSTER`). After 145 (`SALVAGE_TAIL`),
     every 5 more points is a full repair. The screen shows the humans
     saved, the salvage, AMMUNITION REPLENISHED and a line for each reward.
 
@@ -1361,7 +1718,8 @@ pad in the centre, and the perimeter wall.
     | 10, 40, 65, 90 | laser |
     | 20, 50, 75, 95 | chain gun |
     | 30, 60, 80 | rocket pod |
-    | 15, 25, 35, 45, 55, 70, 85 | full repair |
+    | 15, 25, 35, 55, 70, 85 | full repair |
+    | 45 | booster module (was a full repair) |
     | 100 | rocket pod and full repair |
     | 105, 110, 120, 125 | Bofors cannon and full repair |
     | 115, 130, 135, 140, 145 | missile pod and full repair |
@@ -1369,8 +1727,10 @@ pad in the centre, and the perimeter wall.
 
     `newGame` clears the salvage and the stock.
   * **Load-out screen (`loadout_screen`, loadout.asm, `PAGE_LOADOUT` page
-    32 in slot 6):** after LEVEL COMPLETE, `loadout_go` (resident) pages it
-    in. On the left, the store: every weapon type unlocked
+    32 in slot 6):** before the first level (`newGame` ends with `jp
+    loadout_go`) and after each LEVEL COMPLETE, `loadout_go` (resident)
+    pages it in. At the start of a game the store has only the machine gun,
+    already fitted (0 in store), as other weapons are unlocked by salvage. On the left, the store: every weapon type unlocked
     (`wpn_unlocked`: fitted at the start of the game, or unlocked by
     salvage) with the number in store (`wpn_stock`), shown even at 0 when
     the only one is fitted. On the right, the 5 slots and what's fitted.
@@ -1381,7 +1741,7 @@ pad in the centre, and the perimeter wall.
     * **SPACE** fits the highlighted weapon in the selected slot, if it can
       go there. One comes out of the store with a full load, and whatever
       was fitted goes back into the store.
-    * **0** confirms the load-out and starts the next level.
+    * **0** confirms the load-out and starts the level (START LEVEL).
     * It uses the text routines shared with the menu (`text.asm`,
       resident: `menu_clear`, `menu_print`, `menu_char`, `menu_frame`,
       font8) and the keys page in slot 7.
@@ -1540,7 +1900,16 @@ behind.
   * The walk is an exact integer DDA: quotient plus a remainder carried in a
     biased byte, so the carry flag is the error test. It hits endpoints
     exactly and matches the Bresenham outline.
-  * Steep edges skip the division entirely.
+  * Steep edges skip the division entirely, and exactly vertical ones
+    (every wall edge in level flight) just write the same x into each row
+    (`walk_edge.vert`).
+  * Per row, the span loop (`fs_loop`) keeps its overhead down: the stack
+    pointer is held in IY (`ld sp,iy` to put it back), the rows are counted
+    down in IXH, a DMA span goes straight on to the next row (SP was never
+    borrowed), and the edge table that is the left one at the polygon's
+    middle row is read first (`fill_spans` patches `fs_loop`), so the
+    left/right swap is mostly skipped. The swap is still made when a row
+    needs it: a sliver's edges can cross.
   * Short spans are written two pixels per `PUSH DE`, by pointing SP at the
     right end of the span and jumping into an unrolled block of 128 pushes.
   * Spans of `DMA_SPAN_MIN` (20) pixels or more go to the zxnDMA. The clear
@@ -1697,6 +2066,47 @@ with the `DMA_T` environment variable):
 
 Draw distance is the main lever (`VIEW_R`). Real hardware adds some wait
 states at 28 MHz. Movement is per frame, so game speed follows frame rate.
+
+**Profile (2026-11-01, five busy views):** transforming and projecting
+corners ~29% of a frame, filling spans ~19% (of which the per-row overhead
+~10%, DMA ~6%, PUSH writes ~3%), walking edges ~8.5%, clipping ~7%,
+occlusion ~6%, ground dots ~3%. The span loop's overhead, the level-flight
+multiplies and vertical edges were then trimmed (above): over ten fixed
+views the frame time fell 3.7% (4.9–6.5% level, 1.1–2.1% pitched), every
+view pixel-identical to before, also with interrupts (see "Interrupts").
+
+**Rejected buildings (2026-11-01):** of the 90–106 buildings tried a frame,
+62–74 were rejected by the frustum test (855 T each, 3–5% of a frame) and,
+in level flight, up to 21 by the occlusion pre-test (about 5,000 T each, up
+to 9% at street level, mostly its column-by-column cover check). So:
+* `draw_bld` does the frustum test first, from the cell's centre alone
+  (`row_x`, `row_z1`, radius `BLD_R`), before reading its colour and height
+  or setting up its corners: the same test on the same numbers.
+* The occlusion cover buffer has a coarse partner, `OCC_YBUF8`: per 8
+  columns, a bound at least the most of their 8 cover rows. `occ_hidden`
+  passes a whole group at once when its bound is covered, and otherwise
+  looks at its 8 columns one by one, so the answer is exactly the
+  column-by-column one. When a kept building lowers the cover, groups
+  wholly inside its columns take the new row as their bound if lower; the
+  groups at its ends keep theirs (still a bound: cover only goes down).
+  It sits in record 0's unused tail (`$42E0`).
+* Over the ten views the frame time fell a further 1.3% (3.1–5.3% at street
+  level): 5.0% in all against the first profile. Every view pixel-identical
+  to the old build, and 24 more random views (48 frames) identical in
+  lockstep with it, game state included.
+* Tried and reverted (no gain, though pixel-identical): in level flight,
+  top corners reusing their bottom's near/left/right outcode bits; skipping
+  those bits for every corner of a building surely inside the near and side
+  planes; and the occlusion pre-test patching each Z once (2 `zpatch`
+  rather than 3). The shortcuts' own tests and bookkeeping cost about what
+  they saved: an outcode's near/left/right part is only about 100 T, a
+  `zpatch` about 200 T. Measured: 0.1–0.6% slower.
+* Measured and not done: a per-frame cache of projected corners (only
+  10–24 corners a frame have exactly the same numbers as their row
+  neighbour's, out of 100–150, and the previous building's corners would
+  have to be kept: about 0–1% at best) and walking a building's shared
+  vertical edge once (about 0.5%: vertical edges already take the fast
+  fill).
 
 ## Tuning
 

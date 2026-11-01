@@ -214,7 +214,7 @@ zblip_red:
         jp map_pix
 
 ;------------------------------------------------------------------------------
-; Human dots: flashing blue (HUMAN_BLIP), using record bytes +7,+8 (dot cell)
+; Human dots: flashing bright blue (HUMAN_BLIP), using record bytes +7,+8 (dot cell)
 ; and +9 (shown).
 ;------------------------------------------------------------------------------
 ; C = 1: show, 0: hide the map dots of all waiting humans

@@ -3,28 +3,34 @@
 ; slot 6)
 ;
 ; From the main menu (option 9, keydef_go pages it in).  Lists every control
-; (K_ACTIONS of them) with its key (key_defs, keys.asm).
+; (K_ACTIONS of them) with its key (key_defs) and its joystick input
+; (joy_defs, "-" for none; input.asm).
 ;   Q / A  move the highlight up / down the list (white; highlighted green)
-;   SPACE  "SELECT KEY", a second's pause, then the next key pressed becomes
-;          the highlighted control's key, unless another control already
-;          uses it: then "KEY ALREADY IN USE" (for a second) and no change
-;   0      every key back to its default (key_defaults, keys.asm)
+;   SPACE  "PRESS A KEY OR JOYSTICK", a second's pause, then the next input
+;          becomes the highlighted control's key, or its joystick input if
+;          it is a joystick's, unless another control already uses it: then
+;          "KEY ALREADY IN USE" (for a second) and no change
+;   0      every key and joystick input back to its default (key_defaults,
+;          joy_defaults)
 ;   1      back to the main menu (menu_go)
 ; These keys are fixed (key_code_pressed), whatever the controls are set to.
-; Uses the resident text routines (text.asm) and the keys page in slot 7.
+; Uses the resident text routines (text.asm) and the input page in slot 7.
 ;==============================================================================
 
-KD_ROW0         equ 2               ; first row of the list
+KD_ROW0         equ 1               ; first row of the list (under the title)
 KD_NAME_COL     equ 1               ; control names,
-KD_KEY_COL      equ 18              ; their keys
-KD_KEY_LEN      equ 7               ; key names are at most this long
+KD_KEY_COL      equ 16              ; their keys,
+KD_KEY_LEN      equ 7               ;   (key names at most this long)
+KD_JOY_COL      equ 24              ; their joystick inputs
+KD_JOY_LEN      equ 8               ;   (joystick names at most this long)
+        ASSERT KD_KEY_COL + KD_KEY_LEN < KD_JOY_COL && KD_JOY_COL + KD_JOY_LEN <= 32
 KD_MSG_ROW      equ 21              ; messages
 KD_PAUSE        equ 50              ; a second of 50 Hz frames
         ASSERT KD_ROW0 + K_ACTIONS <= KD_MSG_ROW
 
 keydef_screen:
         ld sp,stack_top
-        nextreg CODE_MMU,PAGE_KEYS      ; the keys at $E000
+        nextreg CODE_MMU,PAGE_INPUT     ; the input page at $E000
         call menu_clear
         ld hl,kd_text                   ; title and help
 .txt:   ld a,(hl)
@@ -50,9 +56,9 @@ keydef_screen:
         ld hl,KB_0                      ; the defaults
         call key_code_pressed
         jr z,.up
-        ld hl,key_defaults
-        ld de,key_defs
-        ld bc,K_ACTIONS*2
+        ld hl,key_defaults              ; (and joy_defaults, after it)
+        ld de,key_defs                  ; (and joy_defs)
+        ld bc,2*K_ACTIONS*2
         ldir
         jr .draw
 .up:    ld hl,KB_Q
@@ -80,8 +86,9 @@ keydef_screen:
         jr .draw
 
 ;------------------------------------------------------------------------------
-; SPACE: "SELECT KEY", a second's pause, then the next key pressed becomes
-; the highlighted control's key, if no other control uses it
+; SPACE: "PRESS A KEY OR JOYSTICK", a second's pause, then the next input
+; becomes the highlighted control's key (or its joystick input, if it is a
+; joystick's), if no other control uses it
 kd_change:
         ld hl,txt_kd_select
         ld c,MENU_TITLE
@@ -98,8 +105,13 @@ kd_change:
         call kd_new_key
         jr z,.w
         ld (kd_code),de
+        ld hl,key_defs                  ; a key, or a joystick input?
+        ld a,d
+        cp JOY_BANK
+        jr c,.t
+        ld hl,joy_defs
+.t:     ld (kd_table),hl
         ld b,0                          ; in use by another control?
-        ld hl,key_defs
 .u:     ld a,(kd_cur)
         cp b
         jr z,.nu                        ; (its own key: fine)
@@ -117,9 +129,9 @@ kd_change:
         ld a,b
         cp K_ACTIONS
         jr nz,.u
-        ld a,(kd_cur)                   ; free: it's the control's key now
-        add a,a
-        ld hl,key_defs
+        ld a,(kd_cur)                   ; free: it's the control's key (or
+        add a,a                         ; joystick input) now
+        ld hl,(kd_table)
         add hl,a
         ld de,(kd_code)
         ld (hl),e
@@ -141,8 +153,8 @@ kd_change:
         ld c,MENU_ATTR
         jp kd_msg
 
-; NZ if a key went down since the last scan: DE = its key code (bank in D,
-; its bit in E; the lowest bank and bit if several)
+; NZ if an input (a key or a joystick's) went down since the last scan: DE =
+; its code (bank in D, its bit in E; the lowest bank and bit if several)
 kd_new_key:
         ld hl,key_now
         ld d,0
@@ -181,7 +193,8 @@ kd_msg:
         jp menu_print
 
 ;------------------------------------------------------------------------------
-; The list: each control's name and key, the highlighted one green
+; The list: each control's name, key and joystick input, the highlighted
+; one green
 kd_draw:
         xor a
 .lp:    ld (kd_i),a
@@ -207,39 +220,55 @@ kd_draw:
         ld a,(kd_attr)
         ld c,a
         call menu_print
-        ld a,(kd_i)                     ; its key: clear the field, then
-        add a,KD_ROW0                   ; the key's name
-        ld d,a
-        ld e,KD_KEY_COL
-        ld a,(kd_attr)
-        ld c,a
-        push de
-        push bc
-        ld hl,txt_kd_keyblank
-        call menu_print
-        pop bc
-        pop de
-        push de
-        push bc
-        ld a,(kd_i)
+        ld a,(kd_i)                     ; its key
         add a,a
         ld hl,key_defs
         add hl,a
-        ld e,(hl)
-        inc hl
-        ld d,(hl)
-        call kd_key_name                ; HL -> its name
-        pop bc
-        pop de
-        call menu_print
+        ld e,KD_KEY_COL
+        ld bc,txt_kd_keyblank
+        call kd_field
+        ld a,(kd_i)                     ; its joystick input
+        add a,a
+        ld hl,joy_defs
+        add hl,a
+        ld e,KD_JOY_COL
+        ld bc,txt_kd_joyblank
+        call kd_field
         ld a,(kd_i)
         inc a
         cp K_ACTIONS
         jr nz,.lp
         ret
 
-; DE = key code (bank D, bit mask E) -> HL -> its name ("?" if unknown)
+; Row kd_i in colour kd_attr: HL -> an input's code, E = column, BC -> the
+; field's blanks: the field cleared, then the input's name
+kd_field:
+        push hl
+        ld a,(kd_i)
+        add a,KD_ROW0
+        ld d,a
+        ld (kd_at),de
+        ld h,b
+        ld l,c
+        ld a,(kd_attr)
+        ld c,a
+        call menu_print                 ; the field cleared
+        pop hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        call kd_key_name                ; HL -> its name
+        ld de,(kd_at)
+        ld a,(kd_attr)
+        ld c,a
+        jp menu_print
+
+; DE = an input's code (bank D, bit mask E) -> HL -> its name ("-" if none,
+; "?" if unknown)
 kd_key_name:
+        ld a,e
+        or a
+        jr z,.none                      ; (no input: a mask of 0)
         ld a,d
         cp KEY_BANKS
         jr nc,.unk
@@ -262,31 +291,41 @@ kd_key_name:
         ret
 .unk:   ld hl,kn_unk
         ret
+.none:  ld hl,kn_none
+        ret
 
 ;------------------------------------------------------------------------------
 ; Redefine keys page data
 ;------------------------------------------------------------------------------
 kd_text:
-        db 0, 9, MENU_TITLE
-        db "REDEFINE KEYS", 0
+        db 0, KD_NAME_COL, MENU_TITLE   ; the title, over the controls'
+        db "REDEFINE KEYS", 0           ; names, and the columns' headings
+        db 0, KD_KEY_COL, MENU_TITLE
+        db "KEY", 0
+        db 0, KD_JOY_COL, MENU_TITLE
+        db "JOYSTICK", 0
         db 22, 1, MENU_ATTR
         db "Q A: CHOOSE   SPACE: CHANGE", 0
         db 23, 1, MENU_ATTR
         db "0: DEFAULTS   1: MAIN MENU", 0
         db $FF
 
-txt_kd_select:  db "SELECT KEY", 0
+txt_kd_select:  db "PRESS A KEY OR JOYSTICK", 0
 txt_kd_used:    db "KEY ALREADY IN USE", 0
 txt_kd_blank:   db "                              ", 0
 txt_kd_keyblank: db "       ", 0
         ASSERT $ - txt_kd_keyblank == KD_KEY_LEN + 1
+txt_kd_joyblank: db "        ", 0
+        ASSERT $ - txt_kd_joyblank == KD_JOY_LEN + 1
 
-; The controls' names, by K_* (keys.asm)
+; The controls' names, by K_* (input.asm)
 kd_names:   dw kc_0, kc_1, kc_2, kc_3, kc_4, kc_5, kc_6, kc_7, kc_8, kc_9
-            dw kc_10, kc_11, kc_12, kc_13, kc_14, kc_15, kc_16, kc_17
+            dw kc_10, kc_11, kc_12, kc_13, kc_14, kc_15, kc_16, kc_17, kc_18
+            dw kc_19
         ASSERT ($ - kd_names)/2 == K_ACTIONS
         ASSERT K_SPEED_UP == 0 && K_FIRE == 9 && K_GUN_UP == 10
-        ASSERT K_SLOT1 == 11 && K_GUN_DN == 16 && K_GUN_CTR == 17
+        ASSERT K_SLOT1 == 11 && K_GUN_DN == 16 && K_GUN_CTR == 17 && K_PAUSE == 18
+        ASSERT K_BOOST == 19
 kc_0:   db "SPEED UP", 0
 kc_1:   db "SPEED DOWN", 0
 kc_2:   db "AIR BRAKE", 0
@@ -305,8 +344,11 @@ kc_14:  db "WEAPON SLOT 4", 0
 kc_15:  db "WEAPON SLOT 5", 0
 kc_16:  db "GUN TILT DOWN", 0
 kc_17:  db "GUN CENTRE", 0
+kc_18:  db "PAUSE", 0
+kc_19:  db "BOOST", 0
 
-; Key names by bank and bit (the KB_* codes, keys.asm): 8 per bank
+; Input names by bank and bit (the KB_* and J1_* / J2_* codes, input.asm):
+; 8 per bank
 kd_keys:
         dw kn_shift, kn_z, kn_x, kn_c, kn_v, kn_unk, kn_unk, kn_unk          ; 0
         dw kn_a, kn_s, kn_d, kn_f, kn_g, kn_unk, kn_unk, kn_unk              ; 1
@@ -318,10 +360,15 @@ kd_keys:
         dw kn_space, kn_sym, kn_m, kn_n, kn_b, kn_unk, kn_unk, kn_unk        ; 7
         dw kn_right, kn_left, kn_down, kn_up, kn_period, kn_comma, kn_quote, kn_semi   ; 8
         dw kn_extend, kn_caps, kn_graph, kn_truevid, kn_invvid, kn_break, kn_edit, kn_delete ; 9
+        dw kn_j1r, kn_j1l, kn_j1d, kn_j1u, kn_j1f, kn_j1c, kn_j1a, kn_j1s    ; 10: port $1F
+        dw kn_j2r, kn_j2l, kn_j2d, kn_j2u, kn_j2f, kn_j2c, kn_j2a, kn_j2s    ; 11: port $37
+        dw kn_j1m, kn_j1y, kn_j1z, kn_j1x, kn_j2m, kn_j2y, kn_j2z, kn_j2x    ; 12: NextReg $B2
         ASSERT $ - kd_keys == KEY_BANKS*16
         ASSERT KB_SHIFT == $0001 && KB_A == $0101 && KB_Q == $0201 && KB_1 == $0301
         ASSERT KB_0 == $0401 && KB_P == $0501 && KB_ENTER == $0601 && KB_SPACE == $0701
         ASSERT KB_RIGHT == $0801 && KB_SEMI == $0880 && KB_EXTEND == $0901 && KB_DELETE == $0980
+        ASSERT J1_RIGHT == $0A01 && J1_START == $0A80 && J2_RIGHT == $0B01 && J2_START == $0B80
+        ASSERT J1_MODE == $0C01 && J1_X == $0C08 && J2_MODE == $0C10 && J2_X == $0C80
 kn_shift:   db "CAPS SH", 0
 kn_z:       db "Z", 0
 kn_x:       db "X", 0
@@ -378,9 +425,36 @@ kn_invvid:  db "INVVID", 0
 kn_break:   db "BREAK", 0
 kn_edit:    db "EDIT", 0
 kn_delete:  db "DELETE", 0
+kn_j1r:     db "J1 RIGHT", 0
+kn_j1l:     db "J1 LEFT", 0
+kn_j1d:     db "J1 DOWN", 0
+kn_j1u:     db "J1 UP", 0
+kn_j1f:     db "J1 FIRE", 0
+kn_j1c:     db "J1 C", 0
+kn_j1a:     db "J1 A", 0
+kn_j1s:     db "J1 START", 0
+kn_j2r:     db "J2 RIGHT", 0
+kn_j2l:     db "J2 LEFT", 0
+kn_j2d:     db "J2 DOWN", 0
+kn_j2u:     db "J2 UP", 0
+kn_j2f:     db "J2 FIRE", 0
+kn_j2c:     db "J2 C", 0
+kn_j2a:     db "J2 A", 0
+kn_j2s:     db "J2 START", 0
+kn_j1m:     db "J1 MODE", 0
+kn_j1y:     db "J1 Y", 0
+kn_j1z:     db "J1 Z", 0
+kn_j1x:     db "J1 X", 0
+kn_j2m:     db "J2 MODE", 0
+kn_j2y:     db "J2 Y", 0
+kn_j2z:     db "J2 Z", 0
+kn_j2x:     db "J2 X", 0
 kn_unk:     db "?", 0
+kn_none:    db "-", 0
 
 kd_cur:     db 0                        ; the highlighted control
 kd_i:       db 0                        ; kd_draw: the row being drawn
 kd_attr:    db 0                        ;   its colour
-kd_code:    dw 0                        ; kd_change: the key pressed
+kd_code:    dw 0                        ; kd_change: the input pressed,
+kd_table:   dw 0                        ;   and key_defs or joy_defs for it
+kd_at:      dw 0                        ; kd_field: its row and column

@@ -10,12 +10,15 @@ MENU_TITLE      equ P_PANEL<<3 | C_YEL      ; yellow
 MENU_OK         equ P_PANEL<<3 | C_OK       ; green
 MENU_BAD        equ P_PANEL<<3 | C_WARN     ; red
 
-; Hide Layer 2, and blank the ULA screen with opaque paper
+; Hide Layer 2, silence the AY chips, and blank the ULA screen with opaque
+; paper
 menu_clear:
         nextreg CODE_MMU,PAGE_SPRITES   ; no HUD sprites over the menu
         call spr_hide_all
         call spr_update
-        nextreg CODE_MMU,PAGE_KEYS      ; (the menu reads the keys)
+        nextreg CODE_MMU,PAGE_AUDIO     ; and silence: the engines off
+        call init_audio                 ; (audio.asm)
+        nextreg CODE_MMU,PAGE_INPUT     ; (the menu reads the keys)
         ld bc,$123B
         xor a
         out (c),a

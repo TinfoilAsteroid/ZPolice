@@ -22,7 +22,7 @@
 ;  (slots and pages).  Game logic pages, swapped into slot 6 at $C000:
 ;  player.asm (input/movement), weapons.asm, menu.asm (main menu).  Core
 ;  function pages, swapped into slot 7 at $E000: city.asm (Layer 2
-;  drawing), hud.asm (ULA HUD), keys.asm (redefinable keys), sprites.asm
+;  drawing), hud.asm (ULA HUD), input.asm (redefinable keys, joysticks), sprites.asm
 ;  (hardware sprites).  Always mapped: zombie.asm at $2000, human.asm and
 ;  map.asm (the city map) at $7000.
 ;
@@ -122,13 +122,27 @@ SPEED_STEP      equ 1           ; Q / A: speed change a frame, units/frame
         ASSERT SPEED_STEP == 1
 ; Air brake (Z): the speed falls by twice the Q / A step every frame, to 0
 AIRBRAKE_STEP   equ 2*SPEED_STEP    ; 2 units/frame (2.2 m/s)
+; Booster module (a salvage reward, fitted at once: boost_fitted).  The
+; boost control (K_BOOST, X) puts the speed straight to BOOST_SPEED, twice
+; SPEED_MAX, if going forwards at BOOST_MIN or more with fuel left; again,
+; or out of fuel, puts back the speed it had (boost_spd).  Q, A and Z don't
+; change the speed while boosting.  Each boosted frame burns 1 fuel
+; (boost_fuel, at most BOOST_FUEL_MAX); landed on the pad it refuels 1 a
+; frame (pad_service).  HUD: the B gauge, and the speed bar amber.
+BOOST_SPEED     equ 2*SPEED_MAX     ; 56 units/frame
+BOOST_MIN       equ SPEED_MAX/2     ; 14: at least half speed, forwards
+BOOST_FUEL_MAX  equ 200
+        ASSERT BOOST_SPEED < 128 && BOOST_FUEL_MAX < 256
 ; Pitch damper: with neither E nor D held, the nose eases back to level.
 ; Every PDAMP_FRAMES frames the 8.8 pitch moves towards 0 by
-; max(PDAMP_MIN, |pitch| * PDAMP_K) in 1/256ths of a pitch unit, i.e. by a
-; fixed share of what is left, so it slows down as it nears level.
+; max(PDAMP_MIN, |pitch| * PDAMP_K) in 1/256ths of a pitch unit.  With
+; PDAMP_K 0 that is a steady PDAMP_MIN a frame: half a pitch unit, half the
+; rate of the nose keys (1 unit a frame), however far it is from level.  (A
+; PDAMP_K above 0 adds a share of what is left, faster when far off: 43, as
+; it was, returned up to 4 units a frame from full pitch.)
 PDAMP_FRAMES    equ 1           ; frames between damping steps
-PDAMP_K         equ 43          ; 43/256: about 1/6 of the pitch per step
-PDAMP_MIN       equ 32          ; smallest step, 1/8 unit, so it reaches 0
+PDAMP_K         equ 0           ; no share: a steady rate
+PDAMP_MIN       equ 128         ; 128/256: half a pitch unit a frame
 MIN_Y           equ 8           ; lowest flight: 0.6 m
 MAX_Y           equ 3*HEIGHT_UNITS/2  ; ceiling 1.5 height units: 15 m
 BLD_MAX_H       equ 7*HEIGHT_UNITS  ; tallest building 7.0 height units: 70 m
@@ -351,6 +365,11 @@ START_LEVEL     equ 1
 ; the next city's first level.  0 for a release.
 DEBUG_KILLALL   equ 1
 
+; Debug: a new game starts with every weapon unlocked and DEBUG_STOCK of each
+; in store, to try them on the load-out screen.  0 for a release.
+DEBUG_LOADOUT   equ 1
+DEBUG_STOCK     equ 4
+
 ; Zombies against the base (zombie.asm)
 ZBIAS_BASE      equ 48          ; junction bias towards the pad, percent:
 ZBIAS_STEP      equ 2           ; 48 + 2 * level (50% on level 1),
@@ -383,7 +402,9 @@ LASER_COL       equ 35
 MAP_BG          equ 39
 MAP_ZOMBIE      equ HUD_COL     ; zombie blips on the city map: bright green
 HUMAN_COL       equ 43
-HUMAN_BLIP      equ 47
+HUMAN_BLIP      equ 47          ; humans on the city map: bright blue,
+HUM_FLASH       equ 2           ;   on this many frames, off as many (half
+                                ;   the VTOL's dot's rate: 2 on, 2 off)
 MAP_ZOMBIE_MID  equ 51          ; zombie blip shades (bright = MAP_ZOMBIE)
 MAP_ZOMBIE_DARK equ 55
 MAP_ZOMBIE_ATK  equ HUD_WARN    ; a zombie attacking the base: red
@@ -447,6 +468,7 @@ GAUGE_H         equ 48
 GAUGE_LROW      equ 23              ; label row
 SPD_GCOL        equ 1
 ALT_GCOL        equ 3
+BST_GCOL        equ 5               ; the booster's fuel ("B"), once fitted
 ; (The compass is a bar of hardware sprites: hud_sprites.asm)
 PAX_ROW         equ 17              ; the panel's top row (pixel row 136):
 WPN_ROW         equ PAX_ROW         ; the weapon slots: 8x16 boxes on character
@@ -546,6 +568,7 @@ boot_stack:
         INCLUDE "l2_pallets.asm"        ; (checks on the fixed colour slots)
         INCLUDE "levels.asm"            ; the current level's record
         INCLUDE "text.asm"              ; text screens: menu, load-out
+        INCLUDE "sfx_data.asm"          ; the sound effects (sfx_tick plays them)
 
 ;==============================================================================
 ; Entry
@@ -567,8 +590,9 @@ start:
         ld l,a                          ; the menu stirs it every frame
         ld h,$A5
         ld (zseed),hl
-        nextreg CODE_MMU,PAGE_KEYS
-        call kbd_double_off             ; NextReg $68 bit 4 = KBD_STOP_DOUBLING
+        nextreg CODE_MMU,PAGE_INPUT     ; the extended keys only in their own
+        call kbd_double_on              ; banks (BREAK, the pause key, not
+                                        ; also CAPS SHIFT + SPACE, fire)
         nextreg CODE_MMU,PAGE_HUD
         call ula_palette                ; ULA inks and papers (menu and HUD)
         nextreg CODE_MMU,PAGE_SPRITES
@@ -576,6 +600,8 @@ start:
         nextreg CODE_MMU,PAGE_SPR0      ; sprite bank 0: the human status
         call spr_load_bank              ; sprites (sprite_data.asm)
         nextreg LOGIC_MMU,PAGE_MENU     ; (the menu pages the keys in)
+        ei                              ; interrupts on, from now on (the
+                                        ; engines' sound: interrupts.asm)
         jp main_menu                    ; (menu.asm) -> newGame
 
 ;==============================================================================
@@ -586,6 +612,14 @@ start:
 ;==============================================================================
 newGame:
         ld sp,stack_top                 ; (entered by jp from the menu)
+        call game_reset
+        jp loadout_go                   ; the load-out screen first, then the
+                                        ; first level (next_level)
+
+; A new game's state: the player, weapons, store, salvage, booster (and the
+; debug load-out), level START_LEVEL.  (CONTINUE lays a save game over it:
+; continue_game.)
+game_reset:
         ld hl,start_state               ; player, weapon slots, selection
         ld de,cam_x
         ld bc,start_state_end-start_state
@@ -624,11 +658,34 @@ newGame:
         djnz .wu
         xor a
         ld (wpn_unlocked+WPN_NONE),a    ; (an empty slot isn't a weapon)
-        ; fall through: the first level
+        ld (boost_fitted),a             ; no booster (a salvage reward)
+        ld (boost_fuel),a
+        ld (boost_on),a
+    IF DEBUG_LOADOUT
+        ld hl,wpn_stock+1               ; debug: every weapon unlocked, and
+        ld b,WPN_LAST                   ; DEBUG_STOCK of each in store (not
+.dbg:   ld a,WPN_LAST+1                 ; the bomb: none yet)
+        sub b                           ; (the type)
+        cp WPN_BOMB
+        jr z,.dbn
+        ld (hl),DEBUG_STOCK
+        ld de,wpn_unlocked-wpn_stock
+        add hl,de
+        ld (hl),1
+        or a
+        sbc hl,de
+.dbn:   inc hl
+        djnz .dbg
+        ld a,1                          ; and the booster fitted, full
+        ld (boost_fitted),a
+        ld a,BOOST_FUEL_MAX
+        ld (boost_fuel),a
+    ENDIF
+        ret
 
 ;==============================================================================
-; Start the level `level`: on newGame, and after each level completed
-; (level_complete_screen).  The VTOL goes back onto the base pad, level and
+; Start the level `level`: from the load-out screen, after newGame and after
+; each level completed (level_complete_screen).  The VTOL goes back onto the base pad, level and
 ; still; its hit points, weapons and ammo carry on.  The level's files are
 ; loaded and everything in the city is set up afresh.
 ;==============================================================================
@@ -643,9 +700,12 @@ next_level:
         ld bc,(NBULLETS+1)*BREC+NPART*PREC-1    ; and no particles
         ld (hl),0
         ldir
+        ld a,(resume_wave)              ; the level's first zombie wave (or a
+        ld (wave_number),a              ; save game's: continue_game)
         ld a,1
-        ld (wave_number),a              ; the level's first zombie wave
+        ld (resume_wave),a              ; (once)
         xor a
+        ld (boost_on),a                 ; (not boosting: start_state's speed)
         ld (level_done),a
         ld (game_over),a
         nextreg LOGIC_MMU,PAGE_LEVEL    ; the level's files: its record, its
@@ -655,6 +715,13 @@ next_level:
         nextreg LOGIC_MMU,PAGE_MENU     ; couldn't: say so, back to the menu
         jp load_error_screen            ; (menu.asm)
 .loaded:
+        ld a,(level_cur+LV_WAVES)       ; (a save game's wave: within the
+        ld hl,wave_number               ; level's waves)
+        cp (hl)
+        jr nc,.wok
+        ld (hl),a
+.wok:   nextreg CODE_MMU,PAGE_AUDIO     ; the engines on (audio.asm; the
+        call engine_start               ; interrupt plays them)
         call base_init                  ; the pad and terrace, at full strength
         nextreg LOGIC_MMU,PAGE_WEAPONS
         call weapons_reset
@@ -685,8 +752,11 @@ next_level:
 ; Main loop
 ;==============================================================================
 main_loop:
-        nextreg CODE_MMU,PAGE_KEYS      ; keys at $E000, while the logic runs
-        call kbd_scan                   ; all key banks
+        nextreg CODE_MMU,PAGE_INPUT     ; input at $E000, while the logic runs
+        call kbd_scan                   ; all key and joystick banks
+        ld a,K_PAUSE                    ; paused until the pause control is
+        call key_pressed                ; pressed again
+        call nz,game_pause
         nextreg LOGIC_MMU,PAGE_PLAYER   ; input/movement logic at $C000
         call update_player
         call setup_frame
@@ -947,6 +1017,206 @@ keydef_go:
 menu_go:
         nextreg LOGIC_MMU,PAGE_MENU
         jp main_menu
+
+;------------------------------------------------------------------------------
+; Paused (main_loop: the pause control, K_PAUSE, BREAK or a Mega Drive pad's
+; START by default): PAUSED over the view, white on an opaque black ULA box,
+; and under it S: SAVE AND QUIT, until the pause control is pressed again.
+; Nothing moves meanwhile and the screen keeps its last frame.  S (fixed:
+; only while paused) saves the game (save_game) and goes back to the main
+; menu; if it can't be saved, SAVE FAILED, and it stays paused.  (Not in a
+; wreck: nothing to save.)  Needs the input page in slot 7.
+;------------------------------------------------------------------------------
+PAUSE_ROW       equ 7               ; ULA character row and column of the box
+PAUSE_COL       equ 12
+PAUSE_ROW2      equ 9               ; and of the save line
+PAUSE_COL2      equ 7
+PAUSE_ATTR      equ 2<<3 | 7        ; paper 2 (opaque black), ink 7 (white)
+VIEW_ATTR       equ %01000111       ; the viewport's own (ula_init): transparent
+game_pause:
+        ld hl,txt_paused
+        ld de,PAUSE_ROW<<8 | PAUSE_COL
+        ld c,PAUSE_ATTR
+        call menu_print
+        ld a,(vtol_dead)
+        or a
+        jr nz,.w                        ; (a wreck: no saving)
+        ld hl,txt_pause_save
+        ld de,PAUSE_ROW2<<8 | PAUSE_COL2
+        ld c,PAUSE_ATTR
+        call menu_print
+.w:     call menu_frame
+        call kbd_scan
+        ld a,(vtol_dead)
+        or a
+        jr nz,.np
+        ld hl,KB_S                      ; save and quit
+        call key_code_pressed
+        jr nz,.save
+.np:    ld a,K_PAUSE
+        call key_pressed
+        jr z,.w
+        ld hl,txt_unpaused              ; the box gone: the view again
+        ld de,PAUSE_ROW<<8 | PAUSE_COL
+        ld c,VIEW_ATTR
+        call menu_print
+        ld hl,txt_unpaused2
+        ld de,PAUSE_ROW2<<8 | PAUSE_COL2
+        ld c,VIEW_ATTR
+        jp menu_print
+.save:  call save_game                  ; (pages the file handler in)
+        jr c,.fail
+        nextreg LOGIC_MMU,PAGE_MENU     ; saved: the main menu
+        ld sp,stack_top
+        jp main_menu
+.fail:  nextreg CODE_MMU,PAGE_INPUT     ; couldn't: say so, still paused
+        ld hl,txt_save_fail
+        ld de,PAUSE_ROW2<<8 | PAUSE_COL2
+        ld c,PAUSE_ATTR
+        call menu_print
+        jr .w
+
+txt_paused:     db " PAUSED ", 0
+txt_unpaused:   db "        ", 0
+        ASSERT txt_unpaused - txt_paused == $ - txt_unpaused
+txt_pause_save: db " S: SAVE AND QUIT ", 0
+txt_save_fail:  db "   SAVE FAILED    ", 0
+txt_unpaused2:  db "                  ", 0
+        ASSERT txt_save_fail - txt_pause_save == txt_unpaused2 - txt_save_fail
+        ASSERT txt_unpaused2 - txt_save_fail == $ - txt_unpaused2
+
+;------------------------------------------------------------------------------
+; Save games: ZPDATA/SAVEGAME.ZPS (beside the level files), one game.  Written
+; by save and quit (game_pause: save_game), read by CONTINUE on the main menu
+; (load_save, continue_game).  "ZPSV", SG_VERSION, then the fields in
+; sg_fields, in order: the level and wave, the salvage, the VTOL's integrity
+; (vtol_hp), its weapon slots (type and ammo each) and the selected one, the
+; store (wpn_stock, wpn_unlocked), and the booster (fitted, fuel).
+; Continued, the level starts afresh at the saved wave: its zombies, the
+; humans (and this level's rescues so far) and the base are new.
+;------------------------------------------------------------------------------
+SG_VERSION      equ 1
+sg_fields:      ; address, bytes
+        dw level
+        db 1
+        dw wave_number
+        db 1
+        dw salvage_points
+        db 2
+        dw vtol_hp
+        db 1
+        dw wpn_slots
+        db WPN_SLOTS*2
+        dw wpn_sel
+        db 1
+        dw wpn_stock
+        db WPN_LAST+1
+        dw wpn_unlocked
+        db WPN_LAST+1
+        dw boost_fitted                 ; (and boost_fuel, after it)
+        db 2
+        dw 0                            ; (the end)
+        ASSERT boost_fuel == boost_fitted+1
+SG_SIZE         equ 5+1+1+2+1+WPN_SLOTS*2+1+2*(WPN_LAST+1)+2
+
+; Copy the fields: A = 0 the game's into sg_buf, 1 sg_buf's into the game
+sg_copy:
+        ld (sg_dir),a
+        ld ix,sg_fields
+        ld de,sg_buf+5
+.lp:    ld l,(ix+0)
+        ld h,(ix+1)
+        ld a,h
+        or l
+        ret z
+        ld c,(ix+2)
+        ld b,0
+        ld a,(sg_dir)
+        or a
+        jr z,.out
+        ex de,hl                        ; into the game: HL = sg_buf
+        ldir
+        ex de,hl
+        jr .nx
+.out:   ldir                            ; out of it: HL = the field
+.nx:    ld bc,3
+        add ix,bc
+        jr .lp
+
+; Save the game.  Carry set (A = the esxDOS error) if it couldn't be
+; written.  Leaves the file handler in slot 7.
+save_game:
+        ld hl,sg_magic
+        ld de,sg_buf
+        ld bc,4
+        ldir
+        ld a,SG_VERSION
+        ld (de),a
+        xor a
+        call sg_copy
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,sg_name
+        ld de,sg_buf
+        ld bc,SG_SIZE
+        jp fh_save
+
+; Read the save game into sg_buf: carry set if there's none, or it isn't a
+; save game this version can use (its level out of range too).  Leaves the
+; file handler in slot 7.
+load_save:
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,sg_name
+        ld de,sg_buf
+        ld bc,SG_SIZE
+        call fh_load
+        ret c
+        ld hl,-SG_SIZE                  ; all of it?
+        add hl,bc
+        ld a,h
+        or l
+        jr nz,.bad
+        ld hl,sg_buf
+        ld de,sg_magic
+        ld b,4
+.m:     ld a,(de)
+        cp (hl)
+        jr nz,.bad
+        inc hl
+        inc de
+        djnz .m
+        ld a,(hl)
+        cp SG_VERSION
+        jr nz,.bad
+        ld a,(sg_buf+5)                 ; its level (sg_fields' first)
+        or a
+        jr z,.bad
+        cp LEVEL_LAST+1
+        jr nc,.bad
+        or a                            ; usable: carry clear
+        ret
+.bad:   scf
+        ret
+
+; CONTINUE (main menu, after load_save): a new game with the save game's
+; fields over it, into its level at its wave
+continue_game:
+        ld sp,stack_top
+        call game_reset
+        ld a,1
+        call sg_copy
+        ld a,(wave_number)
+        or a
+        jr nz,.w
+        inc a
+.w:     ld (resume_wave),a
+        jp next_level
+
+sg_name:    db "ZPDATA/SAVEGAME.ZPS", 0
+sg_magic:   db "ZPSV"
+sg_dir:     db 0
+resume_wave: db 1                       ; next_level's first wave (1, or a
+                                        ; save game's: continue_game)
+sg_buf:     ds SG_SIZE
 
 ; Z if the VTOL is landed: speed 0 and resting on the floor under it (the
 ; road, the landing pad or a roof: floor_y), and not a wreck.  Landed, its
@@ -1323,6 +1593,10 @@ wpn_stock:  ds WPN_LAST+1
 ; 1: the weapon type has been unlocked (fitted at the start, or by salvage):
 ; the load-out screen lists it, even with none in store (newGame)
 wpn_unlocked: ds WPN_LAST+1
+boost_fitted: db 0                      ; 1: the booster module (salvage)
+boost_fuel: db 0                        ; its fuel, 0..BOOST_FUEL_MAX
+boost_on:   db 0                        ; 1: boosting (speed BOOST_SPEED)
+boost_spd:  db 0                        ; the speed before the boost
         ASSERT wpn_unlocked == wpn_stock + WPN_LAST + 1
 vg_sin:     dw 0                        ; vtol_ground: heading sin, cos,
 vg_cos:     dw 0
@@ -1398,10 +1672,10 @@ stack_top:
         INCLUDE "hud.asm"
         DISPLAY "HUD end:   ",/A,$
 
-        MMU CODE_SLOT e, PAGE_KEYS, CODE_ADDR
+        MMU CODE_SLOT e, PAGE_INPUT, CODE_ADDR
         ORG CODE_ADDR
-        INCLUDE "keys.asm"
-        DISPLAY "Keys end:  ",/A,$
+        INCLUDE "input.asm"
+        DISPLAY "Input end: ",/A,$
 
         MMU CODE_SLOT e, PAGE_SPRITES, CODE_ADDR
         ORG CODE_ADDR

@@ -259,20 +259,21 @@ hum_unload_all:
 human_update:
         ld hl,hanim
         inc (hl)
-        ; map dots: on for frames 0-2 of every 6, off for 3-5
+        ; map dots: on for HUM_FLASH frames, off for HUM_FLASH (1: every
+        ; other frame, as the VTOL's dot, map_player)
         ld hl,hflash
         ld a,(hl)
         inc a
-        cp 6
+        cp 2*HUM_FLASH
         jr c,.f
         xor a
 .f:     ld (hl),a
         or a
         ld c,1
-        jr z,.dots                      ; frame 0: show
-        cp 3
+        jr z,.dots                      ; phase 0: show
+        cp HUM_FLASH
         ld c,0
-        call z,hum_dots                 ; frame 3: hide
+        call z,hum_dots                 ; phase HUM_FLASH: hide
         jr .resc
 .dots:  call hum_dots
 .resc:  ; landed?  speed 0, resting on the floor under the craft (and
@@ -339,7 +340,7 @@ human_update:
         call hum_flags                  ; someone moved or boarded
         ld c,1                          ; and redraw the dots that are on
         ld a,(hflash)
-        cp 3
+        cp HUM_FLASH
         ret nc
         jp hum_dots
 
@@ -457,7 +458,7 @@ saved:      db 0                        ; humans delivered to the base
 dis_wait:   db DISEMBARK                ; frames to the next one getting off
 hu_cell:    db 0                        ; map byte under the craft
 hanim:      db 0                        ; waving animation clock
-hflash:     db 0                        ; map dot flash phase 0..5
+hflash:     db 0                        ; map dot flash phase 0..2*HUM_FLASH-1
 hc_idx:     dw 0
 hu_floor:   dw 0
 hu_moved:   db 0

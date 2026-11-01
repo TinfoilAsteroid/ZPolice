@@ -12,26 +12,34 @@ vtx:        ds 8*16                     ; X,Y,Z,oc,sx,sy + pad
 p2buf:      ds 4*16                     ; x,y,edge flag,pad
 
         ALIGN 256
-; Unrolled span writer: entry = push_end - pairs
+; Unrolled span writer: entry = push_end - 1 - pairs (pairs 1..128).  SP is
+; borrowed (it points into the span), so an interrupt pushes its return
+; address just below SP: harmless while PUSHes remain, as they overwrite it,
+; but not after the last one.  So interrupts are off from just before the
+; last PUSH until SP is back (a few instructions: one arriving meanwhile
+; waits, as the interrupt line is held far longer).  The routine
+; (im2_routine) also switches to its own stack at once.
 push_blk:
-        REPT 128
+        REPT 127
         push de
         ENDR
+        di                              ; (no interrupt after the last PUSH
+        push de                         ; with SP still borrowed)
 push_end:
-        ld a,b
-        inc b
-        cp ixl
-        jr z,.done
+        ld sp,iy                        ; (fill_spans keeps the stack in IY)
+        ei
+push_next:                              ; (a 1-pixel span: SP never borrowed)
+        inc b                           ; the next row
+        dec ixh                         ; (rows left)
+        ret z
         ld a,b
         and 31
         jp nz,fs_loop
-        ld a,(seg_page)                 ; next row starts a new section
-        inc a                           ; (inline: SP is borrowed, no calls)
+.sect:  ld a,(seg_page)                 ; next row starts a new section
+        inc a
         ld (seg_page),a
         nextreg L2SEC_MMU,a
         jp fs_loop
-.done:  ld sp,(saved_sp)
-        ret
 
         ALIGN 256
 TA:         ds 256                      ; x of downward edges per row
@@ -883,6 +891,7 @@ walk_edge:
         ld c,a                          ; C = dy (1..191)
         ld a,b
         sub d                           ; dx
+        jr z,.vert                      ; vertical (every wall in level flight)
         jr c,.neg
         cp c
         jr nc,.pdv
@@ -957,6 +966,15 @@ walk_edge:
         djnz .n0
         ret
 
+; A vertical edge: the same x on every row (as the steep walk gives it with
+; no x step: exactly)
+.vert:  ld b,c
+        inc b                           ; dy+1 rows
+.vl:    ld (hl),d
+        inc l
+        djnz .vl
+        ret
+
 ; B = dy+1 rows, E = biased accumulator (dy/2 - dy), C = -dy
 .setup: ld b,c
         inc b
@@ -972,24 +990,47 @@ walk_edge:
 ;==============================================================================
 ; Span filler.  Rows fy0..fy1, x from TA/TB.  DE = colour pair.
 ; Short spans use the stack pointer as a 2-byte write pointer into the frame
-; buffer (interrupts are disabled), jumping into an unrolled block of PUSH DE.
-; Spans of DMA_SPAN_MIN pixels or more are written by the zxnDMA, which only
-; needs its length and destination reloaded (see clear_screen).
+; buffer (see push_blk), jumping into an unrolled block of PUSH DE.  Spans of
+; DMA_SPAN_MIN pixels or more are written by the zxnDMA, which only needs its
+; length and destination reloaded (see clear_screen).
+; For speed: the stack pointer is kept in IY (ld sp,iy), the rows are
+; counted down in IXH, and the table that is the left edge at the polygon's
+; middle row is read first, so the left / right swap (still made whenever
+; it's needed: a sliver's edges can cross) is mostly skipped.
 ;==============================================================================
 fill_spans:
         ld a,(fy0)
         call seg_map                    ; first row's section into slot 0
-        ld (saved_sp),sp
+        ld iy,0
+        add iy,sp                       ; the stack, for push_end
         ld a,(fy0)
         ld b,a
         ld a,(fy1)
-        ld ixl,a
-
-fs_loop:
+        sub b
+        inc a
+        ld ixh,a                        ; rows to fill
+        ld a,(fy1)                      ; the middle row: which table is left?
+        add a,b
+        rra
+        ld l,a
         ld h,high TA
-        ld l,b
         ld a,(hl)
         inc h
+        cp (hl)
+        ld a,high TA                    ; TA left (or level): TA first
+        ld c,$24                        ;   (inc h)
+        jr c,.ta
+        ld a,high TB                    ; TB left: TB first
+        ld c,$25                        ;   (dec h)
+.ta:    ld (fs_loop+1),a
+        ld a,c
+        ld (fs_loop.tb),a
+
+fs_loop:
+        ld h,high TA                    ; (patched: the left table first)
+        ld l,b
+        ld a,(hl)
+.tb:    inc h                           ; (patched: inc h, or dec h, the other)
         ld c,(hl)
         cp c
         jr c,.ord
@@ -1007,17 +1048,20 @@ fs_loop:
 .push:  srl a
         jr c,.even
         ld (hl),e                       ; odd width: single pixel first
-        jr .go
+        or a
+        jp z,push_next                  ; (1 pixel: no PUSHes, so SP isn't
+        jr .go                          ; borrowed: see push_blk)
 .even:  inc a
 .go:    ld l,c
         inc hl                          ; one past right edge (may be $C000)
         ld sp,hl
         ld l,a
-        ld a,low push_end
+        ld a,low push_end - 1           ; (the DI before the last PUSH)
         sub l
         ld l,a
         ld h,high push_end
         jp (hl)
+        ASSERT high push_blk == high push_end && low push_end - 1 - 128 == low push_blk
 
         ; Long span: zxnDMA from the fixed colour byte (port A) to HL.
         ; Everything but length and destination was set up by clear_screen.
@@ -1041,7 +1085,14 @@ fs_loop:
         out (IO_DATAGEAR_DMA_PORT),a
         ld a,DMA_ENABLE
         out (IO_DATAGEAR_DMA_PORT),a    ; CPU waits until the span is written
-        jp push_end
+        inc b                           ; the next row (as push_next: SP was
+        dec ixh                         ; never borrowed here)
+        ret z
+        ld a,b
+        and 31
+        jp nz,fs_loop
+        jp push_next.sect
+        ASSERT high TB == high TA + 1
 
 ;==============================================================================
 ; Outline the polygon in p2buf, skipping edges flagged 0 (clip edges)
@@ -1395,7 +1446,35 @@ draw_cell:
         jp human_cell
 
 ; The building in the cell at HL (C = its map byte)
+BLD_R           equ 256             ; cull radius: 181 (half diagonal) * sqrt2
 draw_bld:
+        ; Horizontal frustum cull, valid at any pitch: a visible point has
+        ; |X|*c <= Z1 with c = cosP - 0.5|sinP|.  Reject the bounding circle
+        ; (radius BLD_R) round the cell's yaw-space centre (row_x, row_z1,
+        ; kept up to date by draw_row).  First, as it needs nothing else:
+        ; most cells it rejects then cost no more.  (Level flight: c is
+        ; exactly 1.0, so no multiply.)
+        push hl
+        push bc
+        ld hl,(row_z1)
+        ld (t_z1),hl
+        ld hl,(row_x)
+        ld (t_x),hl
+        call abs_hl
+        ld a,(pitch)
+        or a
+        jr z,.cl
+        ld de,(cull_c)
+        call fmul
+.cl:    ld de,(t_z1)
+        or a
+        sbc hl,de
+        ld de,BLD_R
+        or a
+        sbc hl,de
+        pop bc
+        pop hl
+        ret p                           ; wholly outside: nothing to draw
         ld de,city_col-city_map         ; same index in city_col (city bank)
         add hl,de
         ld a,(hl)
@@ -1439,26 +1518,7 @@ draw_bld:
 
         ld hl,vecs0
         ld (bld_vecs),hl
-        ld hl,256                       ; cull radius: 181 (half diagonal) * sqrt2
-        ld (bld_r),hl
-
-        ; yaw-space centre of this cell, kept up to date by draw_row
-        ld hl,(row_z1)
-        ld (t_z1),hl
-        ld hl,(row_x)
-        ld (t_x),hl
-        ; Horizontal frustum cull, valid at any pitch: a visible point has
-        ; |X|*c <= Z1 with c = cosP - 0.5|sinP|. Reject the bounding circle.
-        call abs_hl
-        ld de,(cull_c)
-        call fmul
-        ld de,(t_z1)
-        or a
-        sbc hl,de
-        ld de,(bld_r)
-        or a
-        sbc hl,de
-        ret p
+        ; (the frustum test was first: t_x, t_z1 hold the cell's centre)
     IFDEF OCCLUSION_CULL
         ld a,(occ_on)
         or a                            ; (carry clear)
@@ -1485,15 +1545,24 @@ draw_bld:
         ld bc,12
         ldir                            ; cur_vx, cur_vz
 
-        ; vertical edge vector (0, h cosP, h sinP)
+        ; vertical edge vector (0, h cosP, h sinP); level flight: (0, h, 0)
+        ; exactly (cosP 1.0, sinP 0), no multiplies
         ld hl,(bld_h)
-        ld de,(cos_p)
+        ld a,(pitch)
+        or a
+        jr nz,.vyp
+        ld (vy_vec+2),hl
+        ld (vy_vec+4),a                 ; (A = 0)
+        ld (vy_vec+5),a
+        jr .vyd
+.vyp:   ld de,(cos_p)
         call fmul
         ld (vy_vec+2),hl
         ld hl,(bld_h)
         ld de,(sin_p)
         call fmul
         ld (vy_vec+4),hl
+.vyd:
 
         ; vertices: index = x + 2*z + 4*top  (box edges are shared vectors)
         VADD vtx+16, vtx+0,  cur_vx
@@ -1839,8 +1908,18 @@ rot_yaw:
 
 ; Pitch rotation of a ground point at t_z1:
 ;   HL = Y = yb - Z1 sinP     DE = Z = zb + Z1 cosP
+; (Level flight: sinP 0 and cosP 1.0 exactly, so Y = yb, Z = zb + Z1.)
 rot_pitch:
+        ld a,(pitch)
+        or a
+        jr nz,.p
         ld hl,(t_z1)
+        ld de,(zb)
+        add hl,de
+        ex de,hl
+        ld hl,(yb)
+        ret
+.p:     ld hl,(t_z1)
         ld de,(sin_p)
         call fmul
         ex de,hl
@@ -2306,6 +2385,11 @@ draw_gunsight:
 ; building with a corner behind the camera is never dropped and never covers.
 ;==============================================================================
 OCC_YBUF        equ $4000       ; per column: covered from this row down
+OCC_YBUF8       equ $42E0       ; per 8 columns: at least the most of
+                                ; OCC_YBUF's 8 (in record 0's unused tail:
+                                ; records use 0-133), so a hidden test can
+                                ; pass 8 columns at once
+        ASSERT low OCC_YBUF8 + 32 <= 256 && OR_VIS + 6 <= low OCC_YBUF8
 OCC_LIST        equ $4100       ; kept buildings and zombie cells, 2 bytes each
 OCC_REC0        equ $42         ; first record (high byte); 256 bytes each,
 OCC_RECN        equ $60         ; up to $5F: 30 records ($6000 on: city_col)
@@ -2333,6 +2417,11 @@ occ_begin:
         ld (hl),VIEW_H
         ld de,OCC_YBUF+1
         ld bc,255
+        ldir
+        ld hl,OCC_YBUF8                 ; (and so in every group of 8)
+        ld (hl),VIEW_H
+        ld de,OCC_YBUF8+1
+        ld bc,31
         ldir
         ret
 
@@ -2694,11 +2783,60 @@ occ_test:
         ld (hl),c
 .un:    inc l
         djnz .u
+        ; and OCC_YBUF8 over those columns' groups: a group wholly inside
+        ; them now has at most C (its 8, each lowered to C), so its bound
+        ; becomes C if that is less.  A group at either end keeps its bound:
+        ; still at least its most, as cover only ever goes down.
+        ld a,(o_xmin)
+        ld e,a
+        ld a,(o_xmax)
+        ld d,a
+        rrca
+        rrca
+        rrca
+        and 31
+        ld b,a                          ; last group
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 31                          ; first group
+        ld l,a
+        ld a,b
+        sub l
+        inc a
+        ld b,a                          ; groups
+        ld a,l
+        add a,low OCC_YBUF8
+        ld l,a
+        ld h,high OCC_YBUF8
+.g:     ld a,l
+        sub low OCC_YBUF8
+        add a,a
+        add a,a
+        add a,a                         ; the group's first column
+        cp e
+        jr c,.edge                      ; starts before the span
+        add a,7
+        cp d
+        jr z,.full
+        jr nc,.gn                       ; ends after it
+.full:  ld a,(hl)
+        cp c
+        jr c,.gn                        ; already less
+        ld (hl),c
+.edge:
+.gn:    inc l
+        djnz .g
 .none:  or a                            ; visible (carry clear)
         ret
 
+
 ; Carry set if o_xmin..o_xmax are all covered from o_ymin or higher.
-; Leaves E = o_xmin, B = column count, H = high OCC_YBUF.
+; Leaves E = o_xmin, B = column count, H = high OCC_YBUF.  Whole groups of 8
+; columns are passed at once if their bound (OCC_YBUF8, at least the most of
+; the 8) is covered; if it isn't, the 8 are looked at one by one, so the
+; answer is exactly the column-by-column one.
 occ_hidden:
         ld a,(o_xmin)
         ld e,a
@@ -2711,16 +2849,62 @@ occ_hidden:
         ld c,a                          ; hidden where cover <= ymin
         ld h,high OCC_YBUF
         ld l,e
+        ld d,high OCC_YBUF8
         push bc
-.t:     ld a,(hl)
+        ld a,l
+        and 7
+        jr nz,.one                      ; not at a group's start
+.grp:   ld a,b
+        dec a                           ; (B = 0: all 256 left)
+        cp 7
+        jr c,.one                       ; fewer than 8 columns left
+        ld a,l
+        rrca
+        rrca
+        rrca                            ; the group (L's low 3 bits are 0)
+        add a,low OCC_YBUF8
+        ld e,a
+        ld a,(de)
+        cp c
+        jr nc,.g8                       ; maybe not: look at the 8
+        ld a,l
+        add a,8
+        ld l,a
+        ld a,b
+        sub 8
+        ld b,a
+        jr nz,.grp
+        jr .hid
+.g8:    ld e,8                          ; the group's 8, one by one
+.g8l:   ld a,(hl)
         cp c
         jr nc,.vis
         inc l
-        djnz .t
-        pop bc
+        dec b
+        dec e
+        jr nz,.g8l
+        ld a,b
+        or a
+        jr nz,.grp
+        jr .hid
+.one:   ld a,(hl)                       ; one column
+        cp c
+        jr nc,.vis
+        inc l
+        dec b
+        jr z,.hid
+        ld a,l
+        and 7
+        jr nz,.one
+        jr .grp                         ; at a group's start
+.hid:   pop bc
+        ld a,(o_xmin)
+        ld e,a
         scf
         ret
 .vis:   pop bc
+        ld a,(o_xmin)
+        ld e,a
         or a
         ret
 
@@ -2810,7 +2994,6 @@ o_tcov:     db 0
 o_zmin:     dw 0
 o_zmax:     dw 0
     ENDIF
-bld_r:      dw 0
 and_oc:     db 0
 bot_oc:     db 0
 rk_pt:      ds 6                        ; draw_rocket: a point behind it
@@ -2874,7 +3057,6 @@ fy0:        db 0
 fy1:        db 0
 fe_cnt:     db 0
 line_col:   db 0
-saved_sp:   dw 0
 seg_page:   db 0                        ; page now in slot 0
 cs_sky:     db 0
 

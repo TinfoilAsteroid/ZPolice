@@ -123,12 +123,14 @@ lines.append("")
 #   +4640 4096 city_map
 # ZPDATA/LEVELnn.ZPL (nn = 01..):
 #   +0   4    "ZPLV"
-#   +4   1    format version (1)
+#   +4   1    format version (2)
 #   +5   1    city number (its ZPDATA/CITYnn.ZPC)
-#   +6   15   the level record (levels.asm): level, city name (8), zombies,
-#             waves, fast zombies, special monsters, highest special id,
-#             draw distance (tiles, 2..VIEW_R)
-#   +21  1    number of map changes, then 4 bytes each: x, z, cell code,
+#   +6   113  the level record (levels.asm): level, city name (8), zombies a
+#             wave, waves, fast zombies, draw distance (tiles, 2..VIEW_R),
+#             then each wave's specials, LV_MAX_WAVES (10) of 10 bytes: 5
+#             special types (SPEC_IDS: ghost 0, banshee 1, ghoul 2; 255
+#             none), then how many of each.  Wave 1 is the level's start.
+#   +119 1    number of map changes, then 4 bytes each: x, z, cell code,
 #             city_col (hand-made layout changes for this level)
 #
 # Every 8th row/column of a map is an open boulevard.  The player's base: a
@@ -256,7 +258,7 @@ FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
     35: ("LASER_COL", (7, 1, 1)),         # pulse laser beam (red)
     39: ("MAP_BG", (0, 0, 0)),            # city map: streets (black)
     43: ("HUMAN_COL", (7, 7, 7)),         # humans waiting for rescue (white)
-    47: ("HUMAN_BLIP", (0, 2, 7)),        # humans on the city map (blue)
+    47: ("HUMAN_BLIP", (2, 5, 7)),        # humans on the city map (bright blue)
     51: ("MAP_ZOMBIE_MID", (0, 5, 0)),    # zombie blip shades: mid green
     55: ("MAP_ZOMBIE_DARK", (0, 3, 0)),   #   and dark green
     91: ("PANEL_L2", (1, 1, 3)),         # the ULA panel colour ($25), on Layer 2
@@ -575,41 +577,19 @@ def city_from_text(text):
     hdr = b"ZPCY" + bytes((1, n)) + name.ljust(8).encode() + pal_pair(sky) + bytes(16)
     return n, hdr + b"".join(pal_pair(c) for c in pal) + bytes(col) + bytes(city)
 
-LEVEL_KEYS = ["ZOMBIES", "WAVES", "FAST", "SPECIAL", "SPECIAL_MAX", "VIEW"]
-
-def level_text(lv, cn, name, values, changes):
-    out = [f"; Z-Police level {lv}: LEVEL{lv:02d}.TXL, the text form of LEVEL{lv:02d}.ZPL",
-           "; (written by gentables.py: see its comments for the format)",
-           f"LEVEL {lv}", f"CITY {cn}", f"NAME {name}"]
-    out += [f"{k} {v}" for k, v in zip(LEVEL_KEYS, values)]
-    out += ["", "; cells of the city's map changed for this level: x z code family",
-            f"CHANGES {len(changes)}"]
-    out += [f"{x} {z} {MAP_CHARS[code]} {col_text(c)}" for x, z, code, c in changes]
-    out += ["END", ""]
-    return "\n".join(out)
-
-def level_from_text(text):
-    """LEVELnn.TXL -> (level number, the LEVELnn.ZPL bytes)."""
-    ln = text_lines(text)
-    kv = lambda i, k: field(ln[i], k)
-    lv = int(kv(0, "LEVEL"))
-    cn = int(kv(1, "CITY"))
-    name = kv(2, "NAME")
-    values = [int(kv(3 + j, k)) for j, k in enumerate(LEVEL_KEYS)]
-    nch = int(kv(3 + len(LEVEL_KEYS), "CHANGES"))
-    changes = []
-    for j in range(nch):
-        x, z, ch, c = ln[4 + len(LEVEL_KEYS) + j].split()
-        changes.append((int(x), int(z), MAP_CHARS.index(ch), col_value(c)))
-    assert ln[4 + len(LEVEL_KEYS) + nch] == "END"
-    rec = bytes((lv,)) + name.ljust(8).encode() + bytes(values)
-    return lv, b"ZPLV" + bytes((1, cn)) + rec + bytes((len(changes),)) + b"".join(bytes(c) for c in changes)
+# The level files: their format, reading and checking are in tools/levelfile.py
+from levelfile import (LEVEL_KEYS, LEVEL_VERSION, LV_MAX_WAVES, LV_SPEC_SLOTS, SPEC_NAMES,
+                       SPEC_NONE, level_record, level_file, level_text, level_parse,
+                       level_check, level_from_text)
 
 # The city maps: maps/CITYnn.json (tools/citymap.py has the format; edit
 # with tools/map_editor.py).  A city without one is generated from its seeds
 # (make_map, make_col) and its JSON written, so it can be edited from then on.
 MAP_DIR = "maps"
 os.makedirs(MAP_DIR, exist_ok=True)
+city_maps = {}                         # city number -> (cells, families)
+city_palettes = {}                     # city number -> its hand-set shades
+os.makedirs(os.path.join(MAP_DIR, "generated"), exist_ok=True)
 assert citymap.MAP_CHARS == MAP_CHARS and citymap.GRID == GRID
 assert (citymap.PAD, citymap.TERRACE, citymap.VOID) == (PAD_CODE, TERRACE_CODE, VOID_CODE)
 assert (citymap.PAD_X, citymap.PAD_Z, citymap.TERRACE_R) == (PAD_X, PAD_Z, TERRACE_R)
@@ -630,10 +610,12 @@ def city_layout(n, name, s_map, s_rat, s_col):
         citymap.save(path, n, name, city, fams)
         print(f"wrote {path} (generated: edit it with tools/map_editor.py)")
     m = citymap.load(path)
-    errs = citymap.validate(m["cells"], m["fams"])
+    errs = citymap.validate(m["cells"], m["fams"], m["palette"])
     if errs:
         raise SystemExit(f"{path}: the map can't be used:\n  " + "\n  ".join(errs))
     city = m["cells"]
+    city_maps[n] = (m["cells"], m["fams"])     # (the level files' checks)
+    city_palettes[n] = m["palette"]            # (shades set by hand)
     col = [GROUND_IDX if f is None else citymap.city_col(f)
            for f in (citymap.family_for(c, f) for c, f in zip(m["cells"], m["fams"]))]
     assert all(citymap.is_bld_col(k) for c, k in zip(city, col) if citymap.is_building(c))
@@ -646,6 +628,15 @@ for n, (name, tod, sky, (s_map, s_rat, s_col, s_pal)) in enumerate(CITIES, 1):
         k = restyle(pal, CITY_STYLE[name], s_pal, tod)
         print(f"{name}: {k} of {BLD_FAMILIES} building colour families restyled")
     pal[3] = sky                       # SKY_COL: the city's sky
+    gen = os.path.join(MAP_DIR, "generated", f"CITY{n:02d}.pal")
+    raw = bytes(v for c in pal for v in c)     # (as generated: the editor's reset)
+    if not os.path.exists(gen) or open(gen, "rb").read() != raw:
+        with open(gen, "wb") as f:
+            f.write(raw)
+    if city_palettes[n]:               # shades set by hand (the map editor)
+        citymap.apply_palette(pal, city_palettes[n])
+        assert not any(map(is_transparent, pal[:256]))
+        print(f"{name}: {len(city_palettes[n])} colour families set by hand")
     hdr = b"ZPCY" + bytes((1, n)) + name.ljust(8).encode() + pal_pair(sky) + bytes(16)
     assert len(hdr) == 32
     data = hdr + b"".join(pal_pair(c) for c in pal) + bytes(col) + bytes(city)
@@ -664,11 +655,18 @@ for old in (f"CITY{n}.ZPC" for n in range(1, 10)):     # the old one-digit names
         except OSError:
             print(f"could not remove the old {DATA_DIR}/{old} (in use): unused, delete it later")
 
-# The levels: CITY_LEVELS per city, in order.  Values as the old built-in
-# level table (placeholders to tune); the draw distance is VIEW_R (6) for
-# now.  Hand-made levels can replace these files.
+# The levels: CITY_LEVELS per city, in order.  Each level's source is
+# levels/LEVELnn.TXL (the text form: level_text / level_parse), edited by
+# hand: gentables checks it (level_check) and writes ZPDATA/LEVELnn.ZPL and a
+# copy of the text from it.  A level without one is generated (the rules
+# below, as the old built-in level table: placeholders to tune; the draw
+# distance VIEW_R) and its source written, so it can be edited from then on.
 VIEW_R = 6                             # must match zpolice.asm
-for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
+LEVEL_DIR = "levels"
+os.makedirs(LEVEL_DIR, exist_ok=True)
+
+def level_generate(lv):
+    """Level lv's text, from the rules."""
     cn = (lv - 1) // CITY_LEVELS + 1
     # zombies a wave: 10, 15, 20, 25, 30 over each city's 5 levels; one
     # wave on the first city's levels, one more for each city after
@@ -676,17 +674,56 @@ for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
     waves = 1 + (lv - 1) // CITY_LEVELS
     fast = min(zomb, (lv + 1) // 2)
     assert zomb <= 30                  # NZOMB, zombie.asm
-    spec = 0 if lv < 5 else min(5, (lv - 3) // 2)
-    maxid = 0 if spec == 0 else min(3, (lv - 1) // 5)
-    rec = bytes((lv,)) + CITIES[cn - 1][0].ljust(8).encode() + bytes((zomb, waves, fast, spec, maxid, VIEW_R))
-    assert len(rec) == 15
-    changes = []                       # (x, z, code, col): none yet
-    data = b"ZPLV" + bytes((1, cn)) + rec + bytes((len(changes),)) + b"".join(bytes(c) for c in changes)
+    # Specials, wave by wave (wave 1 is the level's start), as the game had
+    # them built in: ghosts in wave 1 from level 5 (1, rising to 5); a
+    # banshee on each even wave (2 from level 11, 3 from 31); ghouls on each
+    # odd wave from level 21 (2 from 30, 3 from 40).  At most NSPEC (8) at
+    # once: 5 ghosts and 3 ghouls in wave 1.
+    ghosts = 0 if lv < 5 else min(5, (lv - 3) // 2)
+    banshees = 1 if lv <= 10 else 2 if lv <= 30 else 3
+    ghouls = 0 if lv < 21 else 1 if lv < 30 else 2 if lv < 40 else 3
+    waves_specials = []
+    for w in range(1, waves + 1):
+        sp = []
+        if w == 1 and ghosts:
+            sp.append((SPEC_NAMES.index("GHOST"), ghosts))
+        if w % 2 == 0:
+            sp.append((SPEC_NAMES.index("BANSHEE"), banshees))
+        elif ghouls:
+            sp.append((SPEC_NAMES.index("GHOUL"), ghouls))
+        assert sum(n for _, n in sp) <= 8      # NSPEC, zombie.asm
+        waves_specials.append(sp)
+    values = (zomb, waves, fast, VIEW_R)
+    changes = []                       # (x, z, code, col): none
+    return level_text(lv, cn, CITIES[cn - 1][0], values, waves_specials, changes)
+
+hand = 0
+for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
+    path = os.path.join(LEVEL_DIR, f"LEVEL{lv:02d}.TXL")
+    if not os.path.exists(path):
+        with open(path, "w", encoding="ascii", newline="\n") as f:
+            f.write(level_generate(lv))
+        print(f"wrote {path} (generated: edit it by hand from now on)")
+    elif open(path, encoding="latin-1").read() != level_generate(lv):
+        hand += 1                      # (edited: differs from the rules)
+    with open(path, encoding="latin-1") as f:
+        text = f.read()
+    try:
+        d = level_parse(text)
+        errs = level_check(lv, d, city_maps)
+        if not text.isascii():
+            errs.append("plain (ASCII) characters only")
+    except ValueError as e:
+        errs = [str(e)]
+    if errs:
+        raise SystemExit(f"{path}: the level can't be used:\n  " + "\n  ".join(errs))
+    rec = level_record(lv, d["name"], d["values"], d["waves_specials"])
+    data = level_file(lv, d["cn"], rec, d["changes"])
+    assert level_from_text(text) == (lv, data)
     write_data(f"LEVEL{lv:02d}.ZPL", data)
-    text = level_text(lv, cn, CITIES[cn - 1][0], (zomb, waves, fast, spec, maxid, VIEW_R), changes)
-    assert level_from_text(text) == (lv, data)    # the text form is exact
     write_data(f"LEVEL{lv:02d}.TXL", text.encode("ascii"))
-print(f"levels: {DATA_DIR}/LEVEL01..{CITY_LEVELS * len(CITIES):02d}.ZPL and .TXL")
+print(f"levels: {LEVEL_DIR}/LEVEL01..{CITY_LEVELS * len(CITIES):02d}.TXL -> {DATA_DIR}/.ZPL and .TXL"
+      f" ({hand} differing from the rules)")
 lines.append(f"LEVEL_LAST      equ {CITY_LEVELS * len(CITIES)}      ; the last level (gentables.py)")
 lines.append(f"CITY_LEVELS     equ {CITY_LEVELS}       ; levels played in each city (gentables.py)")
 

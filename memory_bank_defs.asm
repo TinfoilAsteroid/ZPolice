@@ -145,7 +145,7 @@ PAGE_SPR0               equ 9           ; sprite_data.asm: sprite pattern
 PAGE_ULA0               equ 10          ; the ULA screen, bank 5 (slot 4)
 PAGE_MAIN               equ 11          ; zpolice.asm, resident (slot 5): the
                                         ; second half of bank 5
-PAGE_KEYS               equ 12          ; keys.asm: keyboard (slot 7)
+PAGE_INPUT              equ 12          ; input.asm: keyboard, joysticks (slot 7)
 PAGE_SPRITES            equ 13          ; sprites.asm: hardware sprites
                                         ; (slot 7)
 PAGE_SIN                equ 14          ; sin_tables.asm: the sine table

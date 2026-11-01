@@ -28,7 +28,8 @@ LVF_MAX         equ LVF_CHG+4*LVF_CHG_MAX
 CTF_SKY         equ 14              ; sky colour: RRRGGGBB, low blue bit
 CTF_PAL         equ 32              ; the palette, 256 pairs
 CTF_DATA        equ CTF_PAL+512     ; then city_col, city_map
-FILE_VERSION    equ 1               ; both files' format version (+4)
+LEVEL_VERSION   equ 2               ; the files' format versions (+4): the
+CITY_VERSION    equ 1               ;   level file's 2 (specials by wave)
 LDERR_BADFILE   equ 255             ; error code: not a valid file
 
 ;------------------------------------------------------------------------------
@@ -52,6 +53,7 @@ load_level:
         ret c
         ld hl,ll_lbuf
         ld de,ll_lmagic
+        ld c,LEVEL_VERSION
         call ll_check
         ret c
         ld hl,ll_lbuf+LVF_REC           ; its record
@@ -90,6 +92,7 @@ load_level:
         ret c
         ld hl,ll_cbuf
         ld de,ll_cmagic
+        ld c,CITY_VERSION
         call ll_check
         ret c
         ; the level's map changes
@@ -157,7 +160,7 @@ load_level:
         ret
 
 ; HL -> a file's first bytes, DE -> its 4-byte magic: carry clear if they
-; match and the version byte after them is FILE_VERSION, else carry set
+; match and the version byte after them is C (LEVEL_ / CITY_VERSION), else carry set
 ; and A = LDERR_BADFILE
 ll_check:
         ld b,4
@@ -168,7 +171,7 @@ ll_check:
         inc hl
         djnz .lp
         ld a,(hl)
-        cp FILE_VERSION
+        cp c
         ret z                           ; (carry clear)
 .bad:   ld a,LDERR_BADFILE
         scf

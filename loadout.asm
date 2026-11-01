@@ -1,7 +1,8 @@
 ;==============================================================================
 ; Z-POLICE - load-out screen (8K page PAGE_LOADOUT, runs at $C000 in slot 6)
 ;
-; Between levels, after LEVEL COMPLETE (loadout_go pages it in).  On the
+; Before the first level (newGame) and between levels, after LEVEL COMPLETE
+; (loadout_go pages it in).  On the
 ; left, the store: every weapon type unlocked (wpn_unlocked) with the number
 ; in store (wpn_stock), even 0 when the only one is fitted.  On the right,
 ; the VTOL's 5 weapon slots and what is fitted in each.
@@ -13,7 +14,7 @@
 ;   SPACE  fit the highlighted weapon in the selected slot, if it can be:
 ;          one comes out of the store, with a full load (WCFG_LOAD), and
 ;          whatever was fitted there goes back into the store
-;   0      done: the next level (next_level)
+;   0      done: start the level (next_level)
 ; Uses the resident text routines (text.asm) and the keys page in slot 7.
 ;==============================================================================
 
@@ -26,7 +27,7 @@ LO_SLOT_STEP    equ 2               ; rows between the slots
 
 loadout_screen:
         ld sp,stack_top
-        nextreg CODE_MMU,PAGE_KEYS      ; the keys at $E000
+        nextreg CODE_MMU,PAGE_INPUT     ; the input page at $E000
         call menu_clear
         ld hl,lo_text                   ; titles and help
 .txt:   ld a,(hl)
@@ -325,7 +326,7 @@ lo_text:
         db 19, 1, MENU_ATTR
         db "Q A: CHOOSE     1-5: SLOT", 0
         db 21, 1, MENU_ATTR
-        db "SPACE: FIT      0: NEXT LEVEL", 0
+        db "SPACE: FIT      0: START LEVEL", 0
         db $FF
 
 ; Weapon names, by WPN_* (at most LO_NAME_LEN characters)

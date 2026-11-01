@@ -16,6 +16,12 @@ A city map is maps/CITYnn.json:
     P        the landing pad (only at PAD_X, PAD_Z)
     T        terrace: round the pad, or anywhere as an improvised barricade
     X        out of bounds (outside the perimeter wall: never drawn)
+"palette" (optional): colour families whose shades are set by hand, over
+the generated palette: {"12": [[r, g, b], [r, g, b], [r, g, b]]}, the
+family's SHADE_DARK, SHADE_FACE and SHADE_ROOF entries, each 0..7 (the
+fourth, fixed colours, can't be changed).  gentables.py applies them last
+(apply_palette), and keeps the palette as generated, without them, in
+maps/generated/CITYnn.pal (768 bytes, r g b each) for the editor's reset.
 "colours": each cell's colour family, "00".."63" (an entry of the city's
 palette: 4 colours, SHADE_DARK, SHADE_FACE, SHADE_ROOF and a fixed one), or
 ".." for a road or out of bounds.  The game stores a cell's colour as its
@@ -187,24 +193,79 @@ def load(path):
                 fams.append(int(t))
             else:
                 fams.append(t)          # (not a family: kept, a bad colour)
-    return {"city": d.get("city", 0), "name": d.get("name", ""), "cells": cells, "fams": fams}
+    palette = {}
+    for k, shades in (d.get("palette") or {}).items():
+        try:
+            f = int(k)
+            sh = [tuple(int(v) for v in c) for c in shades]
+        except (TypeError, ValueError):
+            raise ValueError(f"{path}: palette {k!r}: a family's 3 shades, [r, g, b] each")
+        if len(sh) != 3 or any(len(c) != 3 for c in sh):
+            raise ValueError(f"{path}: palette {k!r}: a family's 3 shades, [r, g, b] each")
+        palette[f] = sh
+    return {"city": d.get("city", 0), "name": d.get("name", ""), "cells": cells, "fams": fams,
+            "palette": palette}
 
 
-def save(path, city, name, cells, fams):
+def save(path, city, name, cells, fams, palette=None):
     rows, crows = [], []
     for z in range(GRID):
         rows.append("".join(MAP_CHARS[c] for c in cells[z * GRID:(z + 1) * GRID]))
         crows.append(" ".join(family_text(f) for f in fams[z * GRID:(z + 1) * GRID]))
     d = {"format": FORMAT, "version": VERSION, "city": city, "name": name,
          "map": rows, "colours": crows}
+    if palette:
+        d["palette"] = {f"{f:02d}": [list(c) for c in palette[f]] for f in sorted(palette)}
     text = json.dumps(d, indent=1)
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text + "\n")
 
 
-def validate(cells, fams):
-    """The problems with a map, as messages (none: the game can use it)."""
+def is_transparent(c):
+    """(r, g, b) 0..7 is Layer 2's transparent colour ($E3): never shown."""
+    r, g, b = c
+    return r == 7 and g == 0 and b >> 1 == 3
+
+
+def palette_problems(palette):
+    """The problems with hand-set palette shades (load's "palette")."""
     errs = []
+    for f, shades in sorted(palette.items()):
+        if not 0 <= f < FAMILIES:
+            errs.append(f"palette family {f}: families are 00..{FAMILIES - 1}")
+        for k, c in enumerate(shades):
+            if any(not 0 <= v <= 7 for v in c):
+                errs.append(f"palette family {f:02d} shade {k}: r, g, b are 0..7")
+            elif is_transparent(c):
+                errs.append(f"palette family {f:02d} shade {k}: {c} is the transparent colour")
+    return errs
+
+
+def apply_palette(pal, palette):
+    """Hand-set shades over a palette (256 (r, g, b)), in place."""
+    for f, shades in palette.items():
+        for k, c in enumerate(shades):
+            pal[f * 4 + k] = tuple(c)
+    return pal
+
+
+def read_generated(n, map_dir):
+    """City n's palette as generated (maps/generated/CITYnn.pal), or None."""
+    import os
+    p = os.path.join(map_dir, "generated", f"CITY{n:02d}.pal")
+    try:
+        with open(p, "rb") as f:
+            d = f.read()
+    except OSError:
+        return None
+    if len(d) != 768:
+        return None
+    return [tuple(d[i:i + 3]) for i in range(0, 768, 3)]
+
+
+def validate(cells, fams, palette=None):
+    """The problems with a map, as messages (none: the game can use it)."""
+    errs = palette_problems(palette or {})
     at = lambda x, z: cells[z * GRID + x]
     # the map's edge: wall or out of bounds, so nothing can leave the map
     edge = [(x, z) for z in range(GRID) for x in range(GRID)

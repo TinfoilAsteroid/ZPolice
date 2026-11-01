@@ -73,7 +73,8 @@ update_weapons:
         jr .move
 .alive:
     IF DEBUG_KILLALL
-        call debug_killall              ; (debug: key 0)
+        call debug_killall              ; (debug: keys 0 and 9)
+        call debug_gun_cycle            ; (debug: key 8)
     ENDIF
         call wpn_select                 ; (slots can be chosen when landed)
         call gun_aim                    ; and the centre gun tilted
@@ -120,7 +121,7 @@ gun_fire:
         call sel_slot
         ld a,(hl)                       ; the selected slot's weapon
         cp WPN_CHAIN
-        jr z,.chain
+        jp z,.chain
         cp WPN_ROCKETS
         jr z,.rocket
         cp WPN_MISSILE
@@ -140,6 +141,8 @@ gun_fire:
         ld hl,BULLET_STEP
         call spawn_round
         ld (ix+B_DMG),GUN_DMG
+        ld a,SFX_MG                     ; its sound (the interrupt plays it)
+        ld (sfx_req),a
         ret
 .rocket:
         call free_round                 ; rocket pod: one rocket
@@ -151,6 +154,8 @@ gun_fire:
         ld hl,ROCKET_STEP
         call spawn_round
         ld (ix+B_KIND),BK_ROCKET        ; no direct damage: its blast
+        ld a,SFX_ROCKET                 ; its woosh (the interrupt plays it)
+        ld (sfx_req),a
         ret
 .missile:
         call free_round                 ; missile pod: one missile
@@ -162,6 +167,8 @@ gun_fire:
         ld hl,MISSILE_STEP
         call spawn_round
         ld (ix+B_KIND),BK_MISSILE       ; no direct damage: its blast
+        ld a,SFX_MISSILE                ; its woosh
+        ld (sfx_req),a
         ret
 .prox:  ld a,BK_PROX                    ; proximity cannon: one shell
         jr .shell
@@ -178,6 +185,8 @@ gun_fire:
         call spawn_round
         ld a,(sh_kind)
         ld (ix+B_KIND),a                ; no direct damage: its burst
+        ld a,SFX_BOFORS                 ; its sound (the proximity cannon's
+        ld (sfx_req),a                  ; too)
         ret
         ASSERT PROX_INTERVAL == BOFORS_INTERVAL
 .chain: ; chain gun: one round every CHAIN_INTERVAL frames
@@ -187,6 +196,8 @@ gun_fire:
         ret c
         ld a,CHAIN_INTERVAL-1
         ld (gun_wait),a
+        ld a,SFX_CHAIN                  ; its sound (the interrupt plays it)
+        ld (sfx_req),a
         ; fall through
 
 ; A chain gun round from IX: the view direction turned by a random angle
@@ -488,6 +499,31 @@ wpn_select:
 
     IF DEBUG_KILLALL
 ;------------------------------------------------------------------------------
+; Debug: key 8 changes the centre slot's gun, machine gun -> laser -> chain
+; gun -> machine gun (anything else there: the machine gun), with its full
+; (infinite) load, and selects the centre slot
+;------------------------------------------------------------------------------
+debug_gun_cycle:
+        ld hl,KB_8
+        call key_code_pressed
+        ret z
+        ld hl,wpn_slots                 ; the centre slot: type, ammo
+        ld a,(hl)
+        ld b,WPN_LASER
+        cp WPN_GUN
+        jr z,.set
+        ld b,WPN_CHAIN
+        cp WPN_LASER
+        jr z,.set
+        ld b,WPN_GUN
+.set:   ld (hl),b
+        inc hl
+        ld (hl),AMMO_INF
+        xor a
+        ld (wpn_sel),a                  ; fire it
+        jp las_reset                    ; (no beam carried over)
+
+;------------------------------------------------------------------------------
 ; Debug: key 0 kills every monster at once (zombies, ghouls, ghosts and
 ; banshees, none left fading) and counts every human still in the city or
 ; aboard as rescued.  zombie_update then finds the wave wiped out: the next
@@ -608,7 +644,15 @@ pad_service:
 .cl:    ld (hl),0                       ; (0: its interval starts next)
         inc hl
         djnz .cl
-.go:    ld hl,svc_rep                   ; repair
+.go:    ld a,(boost_fitted)             ; the booster: refuelled 1 a frame
+        or a
+        jr z,.nf
+        ld a,(boost_fuel)
+        cp BOOST_FUEL_MAX
+        jr nc,.nf
+        inc a
+        ld (boost_fuel),a
+.nf:    ld hl,svc_rep                   ; repair
         dec (hl)
         jr nz,.rl
         ld (hl),REPAIR_FRAMES
@@ -680,6 +724,8 @@ laser_update:
         ret z
         ld a,LASER_ON
         ld (las_on),a
+        ld a,SFX_LASER                  ; a new pulse: its zap
+        ld (sfx_req),a
 .beam:  ld hl,las_on
         dec (hl)
         jr nz,.on
@@ -1312,7 +1358,12 @@ zdamage:
         ld a,c
         or a
         ret z                           ; (a rocket's direct hit: the blast)
-        ld a,(iy+18)
+        ld a,(iy+15)                    ; a walker (zombie, fast, ghoul) hit:
+        cp ZT_GHOST                     ; a splat (the interrupt plays it; each
+        jr nc,.hurt                     ; cuts the last)
+        ld a,SFX_SPLAT
+        ld (sfx3_req),a
+.hurt:  ld a,(iy+18)
         sub c
         jr z,.kill
         jr c,.kill
@@ -1351,22 +1402,28 @@ rocket_blast:
         ld hl,BLAST_R                   ; a rocket
         ld b,BLAST_DMG
         ld c,BLAST_PARTS
+        ld e,SFX_BOOM_ROCKET
         cp BK_ROCKET
         jr z,.k
         ld hl,MISSILE_R                 ; a missile
         ld b,MISSILE_DMG
         ld c,MISSILE_PARTS
+        ld e,SFX_BOOM_MISSILE
         cp BK_MISSILE
         jr z,.k
         ld hl,BOFORS_R                  ; a Bofors shell
         ld b,BOFORS_DMG
         ld c,BOFORS_PARTS
+        ld e,SFX_BOOM_BOFORS
         cp BK_BOFORS
         jr z,.k
         ld hl,PROX_R                    ; a proximity shell
         ld b,PROX_DMG
         ld c,PROX_PARTS
-.k:     ld (rb_r),hl
+        ld e,SFX_BOOM_PROX
+.k:     ld a,e                          ; its explosion (AY 3: the interrupt
+        ld (sfx2_req),a                 ; plays it)
+        ld (rb_r),hl
         ld a,b
         ld (rb_dmg),a
         ld a,c

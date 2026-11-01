@@ -11,9 +11,10 @@
 ; $0000-$3FFF, but the game keeps other pages there (slot 0: a Layer 2
 ; section or the sine table; slot 1: the zombie page).  So every call pages
 ; the ROM into slots 0 and 1 (fh_rom_in), makes the RST $08, then puts the
-; game's pages back (fh_rom_out).  Interrupts stay off throughout: the game
-; never enables them (IY is in use and slot 2 holds game data, so the ROM's
-; interrupt routine must not run).
+; game's pages back (fh_rom_out).  Interrupts are off over the call (the
+; game's IM 2 routine is in slot 1, covered by the ROM, and IY is in use and
+; slot 2 holds game data, so the ROM's routine must not run either), and
+; fh_rom_out turns them back on if they were on.
 ;
 ; Rules for callers:
 ;   * page this in at $E000 (slot 7) first, and call from outside slot 7:
@@ -236,11 +237,18 @@ fh_delete:
 
 ;------------------------------------------------------------------------------
 ; Page the ROM into slots 0 and 1 for RST $08, remembering the game's pages
-; (fh_rom_in), and put them back (fh_rom_out).  Both keep every register
-; and flag.
+; (fh_rom_in), and put them back (fh_rom_out).  Interrupts are off in
+; between (the ROM covers the interrupt routine, slot 1), and back on after
+; if they were on before.  Both keep every register and flag.
 ;------------------------------------------------------------------------------
 fh_rom_in:
         push af
+        ld a,i                          ; P/V: interrupts on (IFF2)
+        di
+        ld a,0
+        jp po,.off
+        inc a
+.off:   ld (fh_ints),a
         push bc
         ld bc,$243B
         ld a,MMU_SLOT_0_REGISTER        ; slot 0's page now
@@ -267,7 +275,13 @@ fh_rom_out:
         nextreg MMU_SLOT_0_REGISTER,a
         ld a,(fh_mmu1)
         nextreg MMU_SLOT_1_REGISTER,a
+        ld a,(fh_ints)
+        or a
+        jr z,.off
         pop af
+        ei                              ; on again, as they were
+        ret
+.off:   pop af
         ret
 
 ;==============================================================================
@@ -277,4 +291,5 @@ fh_drive:   db ESX_DEFAULT              ; drive for F_OPEN (fh_init)
 fh_handle:  db 0                        ; the last file opened
 fh_mmu0:    db 0                        ; the game's slot 0 / 1 pages during
 fh_mmu1:    db 0                        ; an esxDOS call
+fh_ints:    db 0                        ; 1: interrupts were on before it
 fh_stat:    ds FSTAT_LEN                ; F_FSTAT buffer (fh_size)

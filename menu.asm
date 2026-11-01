@@ -6,8 +6,9 @@
 ; generator (zrand), so the game doesn't start from the same seed each time
 ; (the wait for a key press varies), then reads the keys:
 ;   1  New game   -> newGame (zpolice.asm): level 1
-;   2  Save game  (not yet)
-;   3  Load game  (not yet)
+;   2  Continue   -> the save game (made by save and quit, from the pause:
+;                 game_pause), its level at its wave (load_save,
+;                 continue_game, zpolice.asm); NO SAVED GAME if there's none
 ;   9  Redefine keys -> keydef_screen (keydef.asm)
 ; game_over_screen (the landing pad destroyed) shows GAME OVER for 10
 ; seconds, then returns here.
@@ -15,7 +16,7 @@
 
 
 main_menu:
-        nextreg CODE_MMU,PAGE_KEYS      ; the keys at $E000 (this page: $C000)
+        nextreg CODE_MMU,PAGE_INPUT     ; the input page at $E000 (this page: $C000)
         call menu_clear
         ld hl,menu_text                 ; title and options
 .txt:   ld a,(hl)
@@ -38,10 +39,16 @@ main_menu:
         ld hl,KB_9                      ; redefine keys
         call key_code_pressed
         jp nz,keydef_go                 ; (zpolice.asm)
-        ld hl,KB_2                      ; save, load: to come
+        ld hl,KB_2                      ; continue the save game
         call key_code_pressed
-        ld hl,KB_3
-        call key_code_pressed
+        jr z,.loop
+        call load_save                  ; (zpolice.asm; pages the file
+        jp nc,continue_game             ; handler in)
+        nextreg CODE_MMU,PAGE_INPUT     ; none (or not usable): say so
+        ld de,18<<8 | 9
+        ld c,MENU_BAD
+        ld hl,txt_no_save
+        call menu_print
         jr .loop
 
 ; The landing pad has been destroyed: GAME OVER for GAME_OVER_FR frames
@@ -68,9 +75,11 @@ game_over_screen:
 txt_game_over:
         db "GAME OVER", 0
 
-; The level's last wave is wiped out: LEVEL COMPLETE for LEVEL_DONE_FR
-; frames (10 seconds), then the next level (next_level, zpolice.asm)
-LEVEL_DONE_FR   equ 500             ; 10 s of 50 Hz frames
+; The level's last wave is wiped out: LEVEL COMPLETE, until SPACE is pressed
+; (newly: one held down for firing as the level ended doesn't count), then
+; the load-out screen and the next level (next_level, zpolice.asm)
+LD_PROMPT_ROW   equ 23              ; "PRESS SPACE TO CONTINUE" (under the
+                                    ; reward lines, SA_ROW0..SA_ROW_MAX)
 level_complete_screen:
         ld sp,stack_top
         ld a,(level)                    ; the last level: the whole game
@@ -85,15 +94,16 @@ level_complete_screen:
         call rearm_all                  ; every weapon's ammo full again
         call hum_unload_all             ; (human.asm) those aboard: rescued
         call salvage_award              ; the humans saved: salvage, unlocks
-        ld bc,LEVEL_DONE_FR
-.w:     push bc
-        call menu_frame
+        ld de,LD_PROMPT_ROW<<8 | 4
+        ld c,MENU_ATTR
+        ld hl,txt_continue
+        call menu_print
+.w:     call menu_frame
         call zrand                      ; (keep stirring the seed)
-        pop bc
-        dec bc
-        ld a,b
-        or c
-        jr nz,.w
+        call kbd_scan                   ; (the input page: menu_clear)
+        ld hl,KB_SPACE
+        call key_code_pressed
+        jr z,.w
         ld hl,level
         inc (hl)
         jp loadout_go                   ; (zpolice.asm) the load-out screen,
@@ -101,6 +111,9 @@ level_complete_screen:
 
 txt_level_done:
         db "LEVEL COMPLETE", 0
+txt_continue:
+        db "PRESS SPACE TO CONTINUE", 0
+        ASSERT LD_PROMPT_ROW > SA_ROW_MAX
 
 ;------------------------------------------------------------------------------
 ; End of a level: every slot's weapon gets its full load again (wpn_cfg,
@@ -128,11 +141,14 @@ rearm_all:
 ; a salvage point (salvage_points).  Every point total in salvage_tab that
 ; the new total reaches (passed over from the old one) gives its rewards: a
 ; weapon unlocked (one more of that type in wpn_stock, for the load-out page)
-; and / or a full repair (vtol_hp = VTOL_HP).  After the table's last total,
+; and / or (SA_* flags) a full repair (vtol_hp = VTOL_HP) or the booster
+; module (fitted at once, its tank full).  After the table's last total,
 ; SALVAGE_TAIL, every SALVAGE_STEP more points is a full repair.  Shown on
 ; the LEVEL COMPLETE screen: the humans saved, the salvage, and a line for
 ; each reward (rows SA_ROW0..SA_ROW_MAX; any more aren't shown).
 ;------------------------------------------------------------------------------
+SA_REPAIR       equ 1               ; salvage_tab rewards (flags): full repair,
+SA_BOOSTER      equ 2               ;   the booster module
 SALVAGE_TAIL    equ 145
 SALVAGE_STEP    equ 5
 SA_ROW0         equ 16
@@ -172,7 +188,7 @@ salvage_award:
         and e
         inc a
         jr z,.tail                      ; ($FFFF: the end)
-        ld a,(hl)                       ; B = weapon, C = repair
+        ld a,(hl)                       ; B = weapon, C = SA_* rewards
         ld b,a
         inc hl
         ld c,(hl)
@@ -191,7 +207,7 @@ salvage_award:
         sbc hl,de
         ret c                           ; beyond the new total
         ld b,WPN_NONE
-        ld c,1
+        ld c,SA_REPAIR
         push de
         call sa_reached
         call c,sa_reward
@@ -213,8 +229,8 @@ sa_reached:
         ccf
         ret
 
-; Reward: B = weapon type (WPN_NONE: none) unlocked, C = 1: a full repair.
-; A line on the screen for each.
+; Reward: B = weapon type (WPN_NONE: none) unlocked, C = SA_* flags: a full
+; repair, the booster module.  A line on the screen for each.
 sa_reward:
         ld a,b
         or a
@@ -245,9 +261,22 @@ sa_reward:
         call sa_line.at
         call sa_next
         pop bc
-.rep:   ld a,c
-        or a
+.rep:   bit 1,c                         ; the booster module: fitted, full
+        jr z,.rp
+        ASSERT SA_BOOSTER == 1<<1
+        ld a,1
+        ld (boost_fitted),a
+        ld a,BOOST_FUEL_MAX
+        ld (boost_fuel),a
+        push bc
+        ld hl,txt_sa_booster
+        ld e,7
+        call sa_line
+        call sa_next
+        pop bc
+.rp:    bit 0,c
         ret z
+        ASSERT SA_REPAIR == 1<<0
         ld a,VTOL_HP                    ; full repair
         ld (vtol_hp),a
         ld hl,txt_sa_repair
@@ -324,35 +353,35 @@ salvage_tab:
         dw 10
         db WPN_LASER, 0
         dw 15
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 20
         db WPN_CHAIN, 0
         dw 25
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 30
         db WPN_ROCKETS, 0
         dw 35
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 40
         db WPN_LASER, 0
         dw 45
-        db WPN_NONE, 1
+        db WPN_NONE, SA_BOOSTER         ; (was a full repair)
         dw 50
         db WPN_CHAIN, 0
         dw 55
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 60
         db WPN_ROCKETS, 0
         dw 65
         db WPN_LASER, 0
         dw 70
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 75
         db WPN_CHAIN, 0
         dw 80
         db WPN_ROCKETS, 0
         dw 85
-        db WPN_NONE, 1
+        db WPN_NONE, SA_REPAIR
         dw 90
         db WPN_LASER, 0
         dw 95
@@ -397,6 +426,7 @@ txt_sa_saved:   db "HUMANS SAVED", 0
 txt_sa_points:  db "SALVAGE", 0
 txt_sa_new:     db "NEW", 0
 txt_sa_repair:  db "FULL REPAIR", 0
+txt_sa_booster: db "BOOSTER MODULE", 0
 txt_sa_rearm:   db "AMMUNITION REPLENISHED", 0
 
 ; The last level (LEVEL_LAST) complete: CONGRATULATIONS for GAME_DONE_FR
@@ -476,9 +506,9 @@ menu_text:
         db 8, 8, MENU_ATTR
         db "1. NEW GAME", 0
         db 10, 8, MENU_ATTR
-        db "2. SAVE GAME", 0
+        db "2. CONTINUE SAVED GAME", 0
         db 12, 8, MENU_ATTR
-        db "3. LOAD GAME", 0
-        db 14, 8, MENU_ATTR
         db "9. REDEFINE KEYS", 0
         db $FF
+txt_no_save:
+        db "NO SAVED GAME", 0

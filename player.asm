@@ -21,9 +21,54 @@ update_player:
         ldir
         ld a,(vtol_dead)
         or a
-        jp nz,vtol_wreck                ; destroyed: out of control
-
-        ; (keys: kbd_scan has read them; actions from keys.asm)
+        jr z,.alive
+        xor a
+        ld (boost_on),a                 ; (no boost in a wreck)
+        jp vtol_wreck                   ; destroyed: out of control
+.alive:
+        ; (keys: kbd_scan has read them; actions from input.asm)
+        ; --- boost (zpolice.asm: BOOST_*): while on, the speed keys and the
+        ; air brake don't change the speed, and each frame burns a fuel
+        ld a,(boost_on)
+        or a
+        jr z,.nb
+        ld a,(speed)
+        cp BOOST_SPEED
+        jr nz,.bend                     ; stopped meanwhile (a collision)
+        ld a,K_BOOST
+        call key_pressed
+        jr nz,.boff                     ; pressed again: off
+        ld hl,boost_fuel
+        dec (hl)
+        jr nz,.bkeep                    ; still burning
+.boff:  ld a,(boost_spd)                ; off (or out of fuel): the speed it
+        ld (speed),a                    ; had before
+.bend:  xor a
+        ld (boost_on),a
+.bkeep: xor a                           ; (no air brake this frame)
+        ld (ab_on),a
+        jp .nw
+.nb:    ld a,K_BOOST                    ; off: pressed to start it?
+        call key_pressed
+        jr z,.nbs
+        ld a,(boost_fitted)
+        or a
+        jr z,.nbs                       ; no booster
+        ld a,(boost_fuel)
+        or a
+        jr z,.nbs                       ; no fuel
+        ld a,(speed)
+        bit 7,a
+        jr nz,.nbs                      ; reversing
+        cp BOOST_MIN
+        jr c,.nbs                       ; under half speed
+        ld (boost_spd),a
+        ld a,BOOST_SPEED                ; on: twice the top speed at once
+        ld (speed),a
+        ld a,1
+        ld (boost_on),a
+        jr .bkeep
+.nbs:
         ; --- speed ---
         ld a,K_SPEED_UP                 ; (by SPEED_STEP, 1)
         call key_held
