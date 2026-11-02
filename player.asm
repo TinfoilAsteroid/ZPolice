@@ -199,8 +199,12 @@ update_player:
         ld hl,(cam_y)
         ld de,CLIMB_RATE
         add hl,de
-        ld de,MAX_Y
-        call min_hl_de
+        ld de,MAX_Y                     ; the ceiling: higher with the
+        ld a,(vthrust_fitted)           ; vertical thrusters
+        or a
+        jr z,.ceil
+        ld de,MAX_Y_THRUST
+.ceil:  call min_hl_de
         ld (cam_y),hl
 .ne:    ld a,K_DESCEND
         call key_held
@@ -260,6 +264,13 @@ update_player:
         ld (speed),a
         ld a,C_WARN
         out ($FE),a                     ; red border flash
+        ld a,(shake_t)                  ; a shake and a crunch, unless one is
+        or a                            ; still going (held against a wall:
+        ret nz                          ; not every bump)
+        ld a,SHAKE_LEN
+        ld (shake_t),a                  ; (shake_tick, zpolice.asm)
+        ld a,SFX_CRASH
+        ld (sfx2_req),a                 ; (AY 3: the explosions' voice)
         ret
 
 ; IX -> 24-bit position (frac, lo, hi). HL = signed delta in 1/256 units.

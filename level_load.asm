@@ -213,6 +213,70 @@ ll_check:
         scf
         ret
 
+;------------------------------------------------------------------------------
+; At start-up (this page in slot 6, the file handler set up): the figures'
+; graphics, ZPDATA/SPRITES.ZPG (gengraphics.py; tools/spritefile.py has the
+; format), into pages PAGE_GFX0 on, each read through slot 4 (the ULA
+; screen's, put back after: the screen still shows).  gfx_ok = 1 if they are
+; all there and fit this game (magic, version, pages, purposes); else 0, and
+; the figures aren't drawn.  Leaves the file handler in slot 7.
+;------------------------------------------------------------------------------
+gfx_load:
+        xor a
+        ld (gfx_ok),a
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,gfx_name
+        ld b,FA_READ|FA_OPEN_EX
+        call fh_open
+        ret c                           ; (none)
+        ld hl,ll_cbuf                   ; the header
+        ld bc,GFX_HEADER
+        call fh_read
+        jr c,.cl
+        ld hl,ll_cbuf
+        ld de,gfx_magic
+        ld c,GFX_VERSION
+        call ll_check
+        jr c,.cl
+        ld a,(ll_cbuf+5)                ; pages: 1..GFX_PAGES_MAX
+        or a
+        jr z,.cl
+        cp GFX_PAGES_MAX+1
+        jr nc,.cl
+        ld (gl_n),a
+        ld a,(ll_cbuf+6)                ; the game's purposes
+        cp GFX_ANIMS
+        jr nz,.cl
+        ld a,PAGE_GFX0
+        ld (gl_pg),a
+.pg:    ld a,(gl_pg)                    ; each page, 8K, through slot 4
+        nextreg ULA_MMU,a
+        ld a,(fh_handle)
+        ld hl,ULA_ADDR
+        ld bc,MEMBANK_SIZE
+        call fh_read
+        nextreg ULA_MMU,PAGE_ULA0       ; (the flags kept)
+        jr c,.cl
+        ld a,b
+        cp high MEMBANK_SIZE
+        jr nz,.cl                       ; (not all of it)
+        ld hl,gl_pg
+        inc (hl)
+        ld hl,gl_n
+        dec (hl)
+        jr nz,.pg
+        ld a,1
+        ld (gfx_ok),a
+.cl:    ld a,(fh_handle)
+        jp fh_close
+
+gfx_name:   db "ZPDATA/SPRITES.ZPG", 0
+gfx_magic:  db "ZPGF"
+gl_pg:      db 0                        ; gfx_load: the page being read,
+gl_n:       db 0                        ;   pages left
+        ASSERT GFX_HEADER <= CTF_DATA
+        ASSERT MEMBANK_SIZE == $2000
+
 ;==============================================================================
 ; Level loading data
 ;==============================================================================

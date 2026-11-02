@@ -12,9 +12,16 @@
 ;          "KEY ALREADY IN USE" (for a second) and no change
 ;   0      every key and joystick input back to its default (key_defaults,
 ;          joy_defaults)
-;   1      back to the main menu (menu_go)
+;   1      back to the main menu (menu_go), saving the definitions first if
+;          they changed (kd_save; "KEYS NOT SAVED" for a second if they
+;          couldn't be)
 ; These keys are fixed (key_code_pressed), whatever the controls are set to.
 ; Uses the resident text routines (text.asm) and the input page in slot 7.
+;
+; The definitions are kept on the SD card as ZPDATA/KEYS.ZPK (beside the level
+; files): "ZPKY", KF_VERSION, K_ACTIONS, then key_defs and joy_defs (2 bytes
+; each control).  start loads them (kd_load, with this page in slot 6), if the
+; file is there and fits this game: else the defaults.
 ;==============================================================================
 
 KD_ROW0         equ 1               ; first row of the list (under the title)
@@ -46,13 +53,14 @@ keydef_screen:
         jr .txt
 .go:    xor a
         ld (kd_cur),a
+        ld (kd_dirty),a                 ; (nothing changed yet)
 .draw:  call kd_draw
 .loop:  call menu_frame
         call zrand                      ; (keep stirring the seed)
         call kbd_scan
         ld hl,KB_1                      ; back to the main menu
         call key_code_pressed
-        jp nz,menu_go                   ; (zpolice.asm)
+        jr nz,.back
         ld hl,KB_0                      ; the defaults
         call key_code_pressed
         jr z,.up
@@ -60,7 +68,23 @@ keydef_screen:
         ld de,key_defs                  ; (and joy_defs)
         ld bc,2*K_ACTIONS*2
         ldir
+        ld a,1
+        ld (kd_dirty),a
         jr .draw
+.back:  ld a,(kd_dirty)                 ; changed: saved first
+        or a
+        jp z,menu_go                    ; (zpolice.asm)
+        call kd_save
+        jp nc,menu_go
+        ld hl,txt_kd_nosave             ; couldn't be: say so, for a second
+        ld c,MENU_BAD
+        call kd_msg
+        ld b,KD_PAUSE
+.ns:    push bc
+        call menu_frame
+        pop bc
+        djnz .ns
+        jp menu_go
 .up:    ld hl,KB_Q
         call key_code_pressed
         jr z,.dn
@@ -83,7 +107,7 @@ keydef_screen:
         call key_code_pressed
         jr z,.loop
         call kd_change
-        jr .draw
+        jp .draw
 
 ;------------------------------------------------------------------------------
 ; SPACE: "PRESS A KEY OR JOYSTICK", a second's pause, then the next input
@@ -137,6 +161,8 @@ kd_change:
         ld (hl),e
         inc hl
         ld (hl),d
+        ld a,1
+        ld (kd_dirty),a
         ld hl,txt_kd_blank              ; (the message gone)
         ld c,MENU_ATTR
         jp kd_msg
@@ -295,6 +321,98 @@ kd_key_name:
         ret
 
 ;------------------------------------------------------------------------------
+; Saving and loading the definitions (ZPDATA/KEYS.ZPK).  They are in the
+; input page, in slot 7, where the file handler goes too: so they go through
+; kd_buf, in this page.
+;------------------------------------------------------------------------------
+KF_VERSION      equ 1
+KF_SIZE         equ 6 + 4*K_ACTIONS ; "ZPKY", version, controls, key_defs,
+                                    ; joy_defs
+        ASSERT joy_defs == key_defs + 2*K_ACTIONS
+
+; Save them (the input page in slot 7, and back there after).  Carry set (A
+; = the esxDOS error) if they couldn't be.
+kd_save:
+        ld hl,kf_magic
+        ld de,kd_buf
+        ld bc,4
+        ldir
+        ld a,KF_VERSION
+        ld (de),a
+        inc de
+        ld a,K_ACTIONS
+        ld (de),a
+        inc de
+        ld hl,key_defs                  ; (and joy_defs, after it)
+        ld bc,4*K_ACTIONS
+        ldir
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,kf_name
+        ld de,kd_buf
+        ld bc,KF_SIZE
+        call fh_save
+        nextreg CODE_MMU,PAGE_INPUT     ; (the flags kept)
+        ret
+
+; At start-up (this page in slot 6, the file handler set up): the saved
+; definitions, if the file is there and fits this game (its size, magic,
+; version and number of controls, and every input a known one or none);
+; else the defaults stay.  Leaves the input page in slot 7.
+kd_load:
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,kf_name
+        ld de,kd_buf
+        ld bc,KF_SIZE+1                 ; (one more: a longer file isn't one)
+        call fh_load
+        nextreg CODE_MMU,PAGE_INPUT
+        ret c                           ; none: the defaults
+        ld hl,-KF_SIZE
+        add hl,bc
+        ld a,h
+        or l
+        ret nz
+        ld hl,kd_buf
+        ld de,kf_magic
+        ld b,4
+.m:     ld a,(de)
+        cp (hl)
+        ret nz
+        inc hl
+        inc de
+        djnz .m
+        ld a,(hl)
+        cp KF_VERSION
+        ret nz
+        inc hl
+        ld a,(hl)
+        cp K_ACTIONS
+        ret nz
+        inc hl
+        push hl
+        ld b,2*K_ACTIONS                ; every input: none (a mask of 0) or
+.v:     ld a,(hl)                       ; in a known bank
+        inc hl
+        or a
+        ld a,(hl)
+        inc hl
+        jr z,.ok
+        cp KEY_BANKS
+        jr nc,.bad
+.ok:    djnz .v
+        pop hl
+        ld de,key_defs                  ; (and joy_defs)
+        ld bc,4*K_ACTIONS
+        ldir
+        ret
+.bad:   pop hl
+        ret
+
+kf_name:    db "ZPDATA/KEYS.ZPK", 0
+kf_magic:   db "ZPKY"
+kd_buf:     ds KF_SIZE+1
+kd_dirty:   db 0                        ; 1: changed since the screen opened
+
+;------------------------------------------------------------------------------
 ; Redefine keys page data
 ;------------------------------------------------------------------------------
 kd_text:
@@ -307,11 +425,12 @@ kd_text:
         db 22, 1, MENU_ATTR
         db "Q A: CHOOSE   SPACE: CHANGE", 0
         db 23, 1, MENU_ATTR
-        db "0: DEFAULTS   1: MAIN MENU", 0
+        db "0: DEFAULTS   1: SAVE, BACK", 0
         db $FF
 
 txt_kd_select:  db "PRESS A KEY OR JOYSTICK", 0
 txt_kd_used:    db "KEY ALREADY IN USE", 0
+txt_kd_nosave:  db "KEYS NOT SAVED (SD CARD?)", 0
 txt_kd_blank:   db "                              ", 0
 txt_kd_keyblank: db "       ", 0
         ASSERT $ - txt_kd_keyblank == KD_KEY_LEN + 1

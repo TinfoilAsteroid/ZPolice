@@ -148,7 +148,11 @@ rearm_all:
 ; each reward (rows SA_ROW0..SA_ROW_MAX; any more aren't shown).
 ;------------------------------------------------------------------------------
 SA_REPAIR       equ 1               ; salvage_tab rewards (flags): full repair,
-SA_BOOSTER      equ 2               ;   the booster module
+SA_BOOSTER      equ 2               ;   the booster module,
+SA_NV_GREEN     equ 4               ;   vision modes (vision_owned): night
+SA_NV_MONO      equ 8               ;   vision green, monochrome,
+SA_THERMAL      equ 16              ;   thermal, the vertical thrusters
+SA_VTHRUST      equ 32              ;   (vthrust_fitted)
 SALVAGE_TAIL    equ 145
 SALVAGE_STEP    equ 5
 SA_ROW0         equ 16
@@ -230,7 +234,8 @@ sa_reached:
         ret
 
 ; Reward: B = weapon type (WPN_NONE: none) unlocked, C = SA_* flags: a full
-; repair, the booster module.  A line on the screen for each.
+; repair, the booster module, the vision modes.  A line on the screen for
+; each.
 sa_reward:
         ld a,b
         or a
@@ -261,7 +266,31 @@ sa_reward:
         call sa_line.at
         call sa_next
         pop bc
-.rep:   bit 1,c                         ; the booster module: fitted, full
+.rep:   ld a,VIS_NV_GREEN               ; the vision modes: the VTOL has them
+        ld hl,txt_sa_nv_green
+        bit 2,c
+        call nz,sa_vision
+        ld a,VIS_NV_MONO
+        ld hl,txt_sa_nv_mono
+        bit 3,c
+        call nz,sa_vision
+        ld a,VIS_THERMAL
+        ld hl,txt_sa_thermal
+        bit 4,c
+        call nz,sa_vision
+        ASSERT SA_NV_GREEN == 1<<2 && SA_NV_MONO == 1<<3 && SA_THERMAL == 1<<4
+        bit 5,c                         ; the vertical thrusters: part of the
+        jr z,.bo                        ; VTOL from now on
+        ASSERT SA_VTHRUST == 1<<5
+        ld a,1
+        ld (vthrust_fitted),a
+        push bc
+        ld hl,txt_sa_vthrust
+        ld e,7
+        call sa_line
+        call sa_next
+        pop bc
+.bo:    bit 1,c                         ; the booster module: fitted, full
         jr z,.rp
         ASSERT SA_BOOSTER == 1<<1
         ld a,1
@@ -283,6 +312,21 @@ sa_reward:
         ld e,7
         call sa_line
         ; fall through
+
+; A vision mode: A = its VIS_* bit, HL = its name: the VTOL has it now
+; (vision_owned), and a line says so.  Preserves BC.
+sa_vision:
+        push hl
+        ld hl,vision_owned
+        or (hl)
+        ld (hl),a
+        pop hl
+        push bc
+        ld e,7
+        call sa_line
+        call sa_next
+        pop bc
+        ret
 
 ; The next reward line
 sa_next:
@@ -348,7 +392,8 @@ sa_old:     dw 0                        ; the salvage before this level
 sa_row:     db 0                        ; the next reward line
 
 ; Salvage totals and their rewards: points (word), weapon unlocked
-; (WPN_NONE: none), full repair (1); $FFFF ends it
+; (WPN_NONE: none), SA_* flags (full repair, booster, vision modes); $FFFF
+; ends it.  (SALVAGE.md lists them.)
 salvage_tab:
         dw 10
         db WPN_LASER, 0
@@ -357,11 +402,11 @@ salvage_tab:
         dw 20
         db WPN_CHAIN, 0
         dw 25
-        db WPN_NONE, SA_REPAIR
+        db WPN_NONE, SA_NV_GREEN        ; (was a full repair)
         dw 30
         db WPN_ROCKETS, 0
         dw 35
-        db WPN_NONE, SA_REPAIR
+        db WPN_NONE, SA_VTHRUST         ; (was a full repair)
         dw 40
         db WPN_LASER, 0
         dw 45
@@ -369,19 +414,19 @@ salvage_tab:
         dw 50
         db WPN_CHAIN, 0
         dw 55
-        db WPN_NONE, SA_REPAIR
+        db WPN_PROX, SA_REPAIR
         dw 60
         db WPN_ROCKETS, 0
         dw 65
-        db WPN_LASER, 0
+        db WPN_LASER, SA_NV_MONO
         dw 70
-        db WPN_NONE, SA_REPAIR
+        db WPN_PROX, SA_REPAIR
         dw 75
         db WPN_CHAIN, 0
         dw 80
         db WPN_ROCKETS, 0
         dw 85
-        db WPN_NONE, SA_REPAIR
+        db WPN_NONE, SA_THERMAL         ; (was a full repair)
         dw 90
         db WPN_LASER, 0
         dw 95
@@ -389,15 +434,15 @@ salvage_tab:
         dw 100
         db WPN_ROCKETS, 1
         dw 105
-        db WPN_BOFORS, 1
+        db WPN_AUTOCANNON, 1
         dw 110
-        db WPN_BOFORS, 1
+        db WPN_AUTOCANNON, 1
         dw 115
         db WPN_MISSILE, 1
         dw 120
-        db WPN_BOFORS, 1
+        db WPN_AUTOCANNON, 1
         dw 125
-        db WPN_BOFORS, 1
+        db WPN_AUTOCANNON, 1
         dw 130
         db WPN_MISSILE, 1
         dw 135
@@ -410,7 +455,7 @@ salvage_tab:
 
 ; Weapon names, by WPN_*
 wpn_names:  dw txt_wn_none, txt_wn_gun, txt_wn_laser, txt_wn_chain
-            dw txt_wn_rockets, txt_wn_missile, txt_wn_bomb, txt_wn_bofors
+            dw txt_wn_rockets, txt_wn_missile, txt_wn_bomb, txt_wn_autocannon
             dw txt_wn_prox
         ASSERT ($ - wpn_names)/2 == WPN_LAST+1
 txt_wn_none:    db "NOTHING", 0
@@ -420,13 +465,17 @@ txt_wn_chain:   db "CHAIN GUN", 0
 txt_wn_rockets: db "ROCKET POD", 0
 txt_wn_missile: db "MISSILE POD", 0
 txt_wn_bomb:    db "BOMB", 0
-txt_wn_bofors:  db "BOFORS CANNON", 0
+txt_wn_autocannon: db "AUTOCANNON", 0
 txt_wn_prox:    db "PROXIMITY CANNON", 0
 txt_sa_saved:   db "HUMANS SAVED", 0
 txt_sa_points:  db "SALVAGE", 0
 txt_sa_new:     db "NEW", 0
 txt_sa_repair:  db "FULL REPAIR", 0
 txt_sa_booster: db "BOOSTER MODULE", 0
+txt_sa_nv_green: db "NIGHT VISION - GREEN", 0
+txt_sa_nv_mono: db "NIGHT VISION - MONOCHROME", 0
+txt_sa_thermal: db "THERMAL VISION", 0
+txt_sa_vthrust: db "VERTICAL THRUSTERS", 0
 txt_sa_rearm:   db "AMMUNITION REPLENISHED", 0
 
 ; The last level (LEVEL_LAST) complete: CONGRATULATIONS for GAME_DONE_FR

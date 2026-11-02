@@ -87,6 +87,7 @@
         DEFINE CLIP_2D
 
         INCLUDE "memory_bank_defs.asm"  ; MMU slots, registers, addresses, pages
+        INCLUDE "gfx_ids.inc"           ; the figures' purposes (gengraphics.py)
 
 ;------------------------------------------------------------------------------
 ; Tuning constants
@@ -114,8 +115,8 @@ TILE_UNITS      equ 256         ; world units per tile
 HEIGHT_M        equ 10          ; metres per height unit
 HEIGHT_UNITS    equ 128         ; world units per height unit
 NEAR            equ 16          ; near clip plane: 1.25 m
-VIEW_R          equ 6           ; most draw distance: buildings within +/- 6
-                                ; tiles (120 m).  Each level sets its own,
+VIEW_R          equ 8           ; most draw distance: buildings within +/- 8
+                                ; tiles (160 m).  Each level sets its own,
                                 ; 2..VIEW_R (view_r; night, fog), and the
                                 ; street dots' radius one less (dot_r)
 PMAX            equ 24          ; pitch limit (256 = 360 deg) - match gentables.py
@@ -154,8 +155,11 @@ PDAMP_K         equ 0           ; no share: a steady rate
 PDAMP_MIN       equ 128         ; 128/256: half a pitch unit a frame
 MIN_Y           equ 8           ; lowest flight: 0.6 m
 MAX_Y           equ 3*HEIGHT_UNITS/2  ; ceiling 1.5 height units: 15 m
+MAX_Y_THRUST    equ 3*HEIGHT_UNITS  ; with the vertical thrusters (a salvage
+                                ; reward, vthrust_fitted): 3.0 height units, 30 m
 BLD_MAX_H       equ 7*HEIGHT_UNITS  ; tallest building 7.0 height units: 70 m
                                 ; (htab level 15, gentables.py; 4.7 m a level)
+        ASSERT MAX_Y_THRUST < BLD_MAX_H ; (below the perimeter wall: SKY_IS_WALL)
 WORLD_MIN       equ 64
 WORLD_MAX       equ GRID*256-64
 DMA_SPAN_MIN    equ 20          ; spans this wide or wider are filled by DMA
@@ -186,7 +190,7 @@ WPN_CHAIN       equ 3           ; chain gun (centre slot)
 WPN_ROCKETS     equ 4           ; unguided rocket pod (wing pylons)
 WPN_MISSILE     equ 5           ; missile pod (wing pylons)
 WPN_BOMB        equ 6           ; bomb (placeholder)
-WPN_BOFORS      equ 7           ; Bofors cannon (wing pylons)
+WPN_AUTOCANNON  equ 7           ; autocannon (wing pylons)
 WPN_PROX        equ 8           ; proximity cannon (wing pylons)
 WPN_LAST        equ WPN_PROX    ; (the highest type: the tables by type)
 ; Weapon type details: wpn_cfg, WCFG_SIZE bytes per type (wpn_cfg_ptr)
@@ -201,7 +205,7 @@ WS_ANY          equ %11111      ;   any slot
 
 ; Machine gun rounds: NBULLETS records of BREC bytes in `bullets`
 NBULLETS        equ 24          ; rounds in flight (the chain gun needs most)
-BREC            equ 27
+BREC            equ 32
 B_STATE         equ 0           ; 0 free, 1 in flight, 2 hit (shown, then freed),
                                 ; 3 laser beam; bit 7: fresh (fired this frame)
 B_X             equ 1           ; position, world units
@@ -220,9 +224,12 @@ B_DMG           equ 25          ; damage to a zombie it hits directly
 B_KIND          equ 26          ; 0 = round or beam, BK_ROCKET = rocket,
 BK_ROCKET       equ 1           ; BK_MISSILE = missile (both burst)
 BK_MISSILE      equ 2
-BK_BOFORS       equ 3           ; a Bofors shell: drawn as a round, bursts
-BK_PROX         equ 4           ; a proximity shell: as Bofors, and bursts
+BK_AUTOCANNON   equ 3           ; an autocannon shell: drawn as a round, bursts
+BK_PROX         equ 4           ; a proximity shell: as autocannon, and bursts
                                 ; passing near a monster (PROX_R)
+B_TGT           equ 27          ; a missile: the monster it tracks ($FF none)
+B_YAW           equ 28          ;   its heading, 8.8 (yaw units: 256 a turn)
+B_PIT           equ 30          ;   and climb, 8.8 signed (as pitch)
 NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
 BULLET_MS       equ 500         ; muzzle velocity, m/s
 BULLET_STEP     equ BULLET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 457 units/frame
@@ -295,27 +302,48 @@ MISSILE_INTERVAL equ ROCKET_INTERVAL    ; frames between missiles
 MISSILE_R       equ TILE_UNITS  ; 1.0 tile (20 m)
 MISSILE_DMG     equ 15
 MISSILE_PARTS   equ 20
+; Missile lock (lock_update, weapons.asm): with the missile pod selected, a
+; square reticule wanders near the view's centre (RET_WANDER_R) until a
+; monster is seen within LOCK_RANGE
+; tiles; it then moves to it (RET_STEP pixels a frame), and after LOCK_TIME
+; frames on it the target is locked (the lock tone).  A missile fires only
+; with a lock.  It leaves straight ahead, then turns towards its target at
+; MISSILE_TURN a frame (3 degrees), sideways and up or down; if the target
+; is more than LOCK_RANGE tiles away (along x or z) it stops tracking and
+; flies straight on.
+LOCK_RANGE      equ 8*TILE_UNITS    ; 8 tiles (160 m)
+LOCK_TIME       equ 2*NOMINAL_FPS   ; frames on the target to lock (2 s)
+MISSILE_TURN    equ 546         ; 3 degrees a frame (8.8: 3*256*256/360)
+MSL_PITCH_MAX   equ 56          ; its climb kept within +-79 degrees
+MSL_AIM_Y       equ ZOMBIE_H/2  ; aimed at the target's middle (feet + 1 m)
+RET_HALF        equ 6           ; the reticule: a square 2*RET_HALF+1 wide
+RET_STEP        equ 4           ;   pixels a frame moving to a target
+RET_WANDER      equ 2           ;   and wandering,
+RET_WANDER_R    equ 40          ;   within this many pixels of the view's
+                                ;   centre (along x and y) until it sees one
+LOCK_NEAR       equ 3           ;   on the target within this many pixels
 
-; Bofors cannon (WPN_BOFORS, on a wing pylon): BOFORS_SHOTS shells, fired as
-; the machine gun's rounds (500 m/s, drawn as tracers) at a quarter of its
-; rate.  Each shell bursts where it hits anything: BOFORS_DMG to everything
-; within BOFORS_R (3 m) on each axis, and BOFORS_PARTS orange particles.
-BOFORS_SHOTS    equ 50          ; a full magazine
-BOFORS_INTERVAL equ GUN_INTERVAL*4      ; frames between shells (16)
-BOFORS_R        equ 3*TILE_UNITS/TILE_M ; 3 m: 38 units
-BOFORS_DMG      equ 4
-BOFORS_PARTS    equ 3
+; Autocannon (WPN_AUTOCANNON, on a wing pylon): AUTOCANNON_SHOTS shells,
+; fired as the machine gun's rounds (500 m/s, drawn as tracers) at a quarter
+; of its rate.  Each shell bursts where it hits anything: AUTOCANNON_DMG to
+; everything within AUTOCANNON_R (3 m) on each axis, and AUTOCANNON_PARTS
+; orange particles.
+AUTOCANNON_SHOTS equ 50         ; a full magazine
+AUTOCANNON_INTERVAL equ GUN_INTERVAL*4  ; frames between shells (16)
+AUTOCANNON_R    equ 3*TILE_UNITS/TILE_M ; 3 m: 38 units
+AUTOCANNON_DMG  equ 4
+AUTOCANNON_PARTS equ 3
 
-; Proximity cannon (WPN_PROX, on a wing pylon): the Bofors cannon, but its
+; Proximity cannon (WPN_PROX, on a wing pylon): the autocannon, but its
 ; shells also burst when they pass within PROX_R (2 m) of a zombie or
 ; special monster, on each axis from its x, z and feet (cell_zombies: the
 ; burst's own box, so the monster is always in it), where the shell comes
 ; nearest it.  The burst: PROX_DMG within PROX_R on each axis.
-PROX_SHOTS      equ BOFORS_SHOTS
-PROX_INTERVAL   equ BOFORS_INTERVAL
+PROX_SHOTS      equ AUTOCANNON_SHOTS
+PROX_INTERVAL   equ AUTOCANNON_INTERVAL
 PROX_R          equ 2*TILE_UNITS/TILE_M ; 2 m: 25 units
 PROX_DMG        equ 3
-PROX_PARTS      equ BOFORS_PARTS
+PROX_PARTS      equ AUTOCANNON_PARTS
 
 ; Landed on the base pad (vtol_landed, the cell under it PAD_CODE) the VTOL
 ; is repaired and its pods reloaded (pad_service, weapons.asm): 1 hit point
@@ -324,8 +352,8 @@ PROX_PARTS      equ BOFORS_PARTS
 REPAIR_FRAMES   equ 5
 ROCKET_RELOAD   equ 15          ; frames a rocket
 MISSILE_RELOAD  equ 30          ; frames a missile
-BOFORS_RELOAD   equ 7           ; frames a Bofors shell
-PROX_RELOAD     equ BOFORS_RELOAD   ; and a proximity shell
+AUTOCANNON_RELOAD equ 7         ; frames an autocannon shell
+PROX_RELOAD     equ AUTOCANNON_RELOAD   ; and a proximity shell
 
 ; Humans to rescue (human.asm)
 HUMAN_MAX       equ 20          ; room for this many
@@ -336,6 +364,15 @@ HUMAN_ROOF_MAX  equ MAX_Y-HEIGHT_UNITS  ; humans aren't placed on roofs
                                 ; taller than the ceiling - 1.0 height unit
 HUMAN_RUN       equ TILE_UNITS*10/(TILE_M*NOMINAL_FPS)  ; 10 m/s: 9 units/frame
 HUMAN_HP        equ 10          ; hit points (a rocket blast kills)
+WAVE_R          equ 4*TILE_UNITS    ; 80 m: the VTOL this near (x and z), a
+                                ; waiting human waves; farther, stands
+FLEE_R          equ TILE_UNITS  ; 20 m: a monster this near (x and z), a
+                                ; human on the road runs from it
+FLEE_TIME       equ NOMINAL_FPS ; for this many frames (a second), then
+                                ; looks again
+FLEE_EVERY      equ 4           ; a standing human looks for monsters
+                                ; every this many frames (staggered)
+HUMAN_FLEE      equ HUMAN_RUN   ; units a frame (10 m/s)
 VTOL_HP         equ 50          ; the VTOL's hit points (ghosts attack it)
 ; At 0 hit points the VTOL is destroyed (vtol_dead): out of control, it
 ; spins DEAD_SPIN (8.8 yaw) a frame as it falls, faster each frame up to
@@ -579,6 +616,7 @@ boot_stack:
         INCLUDE "levels.asm"            ; the current level's record
         INCLUDE "text.asm"              ; text screens: menu, load-out
         INCLUDE "sfx_data.asm"          ; the sound effects (sfx_tick plays them)
+        INCLUDE "layer2_cls.asm"        ; zxnDMA equates, the fill block, dma_fill
 
 ;==============================================================================
 ; Entry
@@ -594,6 +632,10 @@ start:
                                         ; (interrupts.asm; still disabled)
         nextreg CODE_MMU,PAGE_FILE      ; the SD card's default drive
         call fh_init                    ; (file_handler.asm)
+        nextreg LOGIC_MMU,PAGE_LEVEL    ; the figures' graphics
+        call gfx_load                   ; (level_load.asm)
+        nextreg LOGIC_MMU,PAGE_KEYDEF   ; the saved key and joystick
+        call kd_load                    ; definitions, if any (keydef.asm)
         ; (the Layer 2 palette: each city's own, loaded with the level)
 
         ld a,r                          ; random seed (xorshift: non-zero);
@@ -630,6 +672,7 @@ newGame:
 ; debug load-out), level START_LEVEL.  (CONTINUE lays a save game over it:
 ; continue_game.)
 game_reset:
+        call shake_off
         ld hl,start_state               ; player, weapon slots, selection
         ld de,cam_x
         ld bc,start_state_end-start_state
@@ -671,6 +714,8 @@ game_reset:
         ld (boost_fitted),a             ; no booster (a salvage reward)
         ld (boost_fuel),a
         ld (boost_on),a
+        ld (vision_owned),a             ; no vision modes (salvage rewards)
+        ld (vthrust_fitted),a           ; no vertical thrusters (salvage)
     IF DEBUG_LOADOUT
         ld hl,wpn_stock+1               ; debug: every weapon unlocked, and
         ld b,WPN_LAST                   ; DEBUG_STOCK of each in store (not
@@ -701,6 +746,7 @@ game_reset:
 ;==============================================================================
 next_level:
         ld sp,stack_top
+        call shake_off                  ; (a crash's shake cut short)
         ld hl,start_state               ; position, heading, pitch, speed
         ld de,cam_x
         ld bc,speed+1-cam_x
@@ -792,7 +838,8 @@ main_loop:
         call vtick
     ENDIF
         nextreg CODE_MMU,PAGE_CITY      ; Layer 2 drawing code at $E000
-        call clear_screen
+        nextreg CITY2_MMU,PAGE_CITY2    ; and more at $8000, over the ULA
+        call clear_screen               ;   screen (city2.asm)
     IFDEF DRAW_FPS
         call vtick
     ENDIF
@@ -804,12 +851,15 @@ main_loop:
         call draw_bullets               ; machine gun tracers
         call draw_particles             ; zombie bursts
         call draw_gunsight
+        call draw_reticule              ; the missile lock (city2.asm)
+        nextreg ULA_MMU,PAGE_ULA0       ; the ULA screen back at $8000
         nextreg CODE_MMU,PAGE_HUD       ; ULA HUD code at $E000
         call draw_hud
     IFDEF WAIT_FOR_VBLANK
         call wait_vblank
     ENDIF
         call l2_flip
+        call shake_tick                 ; a crash: the view shaken
     IFDEF DRAW_FPS
         call fps_tick                   ; HUD page is still at $E000
     ENDIF
@@ -912,6 +962,46 @@ l2_flip:
 ;------------------------------------------------------------------------------
 
 ;------------------------------------------------------------------------------
+; Screen shake, when the VTOL hits a building (player.asm sets shake_t to
+; SHAKE_LEN).  Each rendered frame, as it is shown, the Layer 2 view is
+; offset by the next pair of shake_xy through the scroll registers, a pixel
+; or two each way, dying away; the last pair (0, 0) puts it back.  Only
+; Layer 2 moves: the HUD is on the ULA.  (X wraps at 256, Y at 192: -n is
+; 256-n and 192-n.  An edge row or column of the view shows the far side's
+; meanwhile.)
+;------------------------------------------------------------------------------
+SHAKE_LEN       equ 6               ; rendered frames (about half a second)
+shake_tick:
+        ld a,(shake_t)
+        or a
+        ret z
+        dec a
+        ld (shake_t),a
+        add a,a
+        ld hl,shake_xy
+        add hl,a
+        ld a,(hl)
+        nextreg $16,a                   ; Layer 2 scroll X
+        inc hl
+        ld a,(hl)
+        nextreg $17,a                   ; Layer 2 scroll Y
+        ret
+
+; Stop any shake: the view back in place
+shake_off:
+        xor a
+        ld (shake_t),a
+        nextreg $16,0
+        nextreg $17,0
+        ret
+
+; (x, y) pixels, used from the last pair back to the first
+shake_xy:   db 0,0, 1,0, 256-1,192-1, 1,1, 256-2,192-1, 2,1
+        ASSERT $ - shake_xy == 2*SHAKE_LEN
+shake_t:    db 0                        ; frames of shake left (0: none)
+gfx_ok:     db 0                        ; 1: the figures' graphics are loaded
+
+;------------------------------------------------------------------------------
 ; Wait until the raster is outside the display area (line >= 192)
 ;------------------------------------------------------------------------------
 wait_vblank:
@@ -981,9 +1071,9 @@ wpn_cfg:    db 0, 0, WS_ANY                             ; WPN_NONE (empty)
             db ROCKET_SHOTS, ROCKET_RELOAD, WS_PYLONS   ; WPN_ROCKETS
             db MISSILE_SHOTS, MISSILE_RELOAD, WS_PYLONS ; WPN_MISSILE
             db 0, 0, 0                                  ; WPN_BOMB (none yet)
-            db BOFORS_SHOTS, BOFORS_RELOAD, WS_PYLONS   ; WPN_BOFORS
+            db AUTOCANNON_SHOTS, AUTOCANNON_RELOAD, WS_PYLONS ; WPN_AUTOCANNON
             db PROX_SHOTS, PROX_RELOAD, WS_PYLONS       ; WPN_PROX
-        ASSERT WPN_ROCKETS == 4 && WPN_MISSILE == 5 && WPN_BOFORS == 7
+        ASSERT WPN_ROCKETS == 4 && WPN_MISSILE == 5 && WPN_AUTOCANNON == 7
         ASSERT WPN_PROX == 8
         ASSERT $ - wpn_cfg == WCFG_SIZE*(WPN_LAST+1)
 
@@ -1031,21 +1121,28 @@ menu_go:
 ;------------------------------------------------------------------------------
 ; Paused (main_loop: the pause control, K_PAUSE, BREAK or a Mega Drive pad's
 ; START by default): PAUSED over the view, white on an opaque black ULA box,
-; and under it S: SAVE AND QUIT, until the pause control is pressed again.
-; Nothing moves meanwhile and the screen keeps its last frame.  S (fixed:
-; only while paused) saves the game (save_game) and goes back to the main
-; menu; if it can't be saved, SAVE FAILED, and it stays paused.  (Not in a
-; wreck: nothing to save.)  Needs the input page in slot 7.
+; and under it S: SAVE AND QUIT and X: QUIT, NO SAVE, until the pause control
+; is pressed again.  Nothing moves meanwhile and the screen keeps its last
+; frame.  S (fixed: only while paused) saves the game (save_game) and goes
+; back to the main menu; if it can't be saved, SAVE FAILED, and it stays
+; paused.  (Not in a wreck: nothing to save.)  X (fixed too) goes back to
+; the main menu without saving: the game is lost, and any save game is left
+; as it was.  Needs the input page in slot 7.
 ;------------------------------------------------------------------------------
 PAUSE_ROW       equ 7               ; ULA character row and column of the box
 PAUSE_COL       equ 12
 PAUSE_ROW2      equ 9               ; and of the save line
 PAUSE_COL2      equ 7
+PAUSE_ROW3      equ 10              ; and of the quit line
 PAUSE_ATTR      equ 2<<3 | 7        ; paper 2 (opaque black), ink 7 (white)
 VIEW_ATTR       equ %01000111       ; the viewport's own (ula_init): transparent
 game_pause:
         ld hl,txt_paused
         ld de,PAUSE_ROW<<8 | PAUSE_COL
+        ld c,PAUSE_ATTR
+        call menu_print
+        ld hl,txt_pause_quit
+        ld de,PAUSE_ROW3<<8 | PAUSE_COL2
         ld c,PAUSE_ATTR
         call menu_print
         ld a,(vtol_dead)
@@ -1063,11 +1160,18 @@ game_pause:
         ld hl,KB_S                      ; save and quit
         call key_code_pressed
         jr nz,.save
-.np:    ld a,K_PAUSE
+.np:    ld hl,KB_X                      ; quit, no save
+        call key_code_pressed
+        jr nz,.quit
+        ld a,K_PAUSE
         call key_pressed
         jr z,.w
         ld hl,txt_unpaused              ; the box gone: the view again
         ld de,PAUSE_ROW<<8 | PAUSE_COL
+        ld c,VIEW_ATTR
+        call menu_print
+        ld hl,txt_unpaused2
+        ld de,PAUSE_ROW3<<8 | PAUSE_COL2
         ld c,VIEW_ATTR
         call menu_print
         ld hl,txt_unpaused2
@@ -1076,7 +1180,7 @@ game_pause:
         jp menu_print
 .save:  call save_game                  ; (pages the file handler in)
         jr c,.fail
-        nextreg LOGIC_MMU,PAGE_MENU     ; saved: the main menu
+.quit:  nextreg LOGIC_MMU,PAGE_MENU     ; saved, or quit: the main menu
         ld sp,stack_top
         jp main_menu
 .fail:  nextreg CODE_MMU,PAGE_INPUT     ; couldn't: say so, still paused
@@ -1094,6 +1198,8 @@ txt_save_fail:  db "   SAVE FAILED    ", 0
 txt_unpaused2:  db "                  ", 0
         ASSERT txt_save_fail - txt_pause_save == txt_unpaused2 - txt_save_fail
         ASSERT txt_unpaused2 - txt_save_fail == $ - txt_unpaused2
+txt_pause_quit: db " X: QUIT, NO SAVE ", 0
+        ASSERT $ - txt_pause_quit == txt_save_fail - txt_pause_save
 
 ;------------------------------------------------------------------------------
 ; Save games: ZPDATA/SAVEGAME.ZPS (beside the level files), one game.  Written
@@ -1101,11 +1207,14 @@ txt_unpaused2:  db "                  ", 0
 ; (load_save, continue_game).  "ZPSV", SG_VERSION, then the fields in
 ; sg_fields, in order: the level and wave, the salvage, the VTOL's integrity
 ; (vtol_hp), its weapon slots (type and ammo each) and the selected one, the
-; store (wpn_stock, wpn_unlocked), and the booster (fitted, fuel).
+; store (wpn_stock, wpn_unlocked), the booster (fitted, fuel), and the
+; vision modes (vision_owned), and the vertical thrusters (vthrust_fitted).
+; Files of an older version (1: before the vision modes, 2: before the
+; thrusters) are refused, as any other version.
 ; Continued, the level starts afresh at the saved wave: its zombies, the
 ; humans (and this level's rescues so far) and the base are new.
 ;------------------------------------------------------------------------------
-SG_VERSION      equ 1
+SG_VERSION      equ 3
 sg_fields:      ; address, bytes
         dw level
         db 1
@@ -1125,9 +1234,13 @@ sg_fields:      ; address, bytes
         db WPN_LAST+1
         dw boost_fitted                 ; (and boost_fuel, after it)
         db 2
+        dw vision_owned
+        db 1
+        dw vthrust_fitted
+        db 1
         dw 0                            ; (the end)
         ASSERT boost_fuel == boost_fitted+1
-SG_SIZE         equ 5+1+1+2+1+WPN_SLOTS*2+1+2*(WPN_LAST+1)+2
+SG_SIZE         equ 5+1+1+2+1+WPN_SLOTS*2+1+2*(WPN_LAST+1)+2+1+1
 
 ; Copy the fields: A = 0 the game's into sg_buf, 1 sg_buf's into the game
 sg_copy:
@@ -1597,12 +1710,30 @@ gun_tilt:   db 0                        ; centre gun tilt, signed (weapons_reset
 barr_n:     db 0                        ; barricades in barr_tab (barricade_init)
 barr_tab:   ds NBARR*BARR_REC           ; barricades: x, z, hit points
 sight_y:    db VIEW_CY                  ; the gunsight's row (gun_aim)
+; The missile lock (lock_update, weapons.asm; drawn by draw_reticule)
+ret_on:     db 0                        ; 1: the reticule is shown
+ret_x:      db 128                      ;   its centre (view pixels)
+ret_y:      db VIEW_CY
+lock_state: db 0                        ; 0 searching, 1 locking, 2 locked
+lock_tgt:   db $FF                      ; the monster (record index; $FF none)
+lock_t:     db 0                        ; frames on it so far
+wnd_x:      db 128                      ; where the reticule wanders to
+wnd_y:      db VIEW_CY
 ; Weapons unlocked by salvage (salvage_award, menu.asm), not yet fitted: a
 ; count per weapon type (WPN_*), for the load-out page (newGame: none)
 wpn_stock:  ds WPN_LAST+1
 ; 1: the weapon type has been unlocked (fitted at the start, or by salvage):
 ; the load-out screen lists it, even with none in store (newGame)
 wpn_unlocked: ds WPN_LAST+1
+; Vision modes the VTOL has (salvage rewards, fitted at once): VIS_* bits.
+; Saved in the save game.  (Using them is still to come.)
+VIS_NV_GREEN    equ 1<<0            ; night vision, green
+VIS_NV_MONO     equ 1<<1            ; night vision, monochrome
+VIS_THERMAL     equ 1<<2            ; thermal vision
+vision_owned: db 0                      ; (newGame: none)
+; 1: the vertical thrusters (a salvage reward, part of the VTOL from then
+; on, no fuel): it climbs to MAX_Y_THRUST instead of MAX_Y.  Saved.
+vthrust_fitted: db 0
 boost_fitted: db 0                      ; 1: the booster module (salvage)
 boost_fuel: db 0                        ; its fuel, 0..BOOST_FUEL_MAX
 boost_on:   db 0                        ; 1: boosting (speed BOOST_SPEED)
@@ -1676,6 +1807,14 @@ stack_top:
         ORG CODE_ADDR
         INCLUDE "city.asm"
         DISPLAY "City end:  ",/A,$
+
+; The second city page: assembled at $8000, mapped into slot 4 (over the ULA
+; screen) beside the city page while the city is drawn
+        MMU CITY2_SLOT e, PAGE_CITY2, CITY2_ADDR
+        ORG CITY2_ADDR
+        INCLUDE "city2.asm"
+        DISPLAY "City2 end: ",/A,$
+        ASSERT $ <= CITY2_ADDR+MEMBANK_SIZE
 
         MMU CODE_SLOT e, PAGE_HUD, CODE_ADDR
         ORG CODE_ADDR

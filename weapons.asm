@@ -37,20 +37,22 @@
 ; a zombie) rocket_blast does BLAST_DMG to every zombie, human and base tile
 ; within BLAST_R on each axis, and sprays BLAST_PARTS orange particles.
 ;
-; Bofors cannon (WPN_BOFORS, a wing pylon, BOFORS_SHOTS shells): the machine
-; gun's rounds (B_KIND = BK_BOFORS, drawn as tracers) one every
-; BOFORS_INTERVAL frames; each bursts where it stops: BOFORS_DMG within
-; BOFORS_R (3 m) on each axis, BOFORS_PARTS particles.
+; Autocannon (WPN_AUTOCANNON, a wing pylon, AUTOCANNON_SHOTS shells): the
+; machine gun's rounds (B_KIND = BK_AUTOCANNON, drawn as tracers) one every
+; AUTOCANNON_INTERVAL frames; each bursts where it stops: AUTOCANNON_DMG
+; within AUTOCANNON_R (3 m) on each axis, AUTOCANNON_PARTS particles.
 ;
-; Proximity cannon (WPN_PROX, a wing pylon, PROX_SHOTS shells): the Bofors
-; cannon (B_KIND = BK_PROX), its shells also bursting when they pass within
+; Proximity cannon (WPN_PROX, a wing pylon, PROX_SHOTS shells): the
+; autocannon (B_KIND = BK_PROX), its shells also bursting when they pass within
 ; PROX_R (2 m) of a monster (b_pr widens the monster hit boxes,
 ; cell_zombies); the burst does PROX_DMG within PROX_R on each axis.
 ;
 ; Missile pod (WPN_MISSILE, a wing pylon, MISSILE_SHOTS missiles): as the
 ; rockets (B_KIND = BK_MISSILE, drawn the same) at half the speed; the burst
 ; does MISSILE_DMG within MISSILE_R (1.0 tile) on each axis, and sprays
-; MISSILE_PARTS particles.
+; MISSILE_PARTS particles.  Guided: one fires only with a target locked
+; (lock_update: the reticule), and turns towards it (msl_steer) at
+; MISSILE_TURN a frame until it is more than LOCK_RANGE away.
 ;
 ; Damage: each round carries its damage (B_DMG): machine gun GUN_DMG, chain
 ; gun CHAIN_DMG, the laser LASER_DMG a beam frame, a rocket none directly
@@ -70,6 +72,7 @@ update_weapons:
         or a
         jr z,.alive
         call las_reset                  ; destroyed: no firing, no beam
+        call lock_off                   ;   no lock
         jr .move
 .alive:
     IF DEBUG_KILLALL
@@ -81,10 +84,12 @@ update_weapons:
         call vtol_landed
         jr nz,.fire
         call las_reset                  ; landed: no firing, no beam, until
-        call pad_service                ; it takes off; on the pad: repairs
-        jr .move                        ; and reloads
+        call lock_off                   ; it takes off (nor a lock); on the
+        call pad_service                ; pad: repairs and reloads
+        jr .move
 .fire:  xor a
         ld (svc_on),a                   ; (service starts afresh next landing)
+        call lock_update                ; the missile lock
         call gun_fire
         call laser_update
 .move:  ld ix,bullets
@@ -97,7 +102,10 @@ update_weapons:
         jr nz,.fly
         ld (ix+B_STATE),0               ; its impact was shown last frame
         jr .nx
-.fly:   call bullet_step
+.fly:   ld a,(ix+B_KIND)
+        cp BK_MISSILE
+        call z,msl_steer                ; a missile turns to its target
+        call bullet_step
 .nx:    ld de,BREC
         add ix,de
         pop bc
@@ -126,8 +134,8 @@ gun_fire:
         jr z,.rocket
         cp WPN_MISSILE
         jr z,.missile
-        cp WPN_BOFORS
-        jr z,.bofors
+        cp WPN_AUTOCANNON
+        jp z,.autocannon
         cp WPN_PROX
         jr z,.prox
         cp WPN_GUN
@@ -158,7 +166,10 @@ gun_fire:
         ld (sfx_req),a
         ret
 .missile:
-        call free_round                 ; missile pod: one missile
+        ld a,(lock_state)               ; missile pod: only with a lock
+        cp 2
+        ret nz
+        call free_round                 ; one missile
         ret c
         call take_ammo
         ret c
@@ -167,28 +178,38 @@ gun_fire:
         ld hl,MISSILE_STEP
         call spawn_round
         ld (ix+B_KIND),BK_MISSILE       ; no direct damage: its blast
+        ld a,(lock_tgt)                 ; tracking the target locked,
+        ld (ix+B_TGT),a
+        ld a,(yaw_frac)                 ; from straight ahead
+        ld (ix+B_YAW),a
+        ld a,(yaw)
+        ld (ix+B_YAW+1),a
+        ld a,(pitch_frac)
+        ld (ix+B_PIT),a
+        ld a,(pitch)
+        ld (ix+B_PIT+1),a
         ld a,SFX_MISSILE                ; its woosh
         ld (sfx_req),a
         ret
 .prox:  ld a,BK_PROX                    ; proximity cannon: one shell
         jr .shell
-.bofors:
-        ld a,BK_BOFORS                  ; Bofors: one shell
+.autocannon:
+        ld a,BK_AUTOCANNON              ; autocannon: one shell
 .shell: ld (sh_kind),a
         call free_round
         ret c
         call take_ammo
         ret c
-        ld a,BOFORS_INTERVAL-1
+        ld a,AUTOCANNON_INTERVAL-1
         ld (gun_wait),a
         ld hl,BULLET_STEP
         call spawn_round
         ld a,(sh_kind)
         ld (ix+B_KIND),a                ; no direct damage: its burst
-        ld a,SFX_BOFORS                 ; its sound (the proximity cannon's
+        ld a,SFX_AUTOCANNON             ; its sound (the proximity cannon's
         ld (sfx_req),a                  ; too)
         ret
-        ASSERT PROX_INTERVAL == BOFORS_INTERVAL
+        ASSERT PROX_INTERVAL == AUTOCANNON_INTERVAL
 .chain: ; chain gun: one round every CHAIN_INTERVAL frames
         call free_round
         ret c
@@ -245,6 +266,517 @@ chain_round:
         ld (ix+B_SLOPE),l
         ld (ix+B_SLOPE+1),h
         ret
+
+;------------------------------------------------------------------------------
+; The missile lock, each frame in flight.  With the missile pod selected the
+; reticule is shown (ret_on).  Searching (lock_state 0), it wanders the view.
+; A monster drawn last frame (fig_seen: +31) within LOCK_RANGE of the VTOL
+; along x and z, the nearest, becomes the target (lock_tgt): locking (1),
+; the reticule moves to where it was drawn (+32, +33) at RET_STEP pixels a
+; frame, and after LOCK_TIME frames on it (within LOCK_NEAR) the target is
+; locked (2): the lock tone, and the reticule stays on it.  The target lost
+; (killed, out of view, out of range) it searches again.  Then the drawn
+; marks are cleared for this frame's drawing.
+;------------------------------------------------------------------------------
+lock_update:
+        call sel_slot
+        ld a,(hl)
+        cp WPN_MISSILE
+        jp nz,lock_off
+        ld a,1
+        ld (ret_on),a
+        ld a,(lock_tgt)
+        cp $FF
+        jr z,.find
+        call lk_rec
+        call lk_valid
+        jr nc,.have
+        call lk_lose                    ; the target lost
+.find:  call lk_nearest                 ; a new one?
+        cp $FF
+        jr z,.wander
+        ld (lock_tgt),a
+        ld a,1
+        ld (lock_state),a
+        xor a
+        ld (lock_t),a
+        ld a,(lock_tgt)
+        call lk_rec
+.have:  call lk_spot                    ; C, B = where it was drawn
+        ld a,(lock_state)
+        cp 2
+        jr nz,.move
+        ld a,c                          ; locked: on it
+        ld (ret_x),a
+        ld a,b
+        ld (ret_y),a
+        jr lk_clear
+.move:  ld e,RET_STEP
+        call ret_toward
+        jr nc,lk_clear                  ; not on it yet
+        ld hl,lock_t
+        inc (hl)
+        ld a,(hl)
+        cp LOCK_TIME
+        jr c,lk_clear
+        ld a,2                          ; locked
+        ld (lock_state),a
+        ld a,SFX_LOCK
+        ld (sfx_req),a
+        jr lk_clear
+.wander:
+        ld a,(wnd_x)
+        ld c,a
+        ld a,(wnd_y)
+        ld b,a
+        ld e,RET_WANDER
+        call ret_toward
+        jr nc,lk_clear
+        call zrand                      ; there: somewhere new, within
+        ld d,l                          ; RET_WANDER_R of the view's centre
+        ld e,2*RET_WANDER_R+1
+        mul d,e                         ; D = 0..2*RET_WANDER_R
+        ld a,d
+        add a,128-RET_WANDER_R
+        ld (wnd_x),a
+        ld d,h
+        ld e,2*RET_WANDER_R+1
+        mul d,e
+        ld a,d
+        add a,VIEW_CY-RET_WANDER_R
+        ld (wnd_y),a
+        jr lk_clear
+        ASSERT VIEW_CY-RET_WANDER_R >= RET_HALF && VIEW_CY+RET_WANDER_R < VIEW_H-RET_HALF
+
+; No lock, no reticule (another weapon, landed, destroyed)
+lock_off:
+        xor a
+        ld (ret_on),a
+        ld a,128                        ; next time from the centre
+        ld (ret_x),a
+        ld a,VIEW_CY
+        ld (ret_y),a
+        call lk_lose
+        ; fall through
+
+; Clear every monster's drawn mark (+31)
+lk_clear:
+        ld iy,zombies+31
+        ld b,NMON
+        ld de,ZREC
+.lp:    ld (iy+0),0
+        add iy,de
+        djnz .lp
+        ret
+
+; No target: searching
+lk_lose:
+        ld a,$FF
+        ld (lock_tgt),a
+        xor a
+        ld (lock_state),a
+        ld (lock_t),a
+        ret
+
+; A = monster index -> IY = its record
+lk_rec:
+        ld e,a
+        ld d,ZREC
+        mul d,e
+        ld iy,zombies
+        add iy,de
+        ret
+
+; Monster IY: a target?  In play, not fading out, drawn last frame, and
+; within LOCK_RANGE of the VTOL along x and z.  Carry set if not; else HL =
+; the larger distance (x or z).
+lk_valid:
+        bit 0,(iy+31)
+        scf
+        ret z                           ; not seen
+        ; fall through
+
+; As lk_valid, seen or not (a missile's target: msl_steer)
+lk_alive:
+        bit 0,(iy+10)
+        scf
+        ret z                           ; not in play
+        ld a,(iy+16)
+        cp GM_DYING
+        scf
+        ret z                           ; a ghost fading out
+        ld hl,(cam_x+1)
+        call lk_dist
+        ret c
+        push hl
+        ld hl,(cam_z+1)
+        call lk_dist2
+        pop de
+        ret c
+        or a                            ; the larger
+        sbc hl,de
+        add hl,de
+        ret nc
+        ex de,hl
+        or a
+        ret
+
+; HL = a point's x: HL = |x - monster IY's x|, carry set if over LOCK_RANGE
+lk_dist:
+        ld e,(iy+0)
+        ld d,(iy+1)
+        jr lk_d
+lk_dist2:                               ; (z)
+        ld e,(iy+2)
+        ld d,(iy+3)
+lk_d:   or a
+        sbc hl,de
+        call abs_hl
+        ld de,LOCK_RANGE+1
+        or a
+        sbc hl,de
+        ccf
+        ret c                           ; too far
+        add hl,de
+        or a
+        ret
+
+; The nearest target (lk_valid): A = its index, $FF if none
+lk_nearest:
+        ld a,$FF
+        ld (ln_best),a
+        ld hl,$FFFF
+        ld (ln_dist),hl
+        ld iy,zombies
+        xor a
+.lp:    ld (ln_i),a
+        call lk_valid
+        jr c,.nx
+        ld de,(ln_dist)
+        or a
+        sbc hl,de
+        jr nc,.nx                       ; not nearer
+        add hl,de
+        ld (ln_dist),hl
+        ld a,(ln_i)
+        ld (ln_best),a
+.nx:    ld de,ZREC
+        add iy,de
+        ld a,(ln_i)
+        inc a
+        cp NMON
+        jr c,.lp
+        ld a,(ln_best)
+        ret
+
+; Monster IY -> C, B = where it was drawn (+32, +33), kept so the reticule
+; stays in the view
+lk_spot:
+        ld a,(iy+32)
+        cp RET_HALF
+        jr nc,.x1
+        ld a,RET_HALF
+.x1:    cp 256-RET_HALF
+        jr c,.x2
+        ld a,255-RET_HALF
+.x2:    ld c,a
+        ld a,(iy+33)
+        cp RET_HALF
+        jr nc,.y1
+        ld a,RET_HALF
+.y1:    cp VIEW_H-RET_HALF
+        jr c,.y2
+        ld a,VIEW_H-1-RET_HALF
+.y2:    ld b,a
+        ret
+
+; Move the reticule towards (C, B) by up to E pixels on each axis: carry
+; set if it is then within LOCK_NEAR of it on both.  Keeps B, C.
+ret_toward:
+        ld hl,ret_x
+        ld a,c
+        call .ax
+        ld hl,ret_y
+        ld a,b
+        call .ax
+        ld a,(ret_x)
+        sub c
+        jr nc,.p1
+        neg
+.p1:    cp LOCK_NEAR+1
+        ret nc
+        ld a,(ret_y)
+        sub b
+        jr nc,.p2
+        neg
+.p2:    cp LOCK_NEAR+1
+        ret
+.ax:    sub (hl)                        ; A = the way to go
+        ret z
+        jr c,.dn
+        cp e
+        jr c,.up
+        ld a,e
+.up:    add a,(hl)
+        ld (hl),a
+        ret
+.dn:    neg
+        cp e
+        jr c,.d2
+        ld a,e
+.d2:    ld d,a
+        ld a,(hl)
+        sub d
+        ld (hl),a
+        ret
+
+;------------------------------------------------------------------------------
+; Missile IX, before its step: turn towards its target (B_TGT) by up to
+; MISSILE_TURN sideways (B_YAW) and up or down (B_PIT), aiming at its middle
+; (MSL_AIM_Y above its feet).  The target gone (killed, fading out) or more
+; than LOCK_RANGE from the missile along x or z: no more tracking, it flies
+; straight on.  When the turn changes its heading or climb (their high
+; bytes), its direction is worked out again (B_SIN, B_COS, B_S, B_SLOPE,
+; and the cell spans afresh).
+;------------------------------------------------------------------------------
+msl_steer:
+        ld a,(ix+B_TGT)
+        cp $FF
+        ret z
+        call lk_rec
+        bit 0,(iy+10)
+        jp z,.lost
+        ld a,(iy+16)
+        cp GM_DYING
+        jp z,.lost
+        ld l,(ix+B_X)                   ; dx, dz from the missile
+        ld h,(ix+B_X+1)
+        call lk_dist
+        jp c,.lost
+        ld l,(ix+B_Z)
+        ld h,(ix+B_Z+1)
+        call lk_dist2
+        jp c,.lost
+        ld l,(iy+0)
+        ld h,(iy+1)
+        ld e,(ix+B_X)
+        ld d,(ix+B_X+1)
+        or a
+        sbc hl,de
+        ld (ms_dx),hl
+        ld l,(iy+2)
+        ld h,(iy+3)
+        ld e,(ix+B_Z)
+        ld d,(ix+B_Z+1)
+        or a
+        sbc hl,de
+        ld (ms_dz),hl
+        ex de,hl
+        ld hl,(ms_dx)
+        call atan2                      ; the heading to it
+        ld c,a
+        xor a
+        ld (ms_chg),a
+        ld a,c
+        ld hl,B_YAW
+        call ms_turn
+        ld hl,(ms_dx)                   ; horizontal distance: max + 3/8 min
+        call abs_hl
+        push hl
+        ld hl,(ms_dz)
+        call abs_hl
+        pop de
+        or a
+        sbc hl,de
+        add hl,de
+        jr nc,.mx
+        ex de,hl                        ; HL = max, DE = min
+.mx:    push hl
+        ex de,hl
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,de
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        pop de
+        add hl,de
+        push hl
+        ld l,(iy+21)                    ; dy: to its middle
+        ld h,(iy+22)
+        ld de,MSL_AIM_Y
+        add hl,de
+        ld e,(ix+B_Y)
+        ld d,(ix+B_Y+1)
+        or a
+        sbc hl,de
+        pop de
+        call atan2                      ; the climb to it
+        ld hl,B_PIT
+        call ms_turn
+        ld a,(ix+B_PIT+1)               ; kept within +-MSL_PITCH_MAX
+        add a,$80
+        cp $80+MSL_PITCH_MAX+1
+        jr c,.p1
+        ld (ix+B_PIT+1),MSL_PITCH_MAX
+        jr .p2
+.p1:    cp $80-MSL_PITCH_MAX
+        jr nc,.p2
+        ld (ix+B_PIT+1),-MSL_PITCH_MAX & $FF
+.p2:    ld a,(ms_chg)                   ; turned to a new heading or climb?
+        or a
+        ret z
+        ld a,(ix+B_YAW+1)               ; its new direction
+        push af
+        call get_sin
+        ld (ix+B_SIN),l
+        ld (ix+B_SIN+1),h
+        pop af
+        add a,64
+        call get_sin
+        ld (ix+B_COS),l
+        ld (ix+B_COS+1),h
+        ld a,(ix+B_PIT+1)
+        push af
+        call get_sin
+        ld (sr_sin),hl
+        pop af
+        add a,64
+        call get_sin
+        ld (sr_cos),hl
+        ld hl,MISSILE_STEP
+        ld (sr_len),hl
+        call round_climb
+        xor a                           ; the cell spans afresh
+        ld (ix+B_TDX),a
+        ld (ix+B_TDX+1),a
+        ret
+.lost:  ld (ix+B_TGT),$FF               ; no more tracking
+        ret
+
+; A = the angle wanted, HL = B_YAW or B_PIT: turn missile IX's angle there
+; (8.8) towards it by up to MISSILE_TURN.  ms_chg = 1 if its high byte
+; changed.
+ms_turn:
+        push ix
+        pop de
+        add hl,de                       ; HL -> the angle
+        ld (ms_p),hl
+        ld d,a                          ; DE = wanted * 256
+        ld e,0
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a                          ; HL = the angle now
+        ld (ms_old),hl
+        ex de,hl
+        or a
+        sbc hl,de                       ; HL = the turn (wrapping: signed)
+        bit 7,h
+        jr nz,.neg
+        ld bc,MISSILE_TURN
+        or a
+        sbc hl,bc
+        add hl,bc
+        jr c,.ok
+        ld hl,MISSILE_TURN
+        jr .ok
+.neg:   ld bc,-MISSILE_TURN
+        or a
+        sbc hl,bc
+        add hl,bc
+        jr nc,.ok
+        ld hl,-MISSILE_TURN
+.ok:    ld de,(ms_old)
+        add hl,de
+        ex de,hl
+        ld hl,(ms_p)
+        ld (hl),e
+        inc hl
+        ld (hl),d
+        ld a,(ms_old+1)
+        cp d
+        ret z
+        ld a,1
+        ld (ms_chg),a
+        ret
+        ASSERT MISSILE_TURN < 64*256    ; (under a quarter turn a frame)
+
+; HL = x, DE = z (signed) -> A = the angle of (x, z) from +z towards +x,
+; 256 a turn (as yaw: 64 = +x).  0 for (0, 0).  For a climb, HL = dy and
+; DE = the horizontal distance (>= 0): -64..64.
+atan2:
+        ld (at_x),hl
+        ld (at_z),de
+        call abs_hl
+        push hl
+        ex de,hl
+        call abs_hl                     ; HL = |z|
+        pop de                          ; DE = |x|
+.sc:    ld a,h                          ; both under 1024 (for * 64)
+        or d
+        and $FC
+        jr z,.ok
+        srl h
+        rr l
+        srl d
+        rr e
+        jr .sc
+.ok:    ld a,h
+        or l
+        or d
+        or e
+        ret z                           ; (0, 0)
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        jr c,.steep                     ; |z| < |x|
+        ex de,hl                        ; |x| / |z|
+        call .div
+        jr .quad
+.steep: call .div                       ; |z| / |x|
+        neg
+        add a,64
+.quad:  ld c,a
+        ld a,(at_z+1)
+        bit 7,a
+        jr z,.zp
+        ld a,128                        ; z < 0
+        sub c
+        ld c,a
+.zp:    ld a,(at_x+1)
+        bit 7,a
+        ld a,c
+        ret z
+        neg                             ; x < 0
+        ret
+.div:   add hl,hl                       ; HL * 64 / DE (HL <= DE): atan_tab
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        call udiv16                     ; (human.asm)
+        ld a,l
+        ld hl,atan_tab
+        add hl,a
+        ld a,(hl)
+        ret
+
+; round(atan(k/64) * 128/pi), k = 0..64: the angle (256 a turn) whose tan
+; is k/64
+atan_tab:
+            db 0, 1, 1, 2, 3, 3, 4, 4, 5, 6, 6, 7, 8
+            db 8, 9, 9, 10, 11, 11, 12, 12, 13, 13, 14, 15, 15
+            db 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22
+            db 22, 23, 23, 24, 24, 25, 25, 25, 26, 26, 27, 27, 27
+            db 28, 28, 29, 29, 29, 30, 30, 30, 31, 31, 31, 32, 32
+        ASSERT $ - atan_tab == 65
 
 ; HL = d * 256, DE = S7.8 value -> HL = d * value / 256, rounded
 dmul:
@@ -362,7 +894,12 @@ spawn_round:
         add a,64
         call get_sin
         ld (sr_cos),hl
-.pt:    ld hl,(sr_len)                  ; horizontal distance per frame
+.pt:    ; fall through
+
+; Round IX's climb: sr_len along its path a frame, at the climb whose sin,
+; cos are sr_sin, sr_cos: B_S (horizontal distance a frame) and B_SLOPE
+round_climb:
+        ld hl,(sr_len)                  ; horizontal distance per frame
         ld de,(sr_cos)
         call fmul
         ld (ix+B_S),l
@@ -1391,9 +1928,9 @@ zdamage:
         ret
 
 ;------------------------------------------------------------------------------
-; Rocket, missile or Bofors shell IX has stopped (at B_X, B_Y, B_Z): its
-; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, BOFORS_DMG) to every zombie, human
-; and base tile within its reach (rb_r: BLAST_R, MISSILE_R, BOFORS_R) on
+; Rocket, missile or autocannon shell IX has stopped (at B_X, B_Y, B_Z): its
+; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, AUTOCANNON_DMG) to every zombie,
+; human and base tile within its reach (rb_r: BLAST_R, MISSILE_R, AUTOCANNON_R) on
 ; each axis, and its orange particles.  Plain integer box tests: anything
 ; further than rb_r on any one axis is skipped.
 ;------------------------------------------------------------------------------
@@ -1411,11 +1948,11 @@ rocket_blast:
         ld e,SFX_BOOM_MISSILE
         cp BK_MISSILE
         jr z,.k
-        ld hl,BOFORS_R                  ; a Bofors shell
-        ld b,BOFORS_DMG
-        ld c,BOFORS_PARTS
-        ld e,SFX_BOOM_BOFORS
-        cp BK_BOFORS
+        ld hl,AUTOCANNON_R              ; an autocannon shell
+        ld b,AUTOCANNON_DMG
+        ld c,AUTOCANNON_PARTS
+        ld e,SFX_BOOM_AUTOCANNON
+        cp BK_AUTOCANNON
         jr z,.k
         ld hl,PROX_R                    ; a proximity shell
         ld b,PROX_DMG
@@ -1758,3 +2295,13 @@ rb_z:       dw 0
 rb_i:       db 0                        ; base tile cell being tested
 rb_j:       db 0
 rb_hum:     db 0                        ; 1: a human was killed
+ln_best:    db 0                        ; lk_nearest: the nearest so far,
+ln_dist:    dw 0                        ;   its distance,
+ln_i:       db 0                        ;   the record looked at
+ms_dx:      dw 0                        ; msl_steer: to the target
+ms_dz:      dw 0
+ms_p:       dw 0                        ; ms_turn: -> the angle,
+ms_old:     dw 0                        ;   its value before
+ms_chg:     db 0                        ;   1: a high byte changed
+at_x:       dw 0                        ; atan2
+at_z:       dw 0

@@ -95,22 +95,19 @@ ula_palette:
         nextreg $41,$E3                 ;   transparent
         ret
 
-ula_init:
+ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         ld hl,ULA_BMP
-        ld de,ULA_BMP+1
-        ld bc,$1800-1
-        ld (hl),0
-        ldir                            ; bitmap: all paper
+        ld bc,$1800
+        xor a
+        call dma_fill                   ; bitmap: all paper
         ld hl,ULA_ATTR
-        ld de,ULA_ATTR+1
-        ld bc,16*32-1
-        ld (hl),%01000111               ; viewport: bright, paper 0, ink 7
-        ldir
+        ld bc,16*32
+        ld a,%01000111                  ; viewport: bright, paper 0, ink 7
+        call dma_fill
         ld hl,ULA_ATTR+16*32
-        ld de,ULA_ATTR+16*32+1
-        ld bc,8*32-1
-        ld (hl),ATTR_PANEL              ; panel
-        ldir
+        ld bc,8*32
+        ld a,ATTR_PANEL                 ; panel
+        call dma_fill
         ld hl,ULA_ATTR+16*32            ; divider: top pixel row of the panel
         ld b,32
 .dv:    ld (hl),P_PANEL<<3 | C_OK
@@ -370,9 +367,10 @@ draw_hud:
 ;      past the top)
 ;   A  left 4 pixels: altitude, green; right 4: the height of the city tile
 ;      under the craft (0 on a road), amber.  Both 1 pixel per 4 units, so
-;      the ceiling (MAX_Y 1.5 height units, 192) fills the bar; the ground
-;      under the craft is always lower, so the gap between them is the
-;      clearance.
+;      the ceiling (MAX_Y 1.5 height units, 192) fills the bar; with the
+;      vertical thrusters 1 per 8, so their ceiling (MAX_Y_THRUST, 384) does.
+;      A tile taller than the bar's top fills it.  The ground under the
+;      craft is always lower, so the gap between them is the clearance.
 ;   B  the booster's fuel, 8 wide: fuel * 62 / 256 pixels, so BOOST_FUEL_MAX
 ;      (200) fills it; green.  Drawn always, but its cells are opaque panel
 ;      until the booster is fitted (ula_init).
@@ -480,7 +478,12 @@ draw_gauges:
 
 ; HL = height (world units) -> A = HL / 4, at most GAUGE_H
 g_px:
+        ld a,(vthrust_fitted)           ; the thrusters' ceiling: half scale
+        or a
+        jr z,.s
         srl h
+        rr l
+.s:     srl h
         rr l
         srl h
         rr l
@@ -516,7 +519,7 @@ wpn_glyph:  db GLYPH_SPACE              ; WPN_NONE
             db GLYPH_R                  ; WPN_ROCKETS: rocket pod
             db GLYPH_S                  ; WPN_MISSILE: missile pod
             db GLYPH_SPACE              ; WPN_BOMB (none yet)
-            db GLYPH_B                  ; WPN_BOFORS: Bofors cannon
+            db GLYPH_A                  ; WPN_AUTOCANNON: autocannon
             db GLYPH_P                  ; WPN_PROX: proximity cannon
         ASSERT $ - wpn_glyph == WPN_LAST + 1
 g_spd:      db 0                        ; draw_gauges: bar heights (pixels)

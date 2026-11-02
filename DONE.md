@@ -2,7 +2,26 @@
 
 Completed items moved from TODO.md, under the same headings.
 
+## Graphics
+
+- (Done 2026-11-02: a sprite editor for the humans and monsters
+  (tools/sprite_editor.py), their graphics as JSON (sprites/), 32 colours of
+  their own in every palette (entries 192-223), purposes (zombie walking
+  front / side / rear, ghoul the same, ghost and banshee floating, human
+  waving and running), levels of detail by distance (each with its size
+  and nearest Z), built by gengraphics.py into ZPDATA/SPRITES.ZPG and
+  loaded by the game at start-up. Humans running to the VTOL now run
+  (front, side or rear by their way), not wave. Distant figures use their
+  smaller levels. See README "Figures and the sprite editor".)
+
 ## Controls and input
+
+- (Done 2026-11-02: the key and joystick definitions are saved to the SD
+  card (ZPDATA/KEYS.ZPK) when leaving the redefine keys screen after a
+  change, and loaded at start-up if the file fits this game. See README
+  "Input".)
+- (Done 2026-11-02: quit without saving from the pause screen, X: QUIT, NO
+  SAVE. See README "Save games".)
 
 - (Done 2026-10-30: joystick support. Kempston 1/2, Mega Drive 1/2 with
   3 or 6 buttons; each control has a key and a joystick input, both
@@ -19,12 +38,28 @@ Completed items moved from TODO.md, under the same headings.
   throttle. See README "Engine sound". Since: played by the interrupt
   routine, spooling up and down smoothly; interrupts are now on.)
 - (Done 2026-10-30: the sound effect player on AY 2, the machine gun, the
-  chain gun, the laser, rockets, missiles and the Bofors / proximity
+  chain gun, the laser, rockets, missiles and the autocannon / proximity
   cannon, explosions on AY 3 sized to each blast, and a splat when a
   zombie is hit. See README "Sound effects".)
 
 ## Gameplay
 
+- (Done 2026-11-02: unloading a weapon on the load-out screen. U empties
+  the selected slot, its weapon back into the store. See README, the
+  load-out screen under "Waves and level progress".)
+- (Done 2026-11-02: guided missiles. With the missile pod selected, a
+  square reticule wanders within 40 pixels of the view's centre until a
+  monster is seen within 8 tiles, then moves to it and locks after 2
+  seconds on it (a double beep; yellow searching, flashing red locking,
+  red locked). A missile fires only with a lock, leaves straight ahead and
+  turns towards its target at 3 degrees a frame, flying straight on once
+  the target is more than 8 tiles away or dead. Settings: `LOCK_RANGE`,
+  `LOCK_TIME`, `MISSILE_TURN`, `RET_*` in zpolice.asm.)
+- (Done 2026-11-02: human behaviour. Waiting humans stand, and wave while
+  the VTOL is within 80 m. On the road they flee the nearest monster
+  within 20 m, along the road in a random way away from it; on a roof
+  they never flee. A new figure purpose, the human's `stand`. See README
+  "Landing and rescuing humans".)
 - (Done 2026-11-01: hand-edited level files, `levels/LEVELnn.TXL`: map
   changes, draw distances, waves and specials. See README "Hand-edited
   levels".)
@@ -56,8 +91,16 @@ Completed items moved from TODO.md, under the same headings.
   divide and a tighter steep-edge walk, all pixel-identical; plus 2D
   (guard-band) clipping of pitched faces and of multi-plane faces in
   level flight, which moves some clipped edges by a pixel. 8.7% off the
-  frame in all. The city page now has only about 10 bytes free. See
+  frame in all. The city page then had only about 10 bytes free (since split: city2.asm). See
   README "Performance".)
+
+## Testing
+
+- (Done 2026-11-02: a regression suite in `tests/`, run by build.bat after
+  assembling (`notest` skips it): the source data's checks, the renderer
+  against reference views, drawing under interrupts, the figures, the key
+  definitions, the save game, every level, and crashing into a building.
+  See README "Regression tests".)
 
 ## Map editor and tools
 

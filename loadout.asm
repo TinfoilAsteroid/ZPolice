@@ -14,7 +14,10 @@
 ;   SPACE  fit the highlighted weapon in the selected slot, if it can be:
 ;          one comes out of the store, with a full load (WCFG_LOAD), and
 ;          whatever was fitted there goes back into the store
-;   0      done: start the level (next_level)
+;   U      unload the selected slot: its weapon back into the store, the
+;          slot EMPTY (lo_unload)
+;   0      done: start the level (next_level), only with a weapon in slot 1
+;          (the centre slot); while it is empty 0: START LEVEL is red
 ; Uses the resident text routines (text.asm) and the keys page in slot 7.
 ;==============================================================================
 
@@ -69,7 +72,11 @@ loadout_screen:
         call kbd_scan
         ld hl,KB_0                      ; done
         call key_code_pressed
+        jr z,.up
+        ld a,(wpn_slots)                ; (not with slot 1 empty)
+        or a
         jp nz,next_level
+.up:
         ld hl,KB_Q                      ; up the list
         call key_code_pressed
         jr z,.dn
@@ -108,11 +115,16 @@ loadout_screen:
         ld a,b
         cp WPN_SLOTS
         jr nz,.sk
-        ld hl,KB_SPACE                  ; fit it
+        ld hl,KB_U                      ; unload the slot
         call key_code_pressed
-        jr z,.loop
+        jr z,.fit
+        call lo_unload
+        jp .draw
+.fit:   ld hl,KB_SPACE                  ; fit it
+        call key_code_pressed
+        jp z,.loop
         call lo_fit
-        jr .draw
+        jp .draw
 
 lo_slot_keys:   dw KB_1, KB_2, KB_3, KB_4, KB_5
 
@@ -166,6 +178,45 @@ lo_fit:
         inc (hl)
         ret nz
         dec (hl)                        ; (at most 255)
+        ret
+
+; U: unload the selected slot: its weapon back into the store (its ammo
+; with it: refitted, it gets a full load), the slot EMPTY.  If it was the
+; slot the game fires (wpn_sel), the first slot still fitted is chosen.
+lo_unload:
+        ld a,(lo_slot)                  ; HL -> the slot
+        add a,a
+        ld hl,wpn_slots
+        add hl,a
+        ld a,(hl)
+        or a
+        ret z                           ; already empty
+        ld (hl),0                       ; EMPTY,
+        inc hl
+        ld (hl),0                       ;   no ammo
+        ld hl,wpn_stock                 ; back in store
+        add hl,a
+        inc (hl)
+        jr nz,.sel
+        dec (hl)                        ; (at most 255)
+.sel:   ld a,(lo_slot)
+        ld hl,wpn_sel
+        cp (hl)
+        ret nz                          ; not the one in use
+        ld b,0                          ; the first slot still fitted
+        ld hl,wpn_slots
+.f:     ld a,(hl)
+        or a
+        jr nz,.got
+        inc hl
+        inc hl
+        inc b
+        ld a,b
+        cp WPN_SLOTS
+        jr nz,.f
+        ret                             ; none: left as it is
+.got:   ld a,b
+        ld (wpn_sel),a
         ret
 
 ; A = the highlighted store weapon's type; Z if the list is empty
@@ -255,7 +306,15 @@ lo_draw:
         inc a
         cp WPN_SLOTS
         jr nz,.sl
-        ret
+        ld c,MENU_ATTR                  ; 0: START LEVEL, red while slot 1
+        ld a,(wpn_slots)                ; is empty (0 does nothing then)
+        or a
+        jr nz,.go
+        ld c,MENU_BAD
+.go:    ld d,LO_START_ROW
+        ld e,1
+        ld hl,lo_start
+        jp menu_print
         ASSERT LO_ROW0 + (WPN_SLOTS-1)*LO_SLOT_STEP < 19
 
 ; A = weapon type, D = row, E = column: its name, in lo_attr, padded with
@@ -325,13 +384,15 @@ lo_text:
         db "SLOTS", 0
         db 19, 1, MENU_ATTR
         db "Q A: CHOOSE     1-5: SLOT", 0
-        db 21, 1, MENU_ATTR
-        db "SPACE: FIT      0: START LEVEL", 0
+        db 20, 1, MENU_ATTR
+        db "SPACE: FIT      U: UNLOAD", 0
         db $FF
+lo_start:   db "0: START LEVEL", 0      ; (lo_draw: red with slot 1 empty)
+LO_START_ROW    equ 21
 
 ; Weapon names, by WPN_* (at most LO_NAME_LEN characters)
 lo_names:   dw lo_n_none, lo_n_gun, lo_n_laser, lo_n_chain
-            dw lo_n_rockets, lo_n_missile, lo_n_bomb, lo_n_bofors
+            dw lo_n_rockets, lo_n_missile, lo_n_bomb, lo_n_autocannon
             dw lo_n_prox
         ASSERT ($ - lo_names)/2 == WPN_LAST+1
 lo_n_none:      db "EMPTY", 0
@@ -341,7 +402,7 @@ lo_n_chain:     db "CHAIN GUN", 0
 lo_n_rockets:   db "ROCKET POD", 0
 lo_n_missile:   db "MISSILE POD", 0
 lo_n_bomb:      db "BOMB", 0
-lo_n_bofors:    db "BOFORS", 0
+lo_n_autocannon: db "AUTOCANNON", 0
 lo_n_prox:      db "PROXIMITY", 0
 lo_blank:       db "           ", 0
         ASSERT $ - lo_blank == LO_NAME_LEN + 1

@@ -76,13 +76,15 @@ SFX_LASER       equ 2               ; the pulse laser: one pulse (a zap)
 SFX_CHAIN       equ 3               ; the chain gun: one round
 SFX_ROCKET      equ 4               ; a rocket fired: a short woosh
 SFX_MISSILE     equ 5               ; a missile fired: a longer woosh
-SFX_BOFORS      equ 6               ; the Bofors / proximity cannon: one shell
+SFX_AUTOCANNON  equ 6               ; the autocannon / proximity cannon: one shell
 SFX_BOOM_ROCKET equ 7               ; explosions (AY 3, sfx2_req): a rocket's,
 SFX_BOOM_MISSILE equ 8              ;   a missile's,
-SFX_BOOM_BOFORS equ 9               ;   a Bofors shell's,
+SFX_BOOM_AUTOCANNON equ 9           ;   an autocannon shell's,
 SFX_BOOM_PROX   equ 10              ;   a proximity shell's
 SFX_SPLAT       equ 11              ; a zombie hit (AY 3 channel C, sfx3_req)
-SFX_LAST        equ 11              ; (sfx_table, sfx_data.asm)
+SFX_CRASH       equ 12              ; the VTOL hitting a building (AY 3, sfx2_req)
+SFX_LOCK        equ 13              ; the missile lock: a double beep (AY 2)
+SFX_LAST        equ 13              ; (sfx_table, sfx_data.asm)
 SFX_STEP        equ $FE             ; end of a step: the next, next interrupt
 SFX_END         equ $FF             ; end of the sound
 SFX_MIX_NOISE_A_TONE_B equ AY_NO_TONE_A|AY_NO_TONE_C|AY_NO_NOISE_B|AY_NO_NOISE_C
@@ -91,6 +93,8 @@ SFX_MIX_TONE_AB equ AY_NO_TONE_C|AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A and B tones only
 SFX_MIX_NOISE_A equ AY_NO_TONE_A|AY_NO_TONE_B|AY_NO_TONE_C|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A noise only
+SFX_MIX_TONE_A  equ AY_NO_TONE_B|AY_NO_TONE_C|AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
+                                    ; mixer: A tone only
 SFX_MIX_BOOM    equ AY_NO_TONE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; AY 3's mixer: A noise, B tone (the
                                     ; explosions), C tone (the splats)

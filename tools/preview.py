@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 import citymap as cm
 import levelpal as lp
 import nexsim
+import spritefile as sf
 
 ROOT = os.path.dirname(HERE)
 DATA_DIR = os.path.join(ROOT, "ZPDATA")
@@ -54,6 +55,7 @@ def city_file(m, built):
         pal = [((built[32 + 2 * i] >> 5), (built[32 + 2 * i] >> 2) & 7,
                 ((built[32 + 2 * i] & 3) << 1) | (built[33 + 2 * i] & 1)) for i in range(256)]
     cm.apply_palette(pal, m["palette"])
+    sf.apply_palette(pal, sf.load_palette())    # the figures' colours
     col = []
     for code, fam in zip(m["cells"], m["fams"]):
         f = cm.family_for(code, fam)
@@ -90,9 +92,12 @@ def render(map_path, x, z, heading=0, height=120, level=None, out="preview.png",
             f.write(city_file(m, built))
         with open(os.path.join(sd, "ZPDATA", f"LEVEL{lv:02d}.ZPL"), "wb") as f:
             f.write(lfile)
+        gfx = os.path.join(DATA_DIR, "SPRITES.ZPG")    # the figures
+        if os.path.exists(gfx):
+            shutil.copy(gfx, os.path.join(sd, "ZPDATA", "SPRITES.ZPG"))
         zpp = os.path.join(DATA_DIR, f"LEVEL{lv:02d}.ZPP")
         if palette:                     # the level's colours: as given,
-            pdata = lp.binary(lv, lp.load(palette)["pal"])
+            pdata = lp.binary(lv, sf.apply_palette(lp.load(palette)["pal"], sf.load_palette()))
         elif os.path.exists(zpp):       #   or as built
             pdata = open(zpp, "rb").read()
         else:

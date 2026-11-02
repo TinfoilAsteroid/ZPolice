@@ -100,6 +100,11 @@ CITYMAP_ADDR            equ membank3+$1000      ; city_map
 ULA_SLOT                equ MMU_SLOT_4
 ULA_MMU                 equ MMU_SLOT_4_REGISTER
 ULA_ADDR                equ membank4
+; slot 4 also: the second city page (city2.asm), over the ULA screen while
+; main_loop draws the city (nothing then uses the ULA screen)
+CITY2_SLOT              equ MMU_SLOT_4
+CITY2_MMU               equ MMU_SLOT_4_REGISTER
+CITY2_ADDR              equ membank4
 
 ; slot 5: resident main code (zpolice.asm), tables, variables, stack
 MAIN_SLOT               equ MMU_SLOT_5
@@ -161,6 +166,12 @@ PAGE_LOADOUT            equ 32          ; loadout.asm: the load-out screen
                                         ; between levels (slot 6)
 PAGE_KEYDEF             equ 33          ; keydef.asm: the redefine keys
                                         ; screen (slot 6)
+PAGE_CITY2              equ 34          ; city2.asm: more Layer 2 drawing
+                                        ; (slot 4, with the city page)
+PAGE_GFX0               equ 35          ; the figures' graphics (pages 35 to
+                                        ; 35+GFX_PAGES_MAX-1), loaded from
+                                        ; ZPDATA/SPRITES.ZPG at start-up; each
+                                        ; mapped at $C000 (slot 6) to draw
 PAGE_LEVEL              equ 30          ; level_load.asm: level and city
                                         ; files (slot 6); pages 18-29 are
                                         ; the Layer 2 buffers

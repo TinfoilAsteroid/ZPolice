@@ -28,6 +28,8 @@
 ;   +19,+20  cell (x, z) marked with CELL_ZOMBIE in city_map ($FF = none)
 ;   +21,+22  height of its feet (0 for zombies; special monsters fly)
 ;   +23..+30 special monsters' own fields (specials.asm)
+;   +31    1 = drawn last frame (fig_seen; cleared by lock_update, weapons.asm)
+;   +32,+33  where: the centre column and row on the view (the missile lock)
 ; Records 0..NZOMB-1 are the zombies, NZOMB..NMON-1 the special monsters
 ; (specials.asm), which share the drawing, cell marks, map blips and weapon
 ; hits; their type (+15) says which.
@@ -78,7 +80,7 @@
 NZOMB           equ 30          ; zombie records: the most in a wave
 NSPEC           equ 8           ; most special monsters (5 ghosts, banshees)
 NMON            equ NZOMB+NSPEC ; records: zombies, then special monsters
-ZREC            equ 31          ; bytes per record
+ZREC            equ 34          ; bytes per record
 ZT_FAST         equ 1           ; +15: fast zombie
 ZT_GHOUL        equ 2           ; +15: a ghoul: a special monster that walks
                                 ; as a zombie (zmove), half height, 5x speed
@@ -96,7 +98,6 @@ ZOMBIE_H        equ 26          ; height: 2 m (the same as the hit box, ZHIT_H)
 GHOUL_H         equ ZOMBIE_H/2  ; a ghoul's height: 1 m
         ASSERT ZSPEED_INIT*5+15 < 256   ; a ghoul's step (zcalc_step) fits
 
-        INCLUDE "tables_zombie.inc"     ; sprites, sizes, bitrev
 
 ;------------------------------------------------------------------------------
 ; Seed NZOMB zombies at random street positions, away from building walls
@@ -971,31 +972,22 @@ zcell_ofs:
         add hl,a
         ret
 
-; Frame chooser for a ghost or banshee (its sprite pointers in gfs_tab):
-; its sheet's 2 frames (a new one every 4 frames), never mirrored
+; Frame chooser for a ghost or banshee: its own figure, a new frame every 4
+; frames, never mirrored
 gfig_sel:
         xor a
         ld (zface),a
+        ld a,(ix+15)
+        cp ZT_BANSHEE
+        ld a,ANIM_GHOST_FLOAT
+        jr nz,.g
+        ld a,ANIM_BANSHEE_FLOAT
+.g:     ld (fig_anim),a
         ld a,(zanim)
-        rrca
-        rrca
-        and 1                           ; frame
-        add a,a
-        add a,a
-        add a,a
-        ld hl,zlvl
-        add a,(hl)                      ; frame*8 + level
-        add a,a
-        ld hl,(gfs_tab)
-        add hl,a
-        ld a,(hl)
-        inc hl
-        ld h,(hl)
-        ld l,a
-        ld (zrow),hl
-        jp zspr_rows
-
-        INCLUDE "tables_ghost.inc"      ; ghost sprites (gentables.py)
+        srl a
+        srl a
+        ld (fig_frame),a
+        ret
 
 ; HL = next 16-bit xorshift random number
 zrand:
@@ -1059,6 +1051,8 @@ zombie_cell:
 zombie_draw:
         bit 0,(ix+10)
         ret z                           ; killed this frame
+        ld a,1
+        ld (fig_mon),a                  ; a monster (fig_seen notes it)
         ld a,(ix+15)
         cp ZT_GHOST
         jr nc,.ghost                    ; a flying special monster
@@ -1066,8 +1060,8 @@ zombie_draw:
         ld (fig_y),hl                   ; on the ground
         ld hl,zfig_sel
         ld (fig_sel),hl
-        ld a,ZOMBIE_COL
-        ld (zspr_rows.col+1),a
+        xor a
+        ld (spr_col),a                  ; (its own colours)
         ld a,(ix+15)
         cp ZT_GHOUL
         jp nz,fig_draw
@@ -1096,26 +1090,21 @@ zombie_draw:
         ld (fig_y),hl
         ld hl,gfig_sel
         ld (fig_sel),hl
-        ld a,(ix+15)                    ; ghost or banshee: its sprites, colour
-        cp ZT_BANSHEE                   ; and fade
-        ld hl,gho_ptr
+        ld a,(ix+15)                    ; ghost or banshee: its fade
+        cp ZT_BANSHEE
         ld de,gfade
-        ld c,GHOST_COL
         jr nz,.gt
-        ld hl,bsh_ptr
         ld de,bfade
-        ld c,BANSHEE_COL
-.gt:    ld (gfs_tab),hl
-        ld a,(ix+16)
+.gt:    ld a,(ix+16)
         cp GM_DYING
-        ld a,c
+        ld a,0                          ; (its own colours)
         jr nz,.gcol
-        ld a,(ix+17)                    ; fading out: its colour by the
+        ld a,(ix+17)                    ; fading out: all one colour, by the
         dec a                           ; frames left (1..GHOST_FADE_FRAMES)
         ex de,hl
         add hl,a
         ld a,(hl)
-.gcol:  ld (zspr_rows.col+1),a
+.gcol:  ld (spr_col),a
         jr fig_draw
 
 ; A dying ghost's colour, by its frames left - 1: the last 3 frames dark
@@ -1132,9 +1121,11 @@ bfade:      db BANSHEE_FADE, BANSHEE_FADE, BANSHEE_FADE      ; a banshee's
         ASSERT $ - bfade == GHOST_FADE_FRAMES
 
 ; Project and draw a figure whose x, z are at (IX+0..3) like a zombie's:
-; feet at height fig_y, sprite frame chosen by the routine at fig_sel (it
-; sets zrow and zface, then jumps to zspr_rows), colour patched into
-; zspr_rows.  Used for zombies and for humans (human.asm).
+; feet at height fig_y, its purpose and frame chosen by the routine at
+; fig_sel (it sets fig_anim, fig_frame and zface), in its own colours or all
+; spr_col (if not 0).  Used for zombies, the special monsters and humans
+; (human.asm).  The graphics: ZPDATA/SPRITES.ZPG (gengraphics.py), drawn by
+; spr_lod and spr_draw (city2.asm).
 fig_draw:
         ld l,(ix+0)
         ld h,(ix+1)
@@ -1192,16 +1183,18 @@ fig_draw:
         ld (zsx),a
         ld a,c
         ld (zy),a                       ; head row
-        call zsize
+        call fig_size
         ret c
-        ; Keep the feet anchor: the sprite is at most 16 pixels, so it stands
-        ; on the (off-screen) feet, top = head + (true height - sprite height),
-        ; exactly where the foot-anchored path would put it.
+        ; Keep the feet anchor: it stands on the (off-screen) feet, top = head
+        ; + (true height - its height), where the foot-anchored path would put
+        ; it (a level taller than the projection: at the head)
         ld a,(zh)
         ld c,a
         ld a,(zhr)
         sub c
-        ld c,a
+        jr nc,.hd
+        xor a
+.hd:    ld c,a
         ld a,(zy)
         add a,c
         ret c
@@ -1214,7 +1207,7 @@ fig_draw:
         ld (zsx),a
         ld a,c
         ld (zy),a
-        call zsize
+        call fig_size
         ret c
         ld a,(zh)
         ld c,a
@@ -1224,17 +1217,57 @@ fig_draw:
         ld (zy),a                       ; top row = foot - h + 1
         ; fall through
 
-; Draw the sprite: zsx = centre column, zy = top row (rows outside the
-; viewport are skipped, so it can be negative or past the bottom)
+; Draw it: zsx = centre column, zy = top row (rows outside the viewport are
+; skipped, so it can be negative or past the bottom)
 zspr:
-        ld hl,(fig_sel)                 ; choose the frame
+        ld a,(fig_mon)
+        or a
+        call nz,fig_seen
+        jp spr_draw                     ; (city2.asm)
+
+; Monster IX is drawn: note where (+31..+33), for the missile lock.  The
+; row: its middle, kept within the view.
+fig_seen:
+        ld (ix+31),1
+        ld a,(zsx)
+        ld (ix+32),a
+        ld a,(zh)
+        srl a
+        ld c,a
+        ld a,(zy)                       ; (signed: above the view < 0)
+        bit 7,a
+        jr nz,.neg
+        add a,c
+        jp p,.row
+        ld a,VIEW_H-1                   ; past the bottom
+        jr .row
+.neg:   add a,c
+        jp p,.row
+        xor a                           ; above the top
+.row:   ld (ix+33),a
+        ret
+        ASSERT VIEW_H == 128
+
+; The figure's frame and its size: fig_sel's routine (its purpose, frame and
+; mirroring: fig_anim, fig_frame, zface), then the level of detail for its
+; distance (spr_lod, city2.asm: zw, zh).  Carry set if it's too small to
+; draw (projected under 3 pixels high) or there are no graphics.
+fig_size:
+        ld hl,(fig_h)
+        call scale_comp                 ; projected height (the last project's Z)
+        ld (zhr),a
+        cp 3
+        ret c
+        call .sel
+        jp spr_lod
+.sel:   ld hl,(fig_sel)
         jp (hl)
 
-; Zombie frame: walking, facing from its heading relative to the view
+; Zombie frame: walking, facing from its heading relative to the view (a
+; ghoul's own figure)
 zfig_sel:
-        ; facing relative to the view: ((heading*64 - yaw + 32) >> 6) & 3
-        ld a,(ix+4)
-        rrca
+        ld a,(ix+4)                     ; facing relative to the view:
+        rrca                            ;   ((heading*64 - yaw + 32) >> 6) & 3
         rrca
         ld hl,yaw
         sub (hl)
@@ -1244,10 +1277,23 @@ zfig_sel:
         and 3
         ld hl,face_tab
         add hl,a
-        ld a,(hl)
-        ld (zface),a
-        ; sprite index (facing*4 + frame)*8 + level
-        ld a,(ix+7)
+        ld c,(hl)                       ; front 0, side 1, rear 2; bit 7 mirrored
+        xor a
+        bit 7,c
+        jr z,.m
+        ld a,2
+.m:     ld (zface),a
+        ld a,(ix+15)
+        cp ZT_GHOUL
+        ld a,ANIM_ZOMBIE_WALK_FRONT
+        jr nz,.z
+        ld a,ANIM_GHOUL_WALK_FRONT
+.z:     ld b,a
+        ld a,c
+        and 3
+        add a,b
+        ld (fig_anim),a
+        ld a,(ix+7)                     ; the frame
         or a
         ld a,0
         jr nz,.still                    ; standing still: hold the frame
@@ -1255,126 +1301,22 @@ zfig_sel:
         cp ZT_GHOUL
         ld a,(zanim)
         jr z,.still                     ; every frame for a ghoul,
-        rrca                            ; every 2 frames for
+        srl a                           ; every 2 frames for
         bit 0,(ix+15)                   ; a fast zombie (legs keep pace)
         jr nz,.still
-        rrca                            ; every 4 for a zombie
+        srl a                           ; every 4 for a zombie
 .still: add a,(ix+5)
-        and 3
-        ld c,a
-        ld a,(zface)
-        and 1
-        add a,a
-        add a,a
-        add a,c
-        add a,a
-        add a,a
-        add a,a
-        ld hl,zlvl
-        add a,(hl)
-        add a,a
-        ld hl,spr_ptr
-        add hl,a
-        ld a,(hl)
-        inc hl
-        ld h,(hl)
-        ld l,a
-        ld (zrow),hl
-        ; fall through
-
-; Draw rows from zrow, mirrored if zface bit 1, at zsx / zy
-zspr_rows:
-        ; x0 = centre - w/2
-        ld a,(zw)
-        srl a
-        ld e,a
-        ld d,0
-        ld a,(zsx)
-        ld l,a
-        ld h,0
-        or a
-        sbc hl,de
-        ld (zx0),hl
-        ld a,(zh)
-        ld (zcnt),a
-.row:   ld hl,(zrow)
-        ld b,(hl)                       ; row bits
-        inc hl
-        ld (zrow),hl
-        ld a,(zy)
-        cp VIEW_H
-        jr nc,.next                     ; above (negative) or below the viewport
-        call seg_map                    ; A = y & 31 (preserves BC, DE, L)
-        ld h,a
-        ld a,(zface)
-        bit 1,a
-        jr z,.nm
-        ld l,b                          ; mirror: reverse the bits, then
-        ld a,h                          ; shift out the unused right columns
-        ld h,high bitrev
-        ld b,(hl)
-        ld h,a
-        ld a,(zw)
-        sub 8
-        jr z,.nm
-        neg
-        ld c,a
-.sh:    sla b
-        dec c
-        jr nz,.sh
-.nm:    ld de,(zx0)
-        ld a,(zw)
-        ld c,a
-.px:    sla b
-        jr nc,.skip
-        ld a,d
-        or a
-        jr nz,.skip                     ; off the left or right edge
-        ld l,e
-.col:   ld (hl),ZOMBIE_COL              ; (colour patched per figure)
-.skip:  inc de
-        dec c
-        jr nz,.px
-.next:  ld hl,zy
-        inc (hl)
-        ld hl,zcnt
-        dec (hl)
-        jr nz,.row
+        ld (fig_frame),a
         ret
-
-; Projected height from the last project's Z -> zlvl, zw, zh.
-; Carry set if too small to draw.
-zsize:
-        ld hl,(fig_h)
-        call scale_comp
-        ld (zhr),a                      ; true projected height (unclamped)
-        cp 3
-        ret c
-        cp 17
-        jr c,.h
-        ld a,16
-.h:     ld hl,lvl_of_h
-        add hl,a
-        ld a,(hl)
-        ld (zlvl),a
-        ld hl,spr_w
-        add hl,a
-        ld c,(hl)
-        ld hl,spr_h
-        add hl,a
-        ld a,(hl)
-        ld (zh),a
-        ld a,c
-        ld (zw),a
-        or a                            ; clear carry
-        ret
+        ASSERT ANIM_ZOMBIE_WALK_SIDE == ANIM_ZOMBIE_WALK_FRONT+1 && ANIM_ZOMBIE_WALK_REAR == ANIM_ZOMBIE_WALK_FRONT+2
+        ASSERT ANIM_GHOUL_WALK_SIDE == ANIM_GHOUL_WALK_FRONT+1 && ANIM_GHOUL_WALK_REAR == ANIM_GHOUL_WALK_FRONT+2
 
 ;------------------------------------------------------------------------------
 ; Zombie page data
 ;------------------------------------------------------------------------------
-; relative facing (0 walking away, 1 right, 2 towards, 3 left) ->
-; bit 0 = left sprite (else forward), bit 1 = mirror
-face_tab:   db %10, %11, %00, %01
+; relative facing (0 walking away, 1 right, 2 towards, 3 left) -> the view:
+; 0 front, 1 side (facing left), 2 rear; bit 7: mirrored (side, facing right)
+face_tab:   db 2, 1|$80, 0, 1
 
 zspeed:     db ZSPEED_INIT              ; zombie speed, world units per frame
                                         ; in 4.4 fixed point (16 = 1.0, max 119:
@@ -1405,7 +1347,6 @@ zi_left:    db 0                        ;   and zombies still to place
 zombies:    ds NMON*ZREC
 zseed:      dw 1
 zanim:      db 0
-gfs_tab:    dw gho_ptr                  ; gfig_sel: the sprites being drawn
 zwave_new:  db 0                        ; 1: a new wave began (spec_update)
 zc_x:       db 0                        ; zombie_cell: the cell being drawn
 zc_z:       db 0
@@ -1415,9 +1356,7 @@ zt:         ds 6
 zsx:        db 0
 zy:         db 0
 zx0:        dw 0
-zrow:       dw 0
 zcnt:       db 0
-zlvl:       db 0
 zw:         db 0
 zh:         db 0
 zhr:        db 0
@@ -1425,3 +1364,9 @@ zface:      db 0
 fig_y:      dw 0                        ; fig_draw: height of the feet
 fig_h:      dw ZOMBIE_H                 ; zsize: the figure's height
 fig_sel:    dw zfig_sel                 ; fig_draw: frame chooser
+fig_mon:    db 0                        ; 1: drawing a monster, 0 a human
+fig_anim:   db 0                        ; its purpose (ANIM_*, gfx_ids.inc),
+fig_frame:  db 0                        ;   frame (any: wrapped round its frames)
+spr_col:    db 0                        ;   colour (0: its own)
+spr_pg:     db 0                        ; spr_lod: the level's page,
+spr_ptr:    dw 0                        ;   and its pixels

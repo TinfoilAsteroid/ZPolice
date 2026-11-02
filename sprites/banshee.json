@@ -1,0 +1,108 @@
+{
+ "format": "Z-Police figure", "version": 1,
+ "name": "banshee", "height": 26,
+ "anims": {
+  "float": {"frames": [
+   {"lods": [
+    {"min_z": 0, "rows": [
+     "...GG...",
+     "..GGGG..",
+     "..G..G..",
+     "..GGGG..",
+     ".GGGGGG.",
+     ".G.GG.G.",
+     "...GG...",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..G..G..",
+     ".G....G.",
+     "...GG..."
+    ]},
+    {"min_z": null, "rows": [
+     "..GG..",
+     "..GGG.",
+     "..GGG.",
+     ".GGGGG",
+     ".GGG.G",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..G.G.",
+     ".GGG.G"
+    ]},
+    {"min_z": null, "rows": [
+     ".GG.",
+     ".GG.",
+     "GGGG",
+     ".GG.",
+     ".GG.",
+     ".GG.",
+     ".GG.",
+     "GGGG"
+    ]},
+    {"min_z": null, "rows": [
+     "GG",
+     "GG",
+     "GG",
+     "GG"
+    ]}
+   ]},
+   {"lods": [
+    {"min_z": 0, "rows": [
+     "...GG...",
+     "..GGGG..",
+     "..G..G..",
+     "..GGGG..",
+     ".GGGGGG.",
+     ".G.GG.G.",
+     "...GG...",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..GGGG..",
+     "..G.G.G.",
+     "..G..G..",
+     "...GG..."
+    ]},
+    {"min_z": null, "rows": [
+     "..GG..",
+     "..GGG.",
+     "..GGG.",
+     ".GGGGG",
+     ".GGG.G",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..GGG.",
+     "..GG.G",
+     "..GGG."
+    ]},
+    {"min_z": null, "rows": [
+     ".GG.",
+     ".GG.",
+     "GGGG",
+     ".GG.",
+     ".GG.",
+     ".GG.",
+     ".GGG",
+     ".GG."
+    ]},
+    {"min_z": null, "rows": [
+     "GG",
+     "GG",
+     "GG",
+     "GG"
+    ]}
+   ]}
+  ]}
+ }
+}

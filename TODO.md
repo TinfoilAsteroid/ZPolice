@@ -1,5 +1,14 @@
 # Z-Police TODO
 
+## Tomorrow (2026-11-03)
+
+- Test the booster module (the salvage reward at 45: fitted, its fuel, the
+  boost, the HUD fuel gauge, saved and loaded).
+- Add the functionality for night and thermal vision: Night Vision - Green
+  (salvage 25), Night Vision - Monochrome (65) and Thermal Vision (85).
+  The rewards, their flags (`vision_owned`: `VIS_NV_GREEN`, `VIS_NV_MONO`,
+  `VIS_THERMAL`) and the save game are done; using them in flight isn't.
+
 ## Before a release
 
 - Set `DEBUG_KILLALL equ 0` in `zpolice.asm`: it takes out the debug keys
@@ -14,21 +23,20 @@ Items marked "(also below)" repeat an open point further down this file.
 
 ### Controls and input
 
-- Save the key and joystick definitions to the SD card and load them at
-  start-up.
-- Quit without saving from the pause screen (S already saves and quits).
 - Optional mouse aiming for the centre gun.
 
 ### Graphics
 
-- Better monster graphics: more animation frames, a death animation,
-  distinct ghoul, ghost and banshee art, and perhaps hardware sprites for
-  close monsters.
+- Draw the figures' real art in the sprite editor (tools/sprite_editor.py):
+  they are still the original stick men, coloured, at 4 levels of detail
+  (16, 12, 8, 4 rows). Larger levels for close figures (up to 64x64).
+- Better monster graphics: more animation frames, a death animation (a new
+  purpose: spritefile.FIGURES and the game's chooser), distinct ghoul,
+  ghost and banshee art, and perhaps hardware sprites for close monsters.
 - Better menu graphics: a Layer 2 title picture or logo, animated
   backgrounds, consistent fonts and panels for the load-out and redefine
   screens.
 - Better human graphics, including boarding and leaving animations.
-- Add run animation for humans boarding so they run without waving their arms
 - A visible sky (`SKY_IS_WALL` off), with each city's sky colour and perhaps
   a skyline or clouds (also below).
 - VTOL effects: a damage smoke trail, a landing-pad beacon and rotor or jet
@@ -50,7 +58,6 @@ Items marked "(also below)" repeat an open point further down this file.
 ### Gameplay
 
 - Use the bomb weapon type (`WPN_BOMB` is defined but not used).
-- An "EMPTY" option on the load-out screen to remove a weapon.
 - Ghosts respawning during a level, not only at the start (also below).
 - New monster types, or a boss every 10 levels.
 - Add super zombie, big and bulky as wide has 20 hit points.
@@ -64,8 +71,8 @@ Items marked "(also below)" repeat an open point further down this file.
 - More uses for salvage: armour, fuel, a faster reload, a bigger passenger
   cabin.
 - Vision modules, unlocked by salvage (as the booster module): thermal and
-  high vision, with a key to cycle through the views (normal, thermal,
-  high vision; only the ones unlocked). This changes how the colour palette
+  night vision (green and grey), with a key to cycle through the views (normal, thermal,
+  night vision green/ night vision grey ; only the ones unlocked). This changes how the colour palette
   switches: today each level loads its city's one Layer 2 palette (with its
   time-of-day tint); each view would need its own palette for the city
   (e.g. thermal: buildings dark, zombies, humans and ghosts bright), made by
@@ -76,8 +83,6 @@ Items marked "(also below)" repeat an open point further down this file.
 - Difficulty settings: easy, normal, hard.
 - Level objectives beyond "clear all waves", such as escort, defend the base
   for N minutes, or rescue a VIP.
-- Human behaviour: humans flee from nearby zombies and wave when the VTOL is
-  close.
 
 ### Performance
 
@@ -97,7 +102,6 @@ Items marked "(also below)" repeat an open point further down this file.
     SP restore and DI / EI, ~3%) would hold interrupts off long enough to
     miss some (the engines' sound); and clamping x instead of clipping the
     left / right planes needs proof the spans come out the same.
-- Draw distant monsters with fewer pixels or as simple blips.
 - Faster occlusion when facing the wall (the one view where occlusion is
   slower).
 - Spread zombie path decisions over more frames when waves are large.
@@ -105,8 +109,6 @@ Items marked "(also below)" repeat an open point further down this file.
 
 ### Testing and release
 
-- Turn the scratchpad emulator tests into a regression suite in the
-  repository (`tests/`), run from build.bat.
 - A release build switch that turns off `DEBUG_KILLALL` and the other test
   settings.
 - Packaging: a distribution folder for the .nex file and ZPDATA, plus a
@@ -119,3 +121,4 @@ Completed items are in DONE.md.
 - More in the level complete (to come).
 - A visible sky (`SKY_IS_WALL` off) to show each city's sky colour (also
   under Graphics).
+ 

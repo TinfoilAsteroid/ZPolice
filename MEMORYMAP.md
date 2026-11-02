@@ -45,8 +45,8 @@ page.
 The occlusion data is laid out as follows:
 - `OCC_YBUF` `$4000`: the cover row of each screen column.
 - `OCC_LIST` `$4100`: the draw list.
-- Building records `$4200`–`$5FFF`: 256 bytes each, 30 records.
-- `OCC_YBUF8` `$42E0`: per 8 columns, in the unused tail of record 0.
+- Building records `$4300`–`$5FFF`: 128 bytes each, two a page, 58 records.
+- `OCC_YBUF8` `$4200`: per 8 columns (32 bytes of its own page).
 
 ## MMU 3: `$6000`–`$7FFF` (NextReg `$53`), always mapped: the city bank
 
@@ -72,6 +72,7 @@ in place.
 | Page | Contents |
 |------|----------|
 | 10 `PAGE_ULA0` | ULA screen: the first half of bank 5, bitmap and attributes; used for the HUD (`hud.asm`, Layer 1). Not assembled. |
+| 34 `PAGE_CITY2` | `city2.asm`, the second city page (end `$879A`, about 6.2K free): the street dots, bullets, rockets, particles, gunsight and occlusion culling. Mapped here over the ULA screen only while `main_loop` draws the city, beside the city page in MMU 7; the ULA screen goes back before `draw_hud`. |
 
 ## MMU 5: `$A000`–`$BFFF` (NextReg `$55`), resident
 
@@ -86,6 +87,7 @@ The boot stub maps this page in.
 | | `levels.asm` | the current level's record, `level_cur` (`$A05B`) |
 | | `text.asm` | text screens: menu, load-out |
 | | `sfx_data.asm` | the sound effects |
+| | `layer2_cls.asm` | the zxnDMA fill block and `dma_fill` (used by the city, HUD and menu pages) |
 
 **Loaded from a file:**
 
@@ -109,6 +111,12 @@ for this slot.
 | 31 `PAGE_SPECIAL`  | `specials.asm`   | `$C75C` |
 | 32 `PAGE_LOADOUT`  | `loadout.asm`    | `$C2DF` |
 | 33 `PAGE_KEYDEF`   | `keydef.asm`     | `$C5C0` |
+| 35–38 `PAGE_GFX0` on | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
+
+The figures' graphics pages are mapped here only while the city is drawn
+(the game logic doesn't run then): `spr_lod` maps page 35 (the directory),
+`spr_draw` the page of the level it draws. `main_loop` maps the logic pages
+back before they run.
 
 **Loaded from a file:**
 
@@ -117,6 +125,7 @@ for this slot.
 | `ZPDATA/LEVELnn.ZPL`: whole file, at most 376 bytes | 30 | `ll_lbuf`, `$C19F` | `load_level` |
 | `ZPDATA/CITYnn.ZPC`: header and palette, the first 544 bytes | 30 | `ll_cbuf`, `$C317` | `load_level` |
 | `ZPDATA/LEVELnn.ZPP`: the level's own palette (only if it has one), 520 bytes | 30 | `ll_cbuf`, `$C317` (once the city's header is used) | `load_level` |
+| `ZPDATA/SPRITES.ZPG`: the figures' graphics, a 16-byte header then 1–4 pages of 8K | 35 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
 
 `load_level` then sends the palette to the Layer 2 palette (NextReg `$44`).
 The rest of the city file goes to MMU 3.
@@ -125,7 +134,7 @@ The rest of the city file goes to MMU 3.
 
 | Page               | File             | End     |
 |--------------------|------------------|---------|
-| 1 `PAGE_CITY`      | `city.asm` (includes `tables_city.inc`, `layer2_cls.asm`) | `$FFF4`: about 10 bytes free |
+| 1 `PAGE_CITY`      | `city.asm` (includes `tables_city.inc`) | `$F851`: about 1,970 bytes free |
 | 2 `PAGE_HUD`       | `hud.asm`        | `$E402` |
 | 9 `PAGE_SPR0`      | `sprite_data.asm`: sprite pattern bank 0, paged in only to run its own loader\
                                         | `$EB1A` |
@@ -159,6 +168,7 @@ The rest of the city file goes to MMU 3.
 | 3     | 6 $C000 | player.asm                                                                         |
 | 4     | 6 $C000 | weapons.asm                                                                        |
 | 1     | 7 $E000 | city.asm                                                                           |
+| 34    | 4 $8000 | city2.asm (while the city is drawn, over the ULA screen)                           |
 | 12    | 7 $E000 | input.asm                                                                          |
 | 2     | 7 $E000 | hud.asm                                                                            |
 | 9     | 7 $E000 | sprite_data.asm                                                                    |

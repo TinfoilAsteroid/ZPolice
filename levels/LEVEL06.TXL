@@ -8,7 +8,7 @@ NAME PARIS
 ZOMBIES 10
 WAVES 2
 FAST 3
-VIEW 6
+VIEW 8
 
 ; special monsters, one line a wave (1 is the level's start): WAVE n,
 ; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL

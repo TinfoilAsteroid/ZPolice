@@ -22,17 +22,14 @@ menu_clear:
         ld bc,$123B
         xor a
         out (c),a
-        ld hl,ULA_BMP
-        ld de,ULA_BMP+1
-        ld bc,$1800-1
-        ld (hl),0
-        ldir
+        ld hl,ULA_BMP                   ; (by DMA: layer2_cls.asm)
+        ld bc,$1800
+        xor a
+        call dma_fill
         ld hl,ULA_ATTR
-        ld de,ULA_ATTR+1
-        ld bc,$300-1
-        ld (hl),MENU_ATTR
-        ldir
-        ret
+        ld bc,$300
+        ld a,MENU_ATTR
+        jp dma_fill
 
 ; D = character row, E = column, C = attribute, HL -> text ending 0.
 ; Prints it; HL ends past the 0.

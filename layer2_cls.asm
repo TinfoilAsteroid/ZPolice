@@ -43,11 +43,18 @@ l2_fill_bstrt           DB $00,$00
 l2_fill_cmd_len	        EQU $ - l2_fill
 
 
-; ">l2_cls_dma_bank sets a bank to"  
-l2_cls        
-.set_colour:            ld (l2_cls_byte),a
-.write_dma:             ld hl, l2_fill
-                        ld b, l2_fill_cmd_len
-                        ld	c,IO_DATAGEAR_DMA_PORT
-                        otir
-                        ret
+; DMA fill: HL = destination, BC = length (non-zero), A = the byte.  Any
+; memory mapped in now (the Layer 2 sections in slot 0, the occlusion page,
+; the ULA screen).  Resident (the main page, with this block), so the city,
+; HUD and menu pages all use it.  It leaves the length's high byte set:
+; fill_spans needs it 0 (clear_screen.spans), so the city page restores it
+; after a fill of its own.
+dma_fill:
+        ld (l2_cls_byte),a
+        ld (l2_fill_bstrt),hl
+        ld (l2_fill_length),bc
+        ld hl,l2_fill
+        ld b,l2_fill_cmd_len
+        ld c,IO_DATAGEAR_DMA_PORT
+        otir                            ; CPU waits while the DMA runs
+        ret

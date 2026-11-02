@@ -3,9 +3,16 @@
 ; mapped in slot 1)
 ;
 ; Up to HUMAN_MAX humans, nhumans of them placed at random at start-up (on a
-; road, or on a roof low enough to land on).  They stand still, always face
-; the player and wave their right arm.  On the city map each is a blue dot,
-; flashing 3 frames on, 3 off.
+; road, or on a roof low enough to land on).  They stand facing the player,
+; and wave their right arm while the VTOL is within WAVE_R.  On the city map
+; each is a blue dot, flashing 3 frames on, 3 off.
+;
+; Fleeing (hum_flee): a human on the road (never one on a roof) with a
+; monster within FLEE_R runs from the nearest one for FLEE_TIME frames, at
+; HUMAN_FLEE units a frame, then looks again.  Its way is picked at random
+; of the two that take it away from the monster (along x or along z); if
+; that way is blocked (a building, the base, the wall) it takes the other,
+; and if both are, it stands.  It only runs along roads.
 ;
 ; Base: landed on the landing pad (map code PAD_CODE), the passengers get off
 ; one every DISEMBARK frames (a second) and are counted as saved.
@@ -26,6 +33,11 @@
 ;   +9     1 = map dot shown
 ;   +10    hit points left (HUMAN_HP; a rocket blast, weapons.asm)
 ;   +11,+12  cell (x, z) marked with CELL_HUMAN in city_map ($FF = none)
+;   +13    how it's drawn this frame: 0 standing, HUM_WAVING waving, or
+;          running (to the VTOL, or fleeing): its way + 1 (1 +z, 2 +x,
+;          3 -z, 4 -x, as a zombie's heading + 1)
+;   +14    fleeing: frames left (0: not fleeing)
+;   +15    fleeing: its way + 1 (as +13)
 ;
 ; Drawing: draw_cell (city page) tests the cell's CELL_HUMAN mark in
 ; city_map (bit 6, set by hum_flags) and draws them with human_cell: after
@@ -34,14 +46,14 @@
 ; address, $6000-$6FFF) and is drawn from there.
 ;==============================================================================
 
-HREC            equ 13
+HREC            equ 16
+HUM_WAVING      equ 5               ; +13: waving (above the 4 ways)
 HS_NONE         equ 0               ; human states (+6)
 HS_WAIT         equ 1               ; waiting in the city to be rescued
 HS_ABOARD       equ 2               ; aboard the VTOL
 HS_SAVED        equ 3               ; rescued: off at the landing pad
 HS_DEAD         equ 4               ; killed (a rocket blast, a ghost)
 
-        INCLUDE "tables_human.inc"      ; hum_ptr, waving stick men
 
 ;------------------------------------------------------------------------------
 ; Place nhumans humans at random: on a road cell, or on a roof of level
@@ -61,6 +73,7 @@ human_init:
         ld de,HREC
 .clr:   ld (ix+6),0
         ld (ix+9),0
+        ld (ix+14),0                    ; not fleeing
         ld (ix+11),$FF                  ; no cell marked
         add ix,de
         djnz .clr
@@ -199,39 +212,68 @@ human_cell:
         pop ix
         ret
 
-; Draw human IX: feet at its height, facing the viewer, waving
+; Draw human IX: feet at its height, waving at the viewer, or running to
+; the VTOL
 human_draw:
         ld l,(ix+4)
         ld h,(ix+5)
         ld (fig_y),hl
         ld hl,hum_sel
         ld (fig_sel),hl
-        ld a,HUMAN_COL
-        ld (zspr_rows.col+1),a
+        xor a
+        ld (spr_col),a                  ; (its own colours)
+        ld (fig_mon),a                  ; (not a monster)
         jp fig_draw                     ; (zombie page)
 
-; Frame chooser: the waving frame (every 4 frames), never mirrored
+; Frame chooser: standing (facing the viewer), waving (a new frame every 4
+; frames, facing the viewer), or running (every 2), facing its way relative
+; to the view (as a zombie)
 hum_sel:
+        ld a,(ix+13)
+        or a
+        jr nz,.move
+        ld (zface),a                    ; (A = 0: not mirrored)
+        ld (fig_frame),a
+        ld a,ANIM_HUMAN_STAND
+        ld (fig_anim),a
+        ret
+.move:  cp HUM_WAVING
+        jr nz,.run
         xor a
         ld (zface),a
+        ld a,ANIM_HUMAN_WAVE
+        ld (fig_anim),a
         ld a,(hanim)
+        srl a
+        srl a
+        ld (fig_frame),a
+        ret
+.run:   dec a                           ; its way 0-3: * 64, less the yaw
         rrca
         rrca
-        and 3                           ; frame
-        add a,a
-        add a,a
-        add a,a
-        ld hl,zlvl
-        add a,(hl)                      ; frame*8 + level
-        add a,a
-        ld hl,hum_ptr
+        ld hl,yaw
+        sub (hl)
+        add a,32
+        rlca
+        rlca
+        and 3
+        ld hl,face_tab                  ; (zombie page)
         add hl,a
-        ld a,(hl)
-        inc hl
-        ld h,(hl)
-        ld l,a
-        ld (zrow),hl
-        jp zspr_rows
+        ld c,(hl)
+        ld a,c
+        and 3
+        add a,ANIM_HUMAN_RUN_FRONT
+        ld (fig_anim),a
+        xor a
+        bit 7,c
+        jr z,.m
+        ld a,2
+.m:     ld (zface),a
+        ld a,(hanim)
+        srl a
+        ld (fig_frame),a
+        ret
+        ASSERT ANIM_HUMAN_RUN_SIDE == ANIM_HUMAN_RUN_FRONT+1 && ANIM_HUMAN_RUN_REAR == ANIM_HUMAN_RUN_FRONT+2
 
 ;------------------------------------------------------------------------------
 ; The level complete (level_complete_screen): everyone aboard is rescued at
@@ -254,11 +296,31 @@ hum_unload_all:
         ret
 
 ;------------------------------------------------------------------------------
-; Per frame: map dots, and rescues while the craft is landed
+; Per frame: map dots, rescues while the craft is landed, fleeing from the
+; monsters and waving at the VTOL
 ;------------------------------------------------------------------------------
 human_update:
+        xor a
+        ld (hu_moved),a
         ld hl,hanim
         inc (hl)
+        call .upd
+        call hum_flee
+        ld a,(hu_moved)
+        or a
+        ret z
+        call hum_flags                  ; someone moved to another cell, or
+        ld c,1                          ; boarded: redraw the dots that are on
+        ld a,(hflash)
+        cp HUM_FLASH
+        ret nc
+        jp hum_dots
+.upd:   ld ix,humans                    ; nobody running yet this frame
+        ld b,HUMAN_MAX
+        ld de,HREC
+.rc:    ld (ix+13),0
+        add ix,de
+        djnz .rc
         ; map dots: on for HUM_FLASH frames, off for HUM_FLASH (1: every
         ; other frame, as the VTOL's dot, map_player)
         ld hl,hflash
@@ -316,9 +378,7 @@ human_update:
         ld a,DISEMBARK                  ; the first gets off a second after
         ld (dis_wait),a                 ; landing
         ret
-.field: xor a
-        ld (hu_moved),a
-        ld ix,humans
+.field: ld ix,humans
         ld b,HUMAN_MAX
 .lp:    push bc
         ld a,(passengers)
@@ -332,17 +392,229 @@ human_update:
         add ix,de
         pop bc
         djnz .lp
-        jr .done
+        ret
 .full:  pop bc
-.done:  ld a,(hu_moved)
+        ret
+
+;------------------------------------------------------------------------------
+; Each waiting human not running to the VTOL: fleeing (on the road, from a
+; monster within FLEE_R), else waving if the VTOL is within WAVE_R, else
+; standing.  Sets +13 (how it's drawn) and moves the fleeing.
+;------------------------------------------------------------------------------
+hum_flee:
+        ld ix,humans
+        ld b,HUMAN_MAX
+.lp:    push bc
+        ld a,(ix+6)
+        cp HS_WAIT
+        jp nz,.nx
+        ld a,(ix+13)
         or a
-        ret z
-        call hum_flags                  ; someone moved or boarded
-        ld c,1                          ; and redraw the dots that are on
-        ld a,(hflash)
-        cp HUM_FLASH
-        ret nc
-        jp hum_dots
+        jr z,.free
+        ld (ix+14),0                    ; running to the VTOL: not fleeing
+        jp .nx
+.free:  ld a,(ix+14)
+        or a
+        jr z,.look
+        dec (ix+14)                     ; fleeing: on its way
+        ld a,(ix+15)
+        call hum_step
+        jr nc,.ran
+        ld (ix+14),0                    ; blocked: stops (looks again)
+        jr .wave
+.look:  ld a,(ix+4)                     ; above the road: never flees
+        or (ix+5)
+        jr nz,.wave
+        ld a,(hanim)                    ; look every FLEE_EVERY frames,
+        add a,b                         ; the humans in turn
+        and FLEE_EVERY-1
+        jr nz,.wave
+        call hum_near
+        jr c,.wave                      ; no monster near
+        ld a,(hu_dx+1)                  ; the ways away from it: along x
+        rla
+        ld a,2                          ; +x
+        jr nc,.wx
+        ld a,4                          ; -x
+.wx:    ld c,a
+        ld a,(hu_dz+1)                  ; along z
+        rla
+        ld a,1                          ; +z
+        jr nc,.wz
+        ld a,3                          ; -z
+.wz:    ld e,a
+        call zrand                      ; one at random (keeps C, E)
+        bit 0,l
+        jr z,.pick
+        ld a,c                          ; swap: C the one tried first,
+        ld c,e                          ; E the other
+        ld e,a
+.pick:  ld (ix+14),FLEE_TIME
+        ld a,c
+        ld (ix+15),a
+        push de
+        call hum_step                   ; (keeps BC)
+        pop de
+        jr nc,.ran
+        ld a,e                          ; blocked: the other way
+        ld (ix+15),a
+        call hum_step
+        jr nc,.ran
+        ld (ix+14),0                    ; both blocked: stands
+        jr .wave
+.ran:   ld a,(ix+15)                    ; drawn running its way
+        ld (ix+13),a
+        jr .nx
+.wave:  ld hl,(cam_x+1)                 ; the VTOL within WAVE_R: waves
+        ld e,(ix+0)
+        ld d,(ix+1)
+        or a
+        sbc hl,de
+        call abs_hl
+        ld de,WAVE_R
+        or a
+        sbc hl,de
+        jr nc,.nx
+        ld hl,(cam_z+1)
+        ld e,(ix+2)
+        ld d,(ix+3)
+        or a
+        sbc hl,de
+        call abs_hl
+        ld de,WAVE_R
+        or a
+        sbc hl,de
+        jr nc,.nx
+        ld (ix+13),HUM_WAVING
+.nx:    ld de,HREC
+        add ix,de
+        pop bc
+        dec b
+        jp nz,.lp
+        ret
+
+; The nearest active monster to human IX within FLEE_R (along x and z):
+; carry clear and hu_dx, hu_dz = the human less the monster; carry set if
+; none.  Keeps IX.
+hum_near:
+        ld hl,FLEE_R
+        ld (hu_dist),hl                 ; the nearest so far
+        xor a
+        ld (hn_found),a
+        ld iy,zombies
+        ld b,NMON
+.lp:    bit 0,(iy+10)
+        jr z,.nx                        ; not in play
+        ld a,(iy+1)                     ; quick: within a cell (x, z)?
+        sub (ix+1)
+        inc a
+        cp 3
+        jr nc,.nx
+        ld a,(iy+3)
+        sub (ix+3)
+        inc a
+        cp 3
+        jr nc,.nx
+        ld l,(ix+0)
+        ld h,(ix+1)
+        ld e,(iy+0)
+        ld d,(iy+1)
+        or a
+        sbc hl,de
+        ld (hn_dx),hl
+        call abs_hl
+        push hl
+        ld l,(ix+2)
+        ld h,(ix+3)
+        ld e,(iy+2)
+        ld d,(iy+3)
+        or a
+        sbc hl,de
+        ld (hn_dz),hl
+        call abs_hl                     ; HL = |dz|
+        pop de                          ; DE = |dx|
+        or a
+        sbc hl,de
+        add hl,de
+        jr nc,.mx
+        ex de,hl                        ; HL = the larger
+.mx:    ld de,(hu_dist)
+        or a
+        sbc hl,de
+        jr nc,.nx                       ; not nearer
+        add hl,de
+        ld (hu_dist),hl
+        ld hl,(hn_dx)
+        ld (hu_dx),hl
+        ld hl,(hn_dz)
+        ld (hu_dz),hl
+        ld a,1
+        ld (hn_found),a
+.nx:    ld de,ZREC
+        add iy,de
+        djnz .lp
+        ld a,(hn_found)
+        sub 1                           ; carry if none
+        ret
+
+; Move human IX HUMAN_FLEE units its way A (1 +z, 2 +x, 3 -z, 4 -x), if
+; that is on a road: carry set (and not moved) if not.  hu_moved = 1 if it
+; is in another cell now.  Keeps BC, IX.
+hum_step:
+        ld l,(ix+0)                     ; where it was
+        ld h,(ix+1)
+        ld (hs_x),hl
+        ld l,(ix+2)
+        ld h,(ix+3)
+        ld (hs_z),hl
+        dec a                           ; 0 +z, 1 +x, 2 -z, 3 -x
+        ld de,HUMAN_FLEE
+        bit 1,a
+        jr z,.pos
+        ld de,-HUMAN_FLEE
+.pos:   rra
+        jr c,.x
+        add hl,de                       ; z
+        ld (ix+2),l
+        ld (ix+3),h
+        jr .chk
+.x:     ld hl,(hs_x)
+        add hl,de
+        ld (ix+0),l
+        ld (ix+1),h
+.chk:   ld a,(ix+1)                     ; not on the wall, nor past it
+        dec a
+        cp GRID-2
+        jr nc,.no
+        ld a,(ix+3)
+        dec a
+        cp GRID-2
+        jr nc,.no
+        call hum_map                    ; (keeps BC)
+        cp PAD_CODE
+        jr nc,.no                       ; the base
+        call bld_height
+        ld a,h
+        or l
+        jr nz,.no                       ; a building
+        ld a,(hs_x+1)                   ; another cell?
+        cp (ix+1)
+        jr nz,.cell
+        ld a,(hs_z+1)
+        cp (ix+3)
+        ret z                           ; (carry clear)
+.cell:  ld a,1
+        ld (hu_moved),a
+        or a
+        ret
+.no:    ld hl,(hs_x)                    ; back where it was
+        ld (ix+0),l
+        ld (ix+1),h
+        ld hl,(hs_z)
+        ld (ix+2),l
+        ld (ix+3),h
+        scf
+        ret
 
 ; Human IX: if at the craft's height and within RESCUE_R, run to it (and
 ; board when there)
@@ -396,6 +668,27 @@ hum_rescue:
         ret nc                          ; too far
         ld a,1
         ld (hu_moved),a
+        ; its way, for drawing it running: along the larger of |dx|, |dz|
+        ld hl,(hu_dx)
+        call abs_hl
+        ex de,hl
+        ld hl,(hu_dz)
+        call abs_hl                     ; HL = |dz|, DE = |dx|
+        or a
+        sbc hl,de
+        ld a,(hu_dx+1)
+        jr c,.wx                        ; |dx| the larger
+        ld a,(hu_dz+1)
+        rla
+        ld a,1                          ; +z
+        jr nc,.wd
+        ld a,3                          ; -z
+        jr .wd
+.wx:    rla
+        ld a,2                          ; +x
+        jr nc,.wd
+        ld a,4                          ; -x
+.wd:    ld (ix+13),a
         ld hl,(hu_dist)
         ld de,HUMAN_RUN+1
         or a
@@ -466,4 +759,9 @@ hu_dx:      dw 0
 hu_dz:      dw 0
 hu_dist:    dw 0
 hu_t:       dw 0
+hn_dx:      dw 0                        ; hum_near: this monster's dx, dz
+hn_dz:      dw 0
+hn_found:   db 0
+hs_x:       dw 0                        ; hum_step: where it was
+hs_z:       dw 0
 humans:     ds HUMAN_MAX*HREC

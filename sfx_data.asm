@@ -55,16 +55,19 @@ sfx_table:
         dw sfx_chain                    ; SFX_CHAIN
         dw sfx_rocket                   ; SFX_ROCKET
         dw sfx_missile                  ; SFX_MISSILE
-        dw sfx_bofors                   ; SFX_BOFORS
+        dw sfx_autocannon               ; SFX_AUTOCANNON
         dw sfx_boom_rocket              ; SFX_BOOM_ROCKET
         dw sfx_boom_missile             ; SFX_BOOM_MISSILE
-        dw sfx_boom_bofors              ; SFX_BOOM_BOFORS
+        dw sfx_boom_autocannon          ; SFX_BOOM_AUTOCANNON
         dw sfx_boom_prox                ; SFX_BOOM_PROX
         dw sfx_splat                    ; SFX_SPLAT
+        dw sfx_crash                    ; SFX_CRASH
+        dw sfx_lock                     ; SFX_LOCK
         ASSERT SFX_MG == 1 && SFX_LASER == 2 && SFX_CHAIN == 3
-        ASSERT SFX_ROCKET == 4 && SFX_MISSILE == 5 && SFX_BOFORS == 6
+        ASSERT SFX_ROCKET == 4 && SFX_MISSILE == 5 && SFX_AUTOCANNON == 6
         ASSERT SFX_BOOM_ROCKET == 7 && SFX_BOOM_MISSILE == 8
-        ASSERT SFX_BOOM_BOFORS == 9 && SFX_BOOM_PROX == 10 && SFX_SPLAT == 11
+        ASSERT SFX_BOOM_AUTOCANNON == 9 && SFX_BOOM_PROX == 10 && SFX_SPLAT == 11
+        ASSERT SFX_CRASH == 12 && SFX_LOCK == 13
         ASSERT ($ - sfx_table)/2 == SFX_LAST
 
 ; The machine gun, heavy: a sharp crack (bright noise) dropping into a deep
@@ -95,16 +98,16 @@ sfx_chain:
         db AY_VOL_A, 3, AY_VOL_B, 2, SFX_STEP
         db AY_VOL_A, 0, AY_VOL_B, 0, SFX_END
 
-; The Bofors cannon (and the proximity cannon, its shells fired the same
+; The autocannon (and the proximity cannon, its shells fired the same
 ; way): the machine gun's sound deeper (the thump 30 Hz, the noise periods
 ; doubled) and louder (every volume 2 levels up: about twice as loud).  The
 ; noise period can't go past 31, so the boom's later steps (18, 26 doubled)
 ; stop there, and the volume at 15.
-BOFORS_THUMP    equ 3646            ; 109375 / 3646 = 30 Hz
-        ASSERT BOFORS_THUMP < 4096
-sfx_bofors:
+AUTOCANNON_THUMP equ 3646           ; 109375 / 3646 = 30 Hz
+        ASSERT AUTOCANNON_THUMP < 4096
+sfx_autocannon:
         db AY_MIXER, SFX_MIX_NOISE_A_TONE_B
-        db AY_TONE_B, low BOFORS_THUMP, AY_TONE_B+1, high BOFORS_THUMP
+        db AY_TONE_B, low AUTOCANNON_THUMP, AY_TONE_B+1, high AUTOCANNON_THUMP
         db AY_VOL_C, 0
         db AY_NOISE, 8, AY_VOL_A, 15, AY_VOL_B, 13, SFX_STEP     ; crack
         db AY_NOISE, 31, AY_VOL_A, 12, AY_VOL_B, 11, SFX_STEP    ; boom
@@ -154,7 +157,7 @@ sfx_missile:
 
 ; Explosions (rocket_blast, weapons.asm; on AY 3).  Each one's loudness in
 ; proportion to its blast's size, damage x reach (game units):
-;   missile 15 x 256 = 3840, rocket 20 x 64 = 1280, Bofors 4 x 38 = 152,
+;   missile 15 x 256 = 3840, rocket 20 x 64 = 1280, autocannon 4 x 38 = 152,
 ;   proximity 3 x 25 = 75.
 ; Sound level is logarithmic (about 2 AY levels each doubling), so the peak
 ; is 15 + 2*log2(size / the missile's): 15, 12, 6, 4; and the bigger the
@@ -164,12 +167,48 @@ sfx_boom_missile:
         SFX_BOOM 15, 30
 sfx_boom_rocket:
         SFX_BOOM 12, 24
-sfx_boom_bofors:
+sfx_boom_autocannon:
         SFX_BOOM 6, 12
 sfx_boom_prox:
         SFX_BOOM 4, 8
         ASSERT MISSILE_DMG*MISSILE_R == 3840 && BLAST_DMG*BLAST_R == 1280
-        ASSERT BOFORS_DMG*BOFORS_R == 152 && PROX_DMG*PROX_R == 75
+        ASSERT AUTOCANNON_DMG*AUTOCANNON_R == 152 && PROX_DMG*PROX_R == 75
+
+; The VTOL hitting a building (player.asm; on AY 3, as the explosions): a
+; low crunch, like a missile's blast but deeper and shorter.  A cracking
+; hit (brighter noise, full volume) drops at once into the deepest noise
+; (period 31) over a lower rumble than the blasts' (about 27 Hz, channel B),
+; fading over 260 ms.
+CRASH_RUMBLE    equ 4000            ; 109375 / 4000 = 27 Hz
+        ASSERT CRASH_RUMBLE < 4096
+CRASH_LEN       equ 10              ; the fade, steps
+; The missile lock: two short high beeps (about 1.5 kHz, channel A), 80 ms
+; each with 40 ms between
+LOCK_TONE       equ 73              ; tone period: 109375 / 73 = 1.5 kHz
+sfx_lock:
+        db AY_MIXER, SFX_MIX_TONE_A
+        db AY_VOL_B, 0, AY_VOL_C, 0
+        db AY_TONE_A, low LOCK_TONE, AY_TONE_A+1, high LOCK_TONE
+        db AY_VOL_A, 12, SFX_STEP, SFX_STEP, SFX_STEP, SFX_STEP
+        db AY_VOL_A, 0, SFX_STEP, SFX_STEP
+        db AY_VOL_A, 12, SFX_STEP, SFX_STEP, SFX_STEP, SFX_STEP
+        db AY_VOL_A, 0, SFX_END
+
+sfx_crash:
+        db AY_MIXER, SFX_MIX_BOOM       ; (channel C: the splats', left alone)
+        db AY_TONE_B, low CRASH_RUMBLE, AY_TONE_B+1, high CRASH_RUMBLE
+        db AY_NOISE, 12, AY_VOL_A, 15, AY_VOL_B, 13, SFX_STEP     ; the hit
+        db AY_NOISE, 22, AY_VOL_A, 15, AY_VOL_B, 14, SFX_STEP     ; the crunch
+        db AY_NOISE, 28, AY_VOL_A, 14, AY_VOL_B, 13, SFX_STEP
+CRASH_I DEFL 0
+        DUP CRASH_LEN
+        db AY_NOISE, 31
+        db AY_VOL_A, (13*(CRASH_LEN-CRASH_I)+CRASH_LEN-1)/CRASH_LEN
+        db AY_VOL_B, (12*(CRASH_LEN-CRASH_I)+CRASH_LEN-1)/CRASH_LEN
+        db SFX_STEP
+CRASH_I DEFL CRASH_I+1
+        EDUP
+        db AY_VOL_A, 0, AY_VOL_B, 0, SFX_END
 
 ; A zombie hit, a squelchy splat (zdamage, weapons.asm; AY 3 channel C): a
 ; tone lurching down and up as it falls, a wet gargle, from about 680 Hz to
