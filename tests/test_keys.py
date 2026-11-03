@@ -7,8 +7,8 @@ import os
 import zptest as zp
 from zptest import sym
 
-N_DEFS = sym["K_ACTIONS"]                  # (21: with K_VISION)
-KF_VERSION = 2
+N_DEFS = sym["K_ACTIONS"]                  # (23: with K_VISION, the strafes)
+KF_VERSION = 3
 KF_SIZE = 6 + 4 * N_DEFS
 KB_Q, KB_M = 0x0201, 0x0704                # SPEED UP's default, and M
 

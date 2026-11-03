@@ -66,7 +66,11 @@ Items marked "(also below)" repeat an open point further down this file.
 
 - Ghosts respawning during a level, not only at the start (also below).
 - New monster types, or a boss every 10 levels.
+- At certain waves zombies spawn two clusters, each cluster will be half the wave of zombies only
 - Add super zombie, big and bulky as wide has 20 hit points.
+- We need some monsters that shoot projectiles, not sure what type yet
+- At the final city we want something like an entrance to hell where the zombies come from
+  this will be represented by a large road section as a circle, a boss monster will spawn in the road and attempt to destroy the landing pad
 - At the end of each city will be a boss monster/wave
 - Barricade gameplay: rebuild or place barricades, or repair them at the
   pad, using salvage.

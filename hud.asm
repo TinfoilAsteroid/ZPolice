@@ -521,6 +521,8 @@ wpn_glyph:  db GLYPH_SPACE              ; WPN_NONE
             db GLYPH_B                  ; WPN_BOMB: bomb
             db GLYPH_A                  ; WPN_AUTOCANNON: autocannon
             db GLYPH_P                  ; WPN_PROX: proximity cannon
+            db GLYPH_C                  ; WPN_LCHAIN_L: linked chain guns
+            db GLYPH_C                  ; WPN_LCHAIN_R
         ASSERT $ - wpn_glyph == WPN_LAST + 1
 g_spd:      db 0                        ; draw_gauges: bar heights (pixels)
 g_spdc:     db 0                        ;   and the speed bar's colour

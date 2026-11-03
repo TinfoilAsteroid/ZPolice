@@ -219,10 +219,13 @@ X works in a wreck too.
   VTOL's integrity (`vtol_hp`), its weapon slots (type and ammo each) and
   the selected one, the store (`wpn_stock`, `wpn_unlocked`), the
   booster (fitted, fuel), the vision modes (`vision_owned`: `VIS_*`
-  bits), and the vertical thrusters (`vthrust_fitted`). The file is
-  "ZPSV", a version byte (`SG_VERSION`, 3), then those fields: 43 bytes.
-  An older file (version 1, from before the vision modes, or 2, before the
-  thrusters) is refused as having no save game.
+  bits), the vertical thrusters (`vthrust_fitted`) and the lateral
+  thrusters (`lthrust_fitted`). The file is "ZPSV", a version byte
+  (`SG_VERSION`, 5), then those fields: 48 bytes (the store grew by the
+  two linked chain guns at version 5). An older file (version
+  1, from before the vision modes, 2, before the vertical thrusters, 3,
+  before the lateral thrusters, or 4, before the linked chain guns) is
+  refused as having no save game.
 * **Continue** (main menu 2): `load_save` reads and checks the file (its
   size, "ZPSV", the version, the level 1–50), then `continue_game` starts a
   new game (`game_reset`, as `newGame` without the load-out screen), lays
@@ -442,6 +445,7 @@ Interrupts are on from the main menu onwards, in IM 2 (`interrupts.asm`),
 | V   | recentre the centre gun | 0 / 9 | debug: kill all / next city (see below) |
 | 8   | debug: change the centre gun (see below) | N | next vision mode (once one is fitted: see below) |
 | BREAK | pause / resume | X | boost on / off (once the booster is fitted: see below) |
+| K   | strafe left (once the lateral thrusters are fitted: see below) | L | strafe right |
 
 **Joystick:** Kempston or Mega Drive (3 or 6 buttons), in either joystick
 port, set up in the Next's own joystick settings. By default joystick 1's
@@ -537,12 +541,14 @@ none), and either one works.
   `joy_defaults`, so putting the defaults back is one copy.
 * **Redefine keys screen (`keydef_screen`, keydef.asm, `PAGE_KEYDEF` page
   33 in slot 6):** option 9 on the main menu (`keydef_go`, resident, pages
-  it in). It lists every control (21, VISION MODE the last) with its key
+  it in). It lists every control (23, STRAFE RIGHT the last) with its key
   and joystick input ("-" for none): white, the highlighted one green. The
   title shares the top row with the KEY and JOYSTICK headings, and the
-  keys' help is one line at the bottom (row 23; messages on row 22), to
-  fit them all.
-  * **Q / A** move the highlight up and down.
+  keys' help is one line at the bottom (row 23; messages on row 22).
+  21 rows of controls show at once (`KD_VIS`); the list scrolls to keep
+  the highlight in view (`kd_top`, the first one shown).
+  * **Q / A** move the highlight up and down, scrolling the list at its
+    top and bottom.
   * **SPACE** shows PRESS A KEY OR JOYSTICK and waits a second. The next
     input (any bank: `kd_new_key`) then becomes the control's key, or its
     joystick input if it came from a joystick. If another control already
@@ -554,10 +560,11 @@ none), and either one works.
     saved, KEYS NOT SAVED (SD CARD?) shows for a second.
   * These keys are fixed, whatever the controls are set to.
   * **Saved definitions:** `ZPDATA/KEYS.ZPK`, beside the level files:
-    "ZPKY", a version byte (`KF_VERSION`, 2), the number of controls (21),
-    then `key_defs` and `joy_defs` (2 bytes a control): 90 bytes. A
-    version 1 file (20 controls, from before the vision control) isn't
-    used: the defaults load instead, once. The
+    "ZPKY", a version byte (`KF_VERSION`, 3), the number of controls (23),
+    then `key_defs` and `joy_defs` (2 bytes a control): 98 bytes. An
+    older file (version 1, 20 controls, from before the vision control,
+    or 2, 21, before the strafe controls) isn't used: the defaults load
+    instead, once. The
     definitions are in the input page, in slot 7, where the file handler
     goes too, so they go through a buffer in the redefine page (`kd_buf`).
   * **Loaded at start-up:** `start` pages the redefine page into slot 6 and
@@ -597,9 +604,17 @@ filled from the bottom:
   booster module is fitted (`ula_init` makes its cells see-through and
   labels it); until then the panel covers it.
 
+**Lateral thrusters:** a salvage reward at 90 points, fitted at once
+(`lthrust_fitted`; `strafe` in player.asm).
+* **K / L** (`K_STRAFE_L`, `K_STRAFE_R`, redefinable), held, move the
+  VTOL sideways, square to the heading: 2.5 world units a frame
+  (`STRAFE_D_HALVES`, 5 halves), about 0.2 m (10 m/s).
+* The move is checked for collisions as any other.
+* Not while landed (`vtol_on_floor`): nothing happens.
+
 **Booster module:** a salvage reward at 45 points, fitted at once with a
 full tank (`boost_fitted`, `boost_fuel`; constants `BOOST_*` in
-zpolice.asm).
+zpolice.asm). It can't be turned on while landed.
 * **X** (the boost control, `K_BOOST`, redefinable) turns it on if the VTOL
   is going forwards at half speed or more (`BOOST_MIN`, 14) and there's
   fuel. The speed jumps at once to twice the top speed (`BOOST_SPEED`, 56
@@ -773,6 +788,15 @@ Inspired by *Defender*: humans wait around the city to be picked up.
   `COLL_H` + 1 (about 1 m), of the highest roof under any part of it. Setting down there isn't a collision, so
   there's no border flash. You're *landed* when speed is 0 and you're
   resting at that height.
+  * **Setting down moving** (`update_player`): while resting at that
+    height (`vtol_on_floor`) the VTOL can't keep moving. Any speed is
+    braked away as the air brake does, as if Z were held (`AIRBRAKE_STEP` a
+    frame towards 0, the nose tipping), with a screen shake. A boost on as
+    it sets down ends.
+  * The speed keys only bring it back to 0 there: Q only while reversing,
+    A only while going forwards. So it can't speed up or reverse along the
+    ground, a roof or the pad; climb off first. (Skimming the road at the
+    lowest height, `MIN_Y`, counts as resting on it.)
 * **Rescue:** every frame (`human_update`), while landed and carrying fewer
   than `PASSENGER_MAX` (5), each human checks two things. It must be at
   the same height as the floor under the craft: the road with the road, a
@@ -815,8 +839,13 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
 * The types are `WPN_NONE` 0, `WPN_GUN` 1 (machine gun), `WPN_LASER` 2
   (pulse laser), `WPN_CHAIN` 3 (chain gun), `WPN_ROCKETS` 4 (rocket
   pod), `WPN_MISSILE` 5 (missile pod), `WPN_AUTOCANNON` 7 (autocannon) and
-  `WPN_PROX` 8 (proximity cannon; `WPN_LAST`), and `WPN_BOMB` 6 (bomb). They are defined at
-  the top of `zpolice.asm`.
+  `WPN_PROX` 8 (proximity cannon), `WPN_LCHAIN_L` 9 and `WPN_LCHAIN_R` 10
+  (the linked chain guns; `WPN_LAST`), and `WPN_BOMB` 6 (bomb). They are
+  defined at the top of `zpolice.asm`.
+* Slot indexes and keys: 0 is key 1 (the centre), 1 key 2 (left outer
+  pylon), 2 key 3 (right outer), 3 key 4 (left inner, `WPN_LINK_L`) and 4
+  key 5 (right inner, `WPN_LINK_R`), as the HUD shows them left to right:
+  2 4 1 5 3.
 * **Weapon type details (`wpn_cfg`, resident in zpolice.asm):**
   `WCFG_SIZE` (3) bytes per type: its full load (`WCFG_LOAD`), frames to
   reload a shot on the pad (`WCFG_RELOAD`, 0 for none) and the slots it
@@ -835,8 +864,11 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
   | Autocannon | 2–5 | 50 | 1 every 7 frames |
   | Proximity cannon | 2–5 | 50 | 1 every 7 frames |
   | Bomb | 2–5 | 1 | 1 every 30 frames |
+  | Linked chain gun L | 4 | 200 | 1 every frame |
+  | Linked chain gun R | 5 | 200 | 1 every frame |
 
-  The masks are `WS_CENTRE`, `WS_PYLONS` and `WS_ANY`. An empty slot fits
+  The masks are `WS_CENTRE`, `WS_PYLONS`, `WS_ANY`, `WS_LINK_L` and
+  `WS_LINK_R`. An empty slot fits
   anywhere; the placeholder bomb fits nowhere yet. Nothing enforces the
   rules yet: the load-out page will use `wpn_fits`.
 * Keys 1–5 select which slot SPACE fires (`wpn_sel`): 1 is the centre
@@ -973,6 +1005,31 @@ frame's first boundary is then a hardware `MUL`, not a divide.
 
 Most of the chain gun's remaining cost is projecting up to 20 tracers a
 frame.
+
+### Linked chain guns
+Weapon types 9 (`WPN_LCHAIN_L`, salvage 50) and 10 (`WPN_LCHAIN_R`,
+salvage 55): a pair of chain guns either side of the centre gun. L fits
+only slot 4 (`WPN_LINK_L`, just left of slot 1 on the HUD), R only slot 5
+(`WPN_LINK_R`, just right of it). The load-out screen calls them LINKED
+CG L and LINKED CG R.
+* **Stats:** as the chain gun (a round every frame, `CHAIN_DMG`, the same
+  ±2° spread), but each has its own `LINK_SHOTS` (200) rounds, taken from
+  its own slot (`take_slot_ammo`). One run dry, the other fires on alone.
+  They reload on the pad 1 round a frame (`LINK_RELOAD`), and every level
+  end fills them.
+* **Straight ahead:** each fires along the view direction (the centre
+  gun's tilt doesn't apply), from `LINK_OFF` (26 units, 2 m) to its side
+  of the centre line, square to the heading (`round_side`).
+* **Linked:** selecting either slot (`.linked` in `gun_fire`) fires every
+  linked gun fitted, both together when both are. With one fitted, only
+  that one fires.
+* **Gunsight:** while one is selected, the centre crosshair is replaced by
+  a crosshair for each linked gun fitted, `LINK_SIGHT_DX` (8) pixels to
+  its side of the view's centre. `gun_aim` sets `sight_mask`
+  (`SM_CENTRE`, `SM_LINK_L`, `SM_LINK_R`) and `draw_gunsight` (city2.asm)
+  draws one crosshair (`gs_cross`) per bit.
+* Both share the 24 rounds in flight (`NBULLETS`) with every other gun, so
+  two at once can find none free sooner.
 
 ### Pulse laser
 Weapon type 2 (`WPN_LASER`), in the centre slot, with infinite ammo.
@@ -1272,9 +1329,11 @@ transparent: the city map and the gauges.
     `draw_gauges` writes the 48 rows into the back buffer every frame.
 * **Humans (hardware sprites):** a column of 16 × 16 sprites, one per
   human (sprite k for human k), 8 pixels in from the left edge of the
-  320 × 256 sprite screen, over the border. Human 0 is at the bottom, 8
-  pixels above the edge (y 232), and each next one 16 pixels higher, so up
-  to 15 fit. Each shows its human's state (record +6, `HS_*`) with the human
+  320 × 256 sprite screen, over the border. Human 0 is at the bottom and
+  each next one 16 pixels higher, the column placed so its middle sprite
+  (human (`nhumans` − 1) / 2) is at y 128 (`HUD_SPR_MID`): with 5 humans,
+  y 160 down to 96. The bottom one goes no lower than y 232, and any that
+  would go off the top are hidden. Each shows its human's state (record +6, `HS_*`) with the human
   status patterns (`sprite_data.asm`):
 
 | State | Sprite |
@@ -1304,7 +1363,8 @@ transparent: the city map and the gauges.
   * A box's paper is green if its slot holds a weapon and red if it's
     empty (ULA papers 4 and 3, `C_OK`, `C_WARN`).
   * Under an occupied slot, on row 19, is its weapon's letter
-    (`wpn_glyph`): M machine gun, L laser, C chain gun, R rocket pod.
+    (`wpn_glyph`): M machine gun, L laser, C chain gun (the linked chain
+    guns too), R rocket pod.
   * The selected slot's box has a white outline (ink 7 in the bitmap).
   * Asking for an empty slot (a new press of its key) doesn't select it.
     The current slot is kept, and the asked-for box flashes amber and red,
@@ -2018,20 +2078,25 @@ pad in the centre, and the perimeter wall.
 
     | Salvage | Reward |
     |---------|--------|
-    | 10, 90 | laser |
+    | 10 | laser |
     | 40 | bomb (was a laser) |
-    | 65 | laser and night vision, monochrome |
-    | 20, 50, 75, 95 | chain gun |
+    | 65 | night vision, monochrome (no longer a laser) |
+    | 90 | lateral thrusters (was a laser) |
+    | 20 | chain gun (75 and 95 removed) |
+    | 50 | linked chain gun L (was a chain gun) |
+    | 55 | linked chain gun R and full repair (was a proximity cannon) |
     | 30, 60, 80 | rocket pod |
     | 15 | full repair |
     | 35 | vertical thrusters: climb to 30 m (was a full repair) |
-    | 55, 70 | proximity cannon and full repair |
+    | 70 | proximity cannon and full repair |
+    | 75 | proximity cannon (was a chain gun) |
     | 25 | night vision, green (was a full repair) |
     | 45 | booster module (was a full repair) |
     | 85 | thermal vision (was a full repair) |
     | 100 | rocket pod and full repair |
     | 105, 110, 120, 125 | autocannon and full repair |
-    | 115, 130, 135, 140, 145 | missile pod and full repair |
+    | 115, 130, 135, 140 | missile pod and full repair |
+    | 145 | full repair (the missile pod removed) |
     | 150, 155, ... | full repair |
 
     `newGame` clears the stock and sets the salvage to `START_SALVAGE` (0;
@@ -2627,6 +2692,8 @@ by playing doesn't change the results.
 | `test_save.py` | CONTINUE without a save game stays on the menu; S on the pause screen saves, and CONTINUE brings back the level, weapons, stock, hit points, salvage and booster |
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
+| `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
+| `test_landing.py` | landed, Q and A can't speed it up or reverse it; a speed it sets down with is braked to 0, with a shake; Q from reverse stops at 0; in the air Q speeds up as before; strafing moves 2.5 units sideways a frame while held in the air and none while landed, and K undoes L; no strafe without the lateral thrusters |
 | `test_vision.py` | each level's vision palettes load; N steps through the modes the VTOL has (all three, or thermal only), each one's palette swapped in, and does nothing with none; in a vision mode a human is drawn from the vision set |
 | `test_humans.py` | a waiting human stands while the VTOL is far off and waves when it's near; on the road it flees a monster along the road, taking the open way when one is blocked; on a roof it never flees |
 

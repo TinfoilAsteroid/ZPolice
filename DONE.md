@@ -44,6 +44,28 @@ Completed items moved from TODO.md, under the same headings.
 
 ## Gameplay
 
+- (Done 2026-11-03: the linked chain guns. Linked Chain Gun L (salvage 50,
+  was a chain gun) fits only slot 4, just left of slot 1 on the HUD;
+  Linked Chain Gun R (salvage 55, was a proximity cannon) only slot 5.
+  Chain gun stats, firing straight ahead from 2 m to their side, 200 rounds each; either
+  selected fires both. A crosshair for each fitted, 8 pixels either side
+  of the centre. The proximity cannon moved to 75 (was a chain gun); the
+  chain gun at 95 removed. Save game version 5. See README "Linked chain
+  guns".)
+
+- (Done 2026-11-03: the lateral thrusters, a salvage reward at 90 in place
+  of a pulse laser (and 65 is now night vision, monochrome only). K / L,
+  new redefinable controls, strafe sideways while held, 2.5 units (about
+  0.2 m) a frame, not while landed; the booster can't start while
+  landed either. The redefine keys screen scrolls (23 controls); KEYS.ZPK
+  is version 3, the save game version 4. See README "Controls".)
+- (Done 2026-11-03: the human status sprites on the left of the HUD moved
+  up, the middle one at row 128, 16 pixels apart as before.)
+
+- (Done 2026-11-03: landing. Resting on the road, a roof or the pad, the
+  VTOL brakes any speed to 0 as the air brake does, with a shake, and the
+  speed keys only bring it back to 0 (no speeding up or reversing there).
+  See README "Landing and rescuing humans".)
 - (Done 2026-11-03: the bomb, `WPN_BOMB`, a salvage reward at 40 in place
   of a pulse laser. One a pod, released at the VTOL's speed + 20, gliding
   down from 10°, a step (1.4°) steeper every 5 frames; drawn as a white

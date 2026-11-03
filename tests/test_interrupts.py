@@ -9,7 +9,9 @@ from zptest import sym
 
 L2 = [sym["PAGE_L2_A"] + i for i in range(6)] + [sym["PAGE_L2_B"] + i for i in range(6)]
 FRAMES = 30
-PLAN = [(1, 4, ""), (5, FRAMES, "QP")]      # (first frame, last, keys held)
+PLAN = [(1, 4, ""), (5, FRAMES, "WQP")]     # (first frame, last, keys held:
+                                            #  climbing off the pad, speeding
+                                            #  up, turning)
 
 
 def flight(mode):

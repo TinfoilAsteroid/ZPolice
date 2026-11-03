@@ -16,9 +16,10 @@ def state(cpu):
     return dict(level=R(sym["level"]), wave=R(sym["wave_number"]), salvage=cpu.rd16(sym["salvage_points"]),
                 hp=R(sym["vtol_hp"]), slots=[(R(sym["wpn_slots"] + 2 * i), R(sym["wpn_slots"] + 2 * i + 1))
                                               for i in range(5)],
-                sel=R(sym["wpn_sel"]), stock=[R(sym["wpn_stock"] + t) for t in range(9)],
+                sel=R(sym["wpn_sel"]), stock=[R(sym["wpn_stock"] + t) for t in range(sym["WPN_LAST"] + 1)],
                 booster=(R(sym["boost_fitted"]), R(sym["boost_fuel"])),
-                vision=R(sym["vision_owned"]), thrusters=R(sym["vthrust_fitted"]))
+                vision=R(sym["vision_owned"]), thrusters=R(sym["vthrust_fitted"]),
+                lateral=R(sym["lthrust_fitted"]))
 
 
 def menu_scans(cpu, n, keys_at):
@@ -51,6 +52,7 @@ def test_save_and_continue():
         cpu.wr(sym["boost_fitted"], 1); cpu.wr(sym["boost_fuel"], 120)
         cpu.wr(sym["vision_owned"], sym["VIS_NV_GREEN"] | sym["VIS_THERMAL"])
         cpu.wr(sym["vthrust_fitted"], 1)
+        cpu.wr(sym["lthrust_fitted"], 1)
         cpu.wr(sym["wpn_stock"] + sym["WPN_MISSILE"], 2); cpu.wr(sym["wpn_unlocked"] + sym["WPN_MISSILE"], 1)
         zp.frames(cpu, 2)
         before = state(cpu)

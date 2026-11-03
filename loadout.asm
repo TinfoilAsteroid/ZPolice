@@ -393,7 +393,7 @@ LO_START_ROW    equ 21
 ; Weapon names, by WPN_* (at most LO_NAME_LEN characters)
 lo_names:   dw lo_n_none, lo_n_gun, lo_n_laser, lo_n_chain
             dw lo_n_rockets, lo_n_missile, lo_n_bomb, lo_n_autocannon
-            dw lo_n_prox
+            dw lo_n_prox, lo_n_lchain_l, lo_n_lchain_r
         ASSERT ($ - lo_names)/2 == WPN_LAST+1
 lo_n_none:      db "EMPTY", 0
 lo_n_gun:       db "MACHINE GUN", 0
@@ -404,6 +404,8 @@ lo_n_missile:   db "MISSILE POD", 0
 lo_n_bomb:      db "BOMB", 0
 lo_n_autocannon: db "AUTOCANNON", 0
 lo_n_prox:      db "PROXIMITY", 0
+lo_n_lchain_l:  db "LINKED CG L", 0         ; (linked chain guns: slot 4
+lo_n_lchain_r:  db "LINKED CG R", 0         ;   only, slot 5 only)
 lo_blank:       db "           ", 0
         ASSERT $ - lo_blank == LO_NAME_LEN + 1
 

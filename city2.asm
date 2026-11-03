@@ -623,38 +623,68 @@ bul_clip:
         ret
 
 ;==============================================================================
-; Gunsight in the centre of the Layer 2 viewport
+; Gunsight in the Layer 2 viewport: the crosshairs in sight_mask (gun_aim,
+; weapons.asm), on row sight_y (the centre gun's tilt): the centre one, and
+; the linked chain guns' LINK_SIGHT_DX to its left and right
 ;==============================================================================
 draw_gunsight:
-        ld a,HUD_COL                    ; centred on row sight_y (the centre
-        ld (line_col),a                 ; gun's tilt: gun_aim, weapons.asm)
+        ld a,HUD_COL
+        ld (line_col),a
+        ld a,(sight_mask)
+        rra
+        push af
+        ld a,128
+        call c,gs_cross
+        pop af
+        rra
+        push af
+        ld a,128-LINK_SIGHT_DX
+        call c,gs_cross
+        pop af
+        rra
+        ret nc
+        ld a,128+LINK_SIGHT_DX
+        ; fall through
+        ASSERT SM_CENTRE == 1 && SM_LINK_L == 2 && SM_LINK_R == 4
+
+; A = x: a crosshair centred at (x, sight_y), its arms 3..6 pixels out
+gs_cross:
+        ld (sight_x),a
         ld a,(sight_y)
         ld h,a
         ld d,a
-        ld l,122
-        ld e,125
+        ld a,(sight_x)
+        sub 6
+        ld l,a
+        add a,3
+        ld e,a
         call draw_line
         ld a,(sight_y)
         ld h,a
         ld d,a
-        ld l,131
-        ld e,134
+        ld a,(sight_x)
+        add a,3
+        ld l,a
+        add a,3
+        ld e,a
         call draw_line
         ld a,(sight_y)
         sub 6
         ld h,a
         add a,3
         ld d,a
-        ld l,128
-        ld e,l
+        ld a,(sight_x)
+        ld l,a
+        ld e,a
         call draw_line
         ld a,(sight_y)
         add a,3
         ld h,a
         add a,3
         ld d,a
-        ld l,128
-        ld e,l
+        ld a,(sight_x)
+        ld l,a
+        ld e,a
         jp draw_line
 
 ;==============================================================================

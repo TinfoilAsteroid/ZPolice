@@ -35,6 +35,8 @@ update_player:
         ld a,(speed)
         cp BOOST_SPEED
         jr nz,.bend                     ; stopped meanwhile (a collision)
+        call vtol_on_floor
+        jr z,.bend                      ; set down: off (the brake stops it)
         ld a,K_BOOST
         call key_pressed
         jr nz,.boff                     ; pressed again: off
@@ -57,6 +59,8 @@ update_player:
         ld a,(boost_fuel)
         or a
         jr z,.nbs                       ; no fuel
+        call vtol_on_floor
+        jr z,.nbs                       ; landed: not on the ground
         ld a,(speed)
         bit 7,a
         jr nz,.nbs                      ; reversing
@@ -69,6 +73,39 @@ update_player:
         ld (boost_on),a
         jr .bkeep
 .nbs:
+        ; --- landed (resting on the road, a roof or the pad): the speed keys
+        ; only bring it back to 0 (speeding up only from reverse, slowing
+        ; only from forwards), and any speed is braked away as the air brake
+        ; does (as if Z were held), with a shake
+        call vtol_on_floor
+        jr nz,.fly
+        ld a,K_SPEED_UP
+        call key_held
+        jr z,.lq
+        ld a,(speed)
+        bit 7,a
+        jr z,.lq                        ; not reversing: no
+        inc a
+        ld (speed),a
+.lq:    ld a,K_SPEED_DN
+        call key_held
+        jr z,.lb
+        ld a,(speed)
+        dec a
+        jp m,.lb                        ; at 0 or reversing: no
+        ld (speed),a
+.lb:    ld a,(speed)
+        or a
+        jp z,.na                        ; stopped (Z: nothing to brake)
+        ld a,(shake_t)                  ; a shake, unless one is going
+        or a
+        jr nz,.lbr
+        ld a,SHAKE_LEN
+        ld (shake_t),a
+.lbr:   xor a
+        ld (ab_on),a
+        jp .brk                         ; braked, as by the air brake
+.fly:
         ; --- speed ---
         ld a,K_SPEED_UP                 ; (by SPEED_STEP, 1)
         call key_held
@@ -96,7 +133,7 @@ update_player:
         ld a,K_AIRBRAKE
         call key_held
         jr z,.nw
-        ld a,(speed)
+.brk:   ld a,(speed)
         or a
         jr z,.nw                        ; stopped: nothing to brake
         ld (ab_on),a                    ; (non-zero: braking this frame)
@@ -245,6 +282,7 @@ update_player:
         ld ix,cam_z
         call add_pos
 .moved:
+        call strafe                     ; (the lateral thrusters)
         call check_collision
         ret z
         ; crashed - restore and stop, taking |speed| / 4 (a 2-bit shift
@@ -272,6 +310,48 @@ update_player:
         ld a,SFX_CRASH
         ld (sfx2_req),a                 ; (AY 3: the explosions' voice)
         ret
+
+; The lateral thrusters (lthrust_fitted): while a strafe control
+; (K_STRAFE_L, K_STRAFE_R) is held, the VTOL moves STRAFE_D sideways,
+; square to its heading, each frame; not when landed (resting on the
+; floor).  Collisions as for any move (check_collision, after this).
+STRAFE_D_HALVES equ 5               ; 2.5 world units a frame (0.195 m)
+strafe:
+        ld a,(lthrust_fitted)
+        or a
+        ret z
+        call vtol_on_floor
+        ret z                           ; landed
+        ld c,64                         ; right: the heading + 90 degrees
+        ld a,K_STRAFE_R
+        call key_held                   ; (keeps BC)
+        jr nz,.go
+        ld c,-64 & $FF                  ; left: - 90
+        ld a,K_STRAFE_L
+        call key_held
+        ret z
+.go:    ld a,(yaw)
+        add a,c
+        ld (st_a),a
+        call get_sin                    ; its x: sin
+        call .d
+        ld ix,cam_x
+        call add_pos
+        ld a,(st_a)
+        add a,64
+        call get_sin                    ; its z: cos
+        call .d
+        ld ix,cam_z
+        jp add_pos
+; HL = S7.8 component -> HL = 2.5 * it: the move in 1/256 units
+.d:     ld d,h
+        ld e,l
+        sra d
+        rr e                            ; half
+        add hl,hl                       ; twice
+        add hl,de
+        ret
+        ASSERT STRAFE_D_HALVES == 5     ; (.d: 2 + 1/2)
 
 ; IX -> 24-bit position (frac, lo, hi). HL = signed delta in 1/256 units.
 ; Clamps the integer part to WORLD_MIN..WORLD_MAX.
@@ -428,5 +508,6 @@ pitch_damp:
 ; Player page data
 ;==============================================================================
 old_pos:    ds 10                       ; cam_x, cam_z, cam_y, yaw before the move
+st_a:       db 0                        ; strafe: the pulse's direction
 pd_count:   db PDAMP_FRAMES             ; frames to the next damping step
 ab_on:      db 0                        ; non-zero: the air brake acted this frame

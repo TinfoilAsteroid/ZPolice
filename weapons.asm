@@ -133,6 +133,10 @@ gun_fire:
         ld a,(hl)                       ; the selected slot's weapon
         cp WPN_CHAIN
         jp z,.chain
+        cp WPN_LCHAIN_L
+        jp z,.linked
+        cp WPN_LCHAIN_R
+        jp z,.linked
         cp WPN_ROCKETS
         jr z,.rocket
         cp WPN_MISSILE
@@ -215,6 +219,44 @@ gun_fire:
         ld (sfx_req),a                  ; too)
         ret
         ASSERT PROX_INTERVAL == AUTOCANNON_INTERVAL
+.linked: ; a linked chain gun selected: every one fitted fires a round,
+        ; LINK_OFF to the left / right, from its own ammo (LINK_SHOTS)
+        ld a,CHAIN_INTERVAL-1
+        ld (gun_wait),a
+        xor a
+        ld (lk_fired),a
+        ld a,(wpn_slots+2*WPN_LINK_L)
+        cp WPN_LCHAIN_L
+        jr nz,.lr
+        call free_round
+        ret c
+        ld hl,wpn_slots+2*WPN_LINK_L
+        call take_slot_ammo
+        jr c,.lr                        ; out of rounds
+        call chain_round
+        ld hl,-LINK_OFF
+        call round_side
+        ld a,1
+        ld (lk_fired),a
+.lr:    ld a,(wpn_slots+2*WPN_LINK_R)
+        cp WPN_LCHAIN_R
+        jr nz,.ls
+        call free_round
+        jr c,.ls
+        ld hl,wpn_slots+2*WPN_LINK_R
+        call take_slot_ammo
+        jr c,.ls
+        call chain_round
+        ld hl,LINK_OFF
+        call round_side
+        ld a,1
+        ld (lk_fired),a
+.ls:    ld a,(lk_fired)                 ; its sound, if either fired
+        or a
+        ret z
+        ld a,SFX_CHAIN
+        ld (sfx_req),a
+        ret
 .chain: ; chain gun: one round every CHAIN_INTERVAL frames
         call free_round
         ret c
@@ -270,6 +312,33 @@ chain_round:
         call add_sa
         ld (ix+B_SLOPE),l
         ld (ix+B_SLOPE+1),h
+        ret
+
+; Round IX (just spawned) and its muzzle moved HL units to the right of the
+; heading (negative: left), square to it: x += HL * cos, z -= HL * sin
+round_side:
+        ld (rs_off),hl
+        ld de,(cos_y)
+        call fmul
+        ld e,(ix+B_X)
+        ld d,(ix+B_X+1)
+        add hl,de
+        ld (ix+B_X),l
+        ld (ix+B_X+1),h
+        ld (ix+B_PX),l
+        ld (ix+B_PX+1),h
+        ld hl,(rs_off)
+        ld de,(sin_y)
+        call fmul
+        ex de,hl
+        ld l,(ix+B_Z)
+        ld h,(ix+B_Z+1)
+        or a
+        sbc hl,de
+        ld (ix+B_Z),l
+        ld (ix+B_Z+1),h
+        ld (ix+B_PZ),l
+        ld (ix+B_PZ+1),h
         ret
 
 ;------------------------------------------------------------------------------
@@ -880,6 +949,10 @@ add_sa:
 ; AMMO_INF (255) is never counted down.
 take_ammo:
         call sel_slot
+        ; fall through
+
+; As take_ammo, from the slot HL points to
+take_slot_ammo:
         inc hl                          ; its ammo counter
         ld a,(hl)
         cp AMMO_INF
@@ -1057,7 +1130,26 @@ gun_aim:
         ld c,VIEW_H-SIGHT_MARGIN-1
 .sy:    ld a,c
         ld (sight_y),a
+        call sel_slot                   ; the crosshairs (sight_mask): a
+        ld a,(hl)                       ; linked chain gun selected, one for
+        ld c,SM_CENTRE                  ; each fitted; else the centre one
+        cp WPN_LCHAIN_L
+        jr z,.lk
+        cp WPN_LCHAIN_R
+        jr nz,.sm
+.lk:    ld c,0
+        ld a,(wpn_slots+2*WPN_LINK_L)
+        cp WPN_LCHAIN_L
+        jr nz,.lr
+        set 1,c
+.lr:    ld a,(wpn_slots+2*WPN_LINK_R)
+        cp WPN_LCHAIN_R
+        jr nz,.sm
+        set 2,c
+.sm:    ld a,c
+        ld (sight_mask),a
         ret
+        ASSERT SM_CENTRE == 1 && SM_LINK_L == 2 && SM_LINK_R == 4
 
 ; round(128 * tan(k * 360/256 deg)), k = 0..GUN_TILT_DN: the gunsight's
 ; rows from the centre for a tilt of k
@@ -1201,6 +1293,8 @@ weapons_reset:
         ld (gun_tilt),a                 ; the centre gun level
         ld a,VIEW_CY
         ld (sight_y),a
+        ld a,SM_CENTRE                  ; the centre crosshair
+        ld (sight_mask),a
         xor a
         ; fall through
 
@@ -2365,6 +2459,8 @@ sr_sin:     dw 0                        ; spawn_round: its climb's sin, cos
 sr_cos:     dw 0
 cg_d:       dw 0                        ; chain_round
 cg_s:       dw 0
+rs_off:     dw 0                        ; round_side
+lk_fired:   db 0                        ; gun_fire: 1 once a linked gun fired
 b_x0:       dw 0                        ; start of this frame's path
 b_y0:       dw 0
 b_z0:       dw 0

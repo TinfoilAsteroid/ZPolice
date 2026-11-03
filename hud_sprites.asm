@@ -100,20 +100,34 @@ compass_spr:
 ;------------------------------------------------------------------------------
 ; The human status HUD: a column of hardware sprites, sprite k for human k,
 ; HUD_SPR_X pixels in from the left edge of the 320 x 256 sprite screen,
-; human 0 at the bottom (HUD_SPR_Y) and each next one HUD_SPR_STEP higher.
-; Each shows its human's state with the human status patterns
+; human 0 at the bottom and each next one HUD_SPR_STEP higher, the column
+; centred on the screen: its middle sprite (human (nhumans - 1) / 2) at row
+; HUD_SPR_MID.  Each shows its human's state with the human status patterns
 ; (sprite_data.asm): waiting in the city (HSPR_FIELD), aboard the VTOL
 ; (HSPR_ABOARD), rescued (HSPR_SAVED) or dead (HSPR_DEAD).  Unused humans'
-; sprites are hidden.
+; sprites are hidden, and any that would go off the top.
 ;------------------------------------------------------------------------------
 HUD_SPR_X       equ 8
-HUD_SPR_Y       equ 256-8-SPR_SIZE  ; the bottom one: 8 pixels above the edge
+HUD_SPR_MID     equ 128             ; the middle sprite's row
 HUD_SPR_STEP    equ SPR_SIZE
-HUD_SPR_MAX     equ (HUD_SPR_Y+HUD_SPR_STEP)/HUD_SPR_STEP   ; that fit (15)
+HUD_SPR_LOW     equ 256-8-SPR_SIZE  ; the lowest the bottom one goes
+        ASSERT HUD_SPR_STEP == 16       ; (* 16: four shifts)
         ASSERT HSPR_FIELD == HS_WAIT-1 && HSPR_ABOARD == HS_ABOARD-1
         ASSERT HSPR_SAVED == HS_SAVED-1 && HSPR_DEAD == HS_DEAD-1
         ASSERT HUMAN_MAX <= SPR_COUNT
 hum_hud:
+        ld a,(nhumans)                  ; the bottom sprite's row: the
+        dec a                           ; middle's + (nhumans - 1) / 2 steps
+        srl a
+        cp (HUD_SPR_LOW-HUD_SPR_MID)/HUD_SPR_STEP+1
+        jr c,.m
+        ld a,(HUD_SPR_LOW-HUD_SPR_MID)/HUD_SPR_STEP     ; (no lower than that)
+.m:     add a,a
+        add a,a
+        add a,a
+        add a,a
+        add a,HUD_SPR_MID
+        ld (hh_base),a
         ld ix,humans
         ld c,0                          ; human = sprite number
 .lp:    push bc
@@ -121,15 +135,16 @@ hum_hud:
         or a
         jr z,.hide                      ; unused
         ld a,c
-        cp HUD_SPR_MAX
-        jr nc,.hide                     ; no room on the screen
-        add a,a                         ; y = HUD_SPR_Y - human * 16
+        cp 256/HUD_SPR_STEP
+        jr nc,.hide                     ; (off the top, surely)
+        add a,a                         ; y = the bottom's - human * 16
         add a,a
         add a,a
         add a,a
         ld e,a
-        ld a,HUD_SPR_Y
+        ld a,(hh_base)
         sub e
+        jr c,.hide                      ; off the top
         ld e,a
         ld d,0
         ld a,(ix+6)
@@ -153,3 +168,4 @@ hum_hud:
 
 
 cs_spr:     db 0                        ; compass_spr: the next mark's sprite
+hh_base:    db 0                        ; hum_hud: the bottom sprite's row

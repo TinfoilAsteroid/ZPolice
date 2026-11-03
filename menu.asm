@@ -152,7 +152,8 @@ SA_BOOSTER      equ 2               ;   the booster module,
 SA_NV_GREEN     equ 4               ;   vision modes (vision_owned): night
 SA_NV_MONO      equ 8               ;   vision green, monochrome,
 SA_THERMAL      equ 16              ;   thermal, the vertical thrusters
-SA_VTHRUST      equ 32              ;   (vthrust_fitted)
+SA_VTHRUST      equ 32              ;   (vthrust_fitted), the lateral
+SA_LTHRUST      equ 64              ;   thrusters (lthrust_fitted)
 SALVAGE_TAIL    equ 145
 SALVAGE_STEP    equ 5
 SA_ROW0         equ 16
@@ -290,7 +291,18 @@ sa_reward:
         call sa_line
         call sa_next
         pop bc
-.bo:    bit 1,c                         ; the booster module: fitted, full
+.bo:    bit 6,c                         ; the lateral thrusters: the same
+        jr z,.bm
+        ASSERT SA_LTHRUST == 1<<6
+        ld a,1
+        ld (lthrust_fitted),a
+        push bc
+        ld hl,txt_sa_lthrust
+        ld e,7
+        call sa_line
+        call sa_next
+        pop bc
+.bm:    bit 1,c                         ; the booster module: fitted, full
         jr z,.rp
         ASSERT SA_BOOSTER == 1<<1
         ld a,1
@@ -412,26 +424,24 @@ salvage_tab:
         dw 45
         db WPN_NONE, SA_BOOSTER         ; (was a full repair)
         dw 50
-        db WPN_CHAIN, 0
+        db WPN_LCHAIN_L, 0              ; (was a chain gun)
         dw 55
-        db WPN_PROX, SA_REPAIR
+        db WPN_LCHAIN_R, SA_REPAIR      ; (was a proximity cannon)
         dw 60
         db WPN_ROCKETS, 0
         dw 65
-        db WPN_LASER, SA_NV_MONO
+        db WPN_NONE, SA_NV_MONO         ; (the pulse laser removed)
         dw 70
         db WPN_PROX, SA_REPAIR
         dw 75
-        db WPN_CHAIN, 0
+        db WPN_PROX, 0                  ; (was a chain gun)
         dw 80
         db WPN_ROCKETS, 0
         dw 85
         db WPN_NONE, SA_THERMAL         ; (was a full repair)
         dw 90
-        db WPN_LASER, 0
-        dw 95
-        db WPN_CHAIN, 0
-        dw 100
+        db WPN_NONE, SA_LTHRUST         ; (was a pulse laser)
+        dw 100                          ; (95, a chain gun, removed)
         db WPN_ROCKETS, 1
         dw 105
         db WPN_AUTOCANNON, 1
@@ -450,13 +460,13 @@ salvage_tab:
         dw 140
         db WPN_MISSILE, 1
         dw SALVAGE_TAIL
-        db WPN_MISSILE, 1
+        db WPN_NONE, 1                  ; (the missile pod removed)
         dw $FFFF
 
 ; Weapon names, by WPN_*
 wpn_names:  dw txt_wn_none, txt_wn_gun, txt_wn_laser, txt_wn_chain
             dw txt_wn_rockets, txt_wn_missile, txt_wn_bomb, txt_wn_autocannon
-            dw txt_wn_prox
+            dw txt_wn_prox, txt_wn_lchain_l, txt_wn_lchain_r
         ASSERT ($ - wpn_names)/2 == WPN_LAST+1
 txt_wn_none:    db "NOTHING", 0
 txt_wn_gun:     db "MACHINE GUN", 0
@@ -467,6 +477,8 @@ txt_wn_missile: db "MISSILE POD", 0
 txt_wn_bomb:    db "BOMB", 0
 txt_wn_autocannon: db "AUTOCANNON", 0
 txt_wn_prox:    db "PROXIMITY CANNON", 0
+txt_wn_lchain_l: db "LINKED CHAIN GUN L", 0
+txt_wn_lchain_r: db "LINKED CHAIN GUN R", 0
 txt_sa_saved:   db "HUMANS SAVED", 0
 txt_sa_points:  db "SALVAGE", 0
 txt_sa_new:     db "NEW", 0
@@ -476,6 +488,7 @@ txt_sa_nv_green: db "NIGHT VISION - GREEN", 0
 txt_sa_nv_mono: db "NIGHT VISION - MONOCHROME", 0
 txt_sa_thermal: db "THERMAL VISION", 0
 txt_sa_vthrust: db "VERTICAL THRUSTERS", 0
+txt_sa_lthrust: db "LATERAL THRUSTERS", 0
 txt_sa_rearm:   db "AMMUNITION REPLENISHED", 0
 
 ; The last level (LEVEL_LAST) complete: CONGRATULATIONS for GAME_DONE_FR

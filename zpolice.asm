@@ -192,7 +192,13 @@ WPN_MISSILE     equ 5           ; missile pod (wing pylons)
 WPN_BOMB        equ 6           ; bomb (placeholder)
 WPN_AUTOCANNON  equ 7           ; autocannon (wing pylons)
 WPN_PROX        equ 8           ; proximity cannon (wing pylons)
-WPN_LAST        equ WPN_PROX    ; (the highest type: the tables by type)
+WPN_LCHAIN_L    equ 9           ; linked chain gun L (WPN_LINK_L only)
+WPN_LCHAIN_R    equ 10          ; linked chain gun R (WPN_LINK_R only)
+WPN_LAST        equ WPN_LCHAIN_R    ; (the highest type: the tables by type)
+; The slots either side of the centre one (as the HUD shows them, keys
+; 2 4 1 5 3): the linked chain guns' (gun_fire, weapons.asm)
+WPN_LINK_L      equ 3           ; key 4: just left of the centre slot
+WPN_LINK_R      equ 4           ; key 5: just right of it
 ; Weapon type details: wpn_cfg, WCFG_SIZE bytes per type (wpn_cfg_ptr)
 WCFG_LOAD       equ 0           ; full load (AMMO_INF: infinite)
 WCFG_RELOAD     equ 1           ; frames to reload a shot on the pad (0: none)
@@ -202,6 +208,8 @@ WCFG_SIZE       equ 3
 WS_CENTRE       equ %00001      ; slot masks: the centre slot (key 1),
 WS_PYLONS       equ %11110      ;   the wing pylons (keys 2-5),
 WS_ANY          equ %11111      ;   any slot
+WS_LINK_L       equ 1<<WPN_LINK_L   ;   the linked chain guns' own slots
+WS_LINK_R       equ 1<<WPN_LINK_R
 
 ; Machine gun rounds: NBULLETS records of BREC bytes in `bullets`
 NBULLETS        equ 24          ; rounds in flight (the chain gun needs most)
@@ -241,6 +249,15 @@ GUN_INTERVAL    equ 4           ; machine gun: frames between rounds
 ; frames.  Each round's heading and climb are turned by a random
 ; -CHAIN_DEV..+CHAIN_DEV steps of 1/256 rad (0.22 deg): +/-2 degrees.
 CHAIN_INTERVAL  equ 1           ; chain gun: frames between rounds
+; Linked chain guns (WPN_LCHAIN_L / _R, slots WPN_LINK_L / _R only): chain
+; guns, firing straight ahead (no centre gun tilt) from LINK_OFF to the
+; left / right of the centre line.  Either selected fires every one fitted.
+; Their gunsights: one crosshair each, LINK_SIGHT_DX either side of the
+; view's centre, in place of the centre one (sight_mask).
+LINK_OFF        equ 26          ; 2 m (25.6 units)
+LINK_SHOTS      equ 200         ; rounds each
+LINK_RELOAD     equ 1           ; frames a round, reloading on the pad
+LINK_SIGHT_DX   equ 8           ; pixels
 ; Centre gun tilt (gun_tilt, signed, 256 = 360 deg): R / F tilt the centre
 ; slot's weapon up / down GUN_TILT_STEP a frame, at most GUN_TILT_UP up
 ; (11: 15.5 deg, the nearest step to 15) and GUN_TILT_DN down (32: 45 deg);
@@ -783,6 +800,7 @@ game_reset:
         ld (boost_on),a
         ld (vision_owned),a             ; no vision modes (salvage rewards)
         ld (vthrust_fitted),a           ; no vertical thrusters (salvage)
+        ld (lthrust_fitted),a           ; nor lateral ones
         ld (vision_mode),a              ; normal vision
     IF DEBUG_LOADOUT
         ld hl,wpn_stock+1               ; debug: every weapon unlocked, and
@@ -804,8 +822,9 @@ game_reset:
     ENDIF
     IFDEF DEBUG_UNLOCK_ALL
         ld a,1                          ; debug: every upgrade: the booster
-        ld (boost_fitted),a             ; (full), the vertical thrusters, and
-        ld (vthrust_fitted),a           ; the vision modes
+        ld (boost_fitted),a             ; (full), the vertical and lateral
+        ld (vthrust_fitted),a           ; thrusters, and the vision modes
+        ld (lthrust_fitted),a
         ld a,BOOST_FUEL_MAX
         ld (boost_fuel),a
         ld a,VIS_NV_GREEN | VIS_NV_MONO | VIS_THERMAL
@@ -1154,8 +1173,11 @@ wpn_cfg:    db 0, 0, WS_ANY                             ; WPN_NONE (empty)
             db BOMB_SHOTS, BOMB_RELOAD, WS_PYLONS       ; WPN_BOMB
             db AUTOCANNON_SHOTS, AUTOCANNON_RELOAD, WS_PYLONS ; WPN_AUTOCANNON
             db PROX_SHOTS, PROX_RELOAD, WS_PYLONS       ; WPN_PROX
+            db LINK_SHOTS, LINK_RELOAD, WS_LINK_L       ; WPN_LCHAIN_L
+            db LINK_SHOTS, LINK_RELOAD, WS_LINK_R       ; WPN_LCHAIN_R
+        ASSERT LINK_SHOTS < AMMO_INF
         ASSERT WPN_ROCKETS == 4 && WPN_MISSILE == 5 && WPN_AUTOCANNON == 7
-        ASSERT WPN_PROX == 8
+        ASSERT WPN_PROX == 8 && WPN_LCHAIN_L == 9 && WPN_LCHAIN_R == 10
         ASSERT $ - wpn_cfg == WCFG_SIZE*(WPN_LAST+1)
 
 ; A = weapon type -> HL = its wpn_cfg entry.  Preserves BC, DE.
@@ -1289,13 +1311,15 @@ txt_pause_quit: db " X: QUIT, NO SAVE ", 0
 ; sg_fields, in order: the level and wave, the salvage, the VTOL's integrity
 ; (vtol_hp), its weapon slots (type and ammo each) and the selected one, the
 ; store (wpn_stock, wpn_unlocked), the booster (fitted, fuel), and the
-; vision modes (vision_owned), and the vertical thrusters (vthrust_fitted).
-; Files of an older version (1: before the vision modes, 2: before the
-; thrusters) are refused, as any other version.
+; vision modes (vision_owned), and the vertical and lateral thrusters
+; (vthrust_fitted, lthrust_fitted).  Files of an older version (1: before
+; the vision modes, 2: before the vertical thrusters, 3: before the lateral
+; ones, 4: before the linked chain guns, a longer store) are refused, as any
+; other version.
 ; Continued, the level starts afresh at the saved wave: its zombies, the
 ; humans (and this level's rescues so far) and the base are new.
 ;------------------------------------------------------------------------------
-SG_VERSION      equ 3
+SG_VERSION      equ 5
 sg_fields:      ; address, bytes
         dw level
         db 1
@@ -1319,9 +1343,11 @@ sg_fields:      ; address, bytes
         db 1
         dw vthrust_fitted
         db 1
+        dw lthrust_fitted
+        db 1
         dw 0                            ; (the end)
         ASSERT boost_fuel == boost_fitted+1
-SG_SIZE         equ 5+1+1+2+1+WPN_SLOTS*2+1+2*(WPN_LAST+1)+2+1+1
+SG_SIZE         equ 5+1+1+2+1+WPN_SLOTS*2+1+2*(WPN_LAST+1)+2+1+1+1
 
 ; Copy the fields: A = 0 the game's into sg_buf, 1 sg_buf's into the game
 sg_copy:
@@ -1433,6 +1459,11 @@ vtol_landed:
         ld a,(speed)
         or a
         ret nz                          ; moving
+        ; fall through
+
+; Z if the VTOL rests on the floor under it (floor_y), at any speed: on the
+; ground, or a roof or the pad (update_player then brakes it to a stop)
+vtol_on_floor:
         call floor_y
         ld de,(cam_y)
         or a
@@ -1791,6 +1822,11 @@ gun_tilt:   db 0                        ; centre gun tilt, signed (weapons_reset
 barr_n:     db 0                        ; barricades in barr_tab (barricade_init)
 barr_tab:   ds NBARR*BARR_REC           ; barricades: x, z, hit points
 sight_y:    db VIEW_CY                  ; the gunsight's row (gun_aim)
+SM_CENTRE       equ 1               ; sight_mask: the crosshairs drawn: the
+SM_LINK_L       equ 2               ;   centre one, the linked chain guns'
+SM_LINK_R       equ 4               ;   left and right (gun_aim)
+sight_mask: db SM_CENTRE
+sight_x:       db 128                      ; draw_gunsight: a crosshair's centre
 ; The missile lock (lock_update, weapons.asm; drawn by draw_reticule)
 ret_on:     db 0                        ; 1: the reticule is shown
 ret_x:      db 128                      ;   its centre (view pixels)
@@ -1815,6 +1851,9 @@ vision_owned: db 0                      ; (newGame: none)
 ; 1: the vertical thrusters (a salvage reward, part of the VTOL from then
 ; on, no fuel): it climbs to MAX_Y_THRUST instead of MAX_Y.  Saved.
 vthrust_fitted: db 0
+; 1: the lateral thrusters (a salvage reward, part of the VTOL from then
+; on): the strafe controls each give a sideways pulse (player.asm).  Saved.
+lthrust_fitted: db 0
 ; The vision mode in use (K_VISION steps through the ones the VTOL has:
 ; vis_cycle, level_load.asm): its palette is in the Layer 2 palette and, if
 ; not 0, the figures are drawn from their vision set (spr_lod).  Not saved.
@@ -1849,10 +1888,10 @@ start_state:
             db 0, 0                     ; pitch: level
             db 0                        ; speed
             db WPN_GUN, AMMO_INF        ; slot 0: centre gun, infinite
-            db WPN_NONE, 0              ; 1: left outer pylon: empty
-            db WPN_NONE, 0              ; 2: left inner pylon: empty
-            db WPN_NONE, 0              ; 3: right inner pylon: empty
-            db WPN_NONE, 0              ; 4: right outer pylon: empty
+            db WPN_NONE, 0              ; 1 (key 2): left outer pylon: empty
+            db WPN_NONE, 0              ; 2 (key 3): right outer pylon: empty
+            db WPN_NONE, 0              ; 3 (key 4): left inner pylon: empty
+            db WPN_NONE, 0              ; 4 (key 5): right inner pylon: empty
             db WPN_CENTRE               ; wpn_sel
             db 0, 0                     ; wflash_slot, wflash_t
 start_state_end:
