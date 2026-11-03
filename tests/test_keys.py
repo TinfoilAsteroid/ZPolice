@@ -7,7 +7,9 @@ import os
 import zptest as zp
 from zptest import sym
 
-N_DEFS = 20
+N_DEFS = sym["K_ACTIONS"]                  # (21: with K_VISION)
+KF_VERSION = 2
+KF_SIZE = 6 + 4 * N_DEFS
 KB_Q, KB_M = 0x0201, 0x0704                # SPEED UP's default, and M
 
 
@@ -65,8 +67,8 @@ def test_saved_and_loaded():
         p = sd.path("KEYS.ZPK")
         zp.check(os.path.exists(p), "KEYS.ZPK not written")
         data = open(p, "rb").read()
-        zp.check(len(data) == 86, f"KEYS.ZPK is {len(data)} bytes, not 86")
-        zp.check(data[:6] == b"ZPKY\x01" + bytes([N_DEFS]), f"KEYS.ZPK header {data[:6]!r}")
+        zp.check(len(data) == KF_SIZE, f"KEYS.ZPK is {len(data)} bytes, not {KF_SIZE}")
+        zp.check(data[:6] == b"ZPKY" + bytes([KF_VERSION, N_DEFS]), f"KEYS.ZPK header {data[:6]!r}")
         zp.check(data[6:8] == KB_M.to_bytes(2, "little"), f"KEYS.ZPK SPEED UP {data[6:8].hex()}")
         d = defs(boot(sd))
         zp.check(d[0] == KB_M, f"after a restart SPEED UP is {d[0]:04X}, not M")

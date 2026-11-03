@@ -31,7 +31,8 @@ KD_KEY_LEN      equ 7               ;   (key names at most this long)
 KD_JOY_COL      equ 24              ; their joystick inputs
 KD_JOY_LEN      equ 8               ;   (joystick names at most this long)
         ASSERT KD_KEY_COL + KD_KEY_LEN < KD_JOY_COL && KD_JOY_COL + KD_JOY_LEN <= 32
-KD_MSG_ROW      equ 21              ; messages
+KD_MSG_ROW      equ 22              ; messages
+KD_HELP_ROW     equ 23              ; the keys' help, one line
 KD_PAUSE        equ 50              ; a second of 50 Hz frames
         ASSERT KD_ROW0 + K_ACTIONS <= KD_MSG_ROW
 
@@ -325,7 +326,7 @@ kd_key_name:
 ; input page, in slot 7, where the file handler goes too: so they go through
 ; kd_buf, in this page.
 ;------------------------------------------------------------------------------
-KF_VERSION      equ 1
+KF_VERSION      equ 2               ; (1: 20 controls, before K_VISION)
 KF_SIZE         equ 6 + 4*K_ACTIONS ; "ZPKY", version, controls, key_defs,
                                     ; joy_defs
         ASSERT joy_defs == key_defs + 2*K_ACTIONS
@@ -422,10 +423,8 @@ kd_text:
         db "KEY", 0
         db 0, KD_JOY_COL, MENU_TITLE
         db "JOYSTICK", 0
-        db 22, 1, MENU_ATTR
-        db "Q A: CHOOSE   SPACE: CHANGE", 0
-        db 23, 1, MENU_ATTR
-        db "0: DEFAULTS   1: SAVE, BACK", 0
+        db KD_HELP_ROW, 0, MENU_ATTR    ; (one line: the list takes the rest)
+        db "QA:MOVE SPC:SET 0:DEFAULT 1:SAVE", 0
         db $FF
 
 txt_kd_select:  db "PRESS A KEY OR JOYSTICK", 0
@@ -440,11 +439,11 @@ txt_kd_joyblank: db "        ", 0
 ; The controls' names, by K_* (input.asm)
 kd_names:   dw kc_0, kc_1, kc_2, kc_3, kc_4, kc_5, kc_6, kc_7, kc_8, kc_9
             dw kc_10, kc_11, kc_12, kc_13, kc_14, kc_15, kc_16, kc_17, kc_18
-            dw kc_19
+            dw kc_19, kc_20
         ASSERT ($ - kd_names)/2 == K_ACTIONS
         ASSERT K_SPEED_UP == 0 && K_FIRE == 9 && K_GUN_UP == 10
         ASSERT K_SLOT1 == 11 && K_GUN_DN == 16 && K_GUN_CTR == 17 && K_PAUSE == 18
-        ASSERT K_BOOST == 19
+        ASSERT K_BOOST == 19 && K_VISION == 20
 kc_0:   db "SPEED UP", 0
 kc_1:   db "SPEED DOWN", 0
 kc_2:   db "AIR BRAKE", 0
@@ -465,6 +464,7 @@ kc_16:  db "GUN TILT DOWN", 0
 kc_17:  db "GUN CENTRE", 0
 kc_18:  db "PAUSE", 0
 kc_19:  db "BOOST", 0
+kc_20:  db "VISION MODE", 0
 
 ; Input names by bank and bit (the KB_* and J1_* / J2_* codes, input.asm):
 ; 8 per bank

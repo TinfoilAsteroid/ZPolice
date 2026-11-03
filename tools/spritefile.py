@@ -300,17 +300,66 @@ def mirror(px):
     return [list(reversed(r)) for r in px]
 
 
+# ------------------------------------------------- the vision modes' figures
+# In a vision mode (night vision, thermal) the game draws a second set of the
+# figures, made from the first: each pixel is one of its figure's 3 roles,
+# and each role is one Layer 2 entry (SPR_PAL0 + VISION_BASE[fig] + role)
+# that the vision palettes colour (tools/visionpal.py): a human bright green
+# in night vision, white face, yellow core and orange outline in thermal.
+#   outline: an edge pixel (one with a transparent pixel beside it, left,
+#            right, above or below) next to the core (any of its 8);
+#   face:    any other pixel in the top quarter of the rows (at least the
+#            top row);
+#   core:    the rest (a thin limb, with no core beside it, is core too).
+VISION_ROLES = 3                        # face, core, outline: + 0, 1, 2
+ROLE_FACE, ROLE_CORE, ROLE_OUTLINE = 0, 1, 2
+VISION_BASE = {"human": 1, "zombie": 4, "ghoul": 7, "ghost": 10, "banshee": 13}
+assert max(VISION_BASE.values()) + VISION_ROLES <= COLOURS
+
+
+def vision_pixels(px, fig):
+    """A level's pixels as the vision set's: each opaque pixel its role's
+    colour number (VISION_BASE[fig] + role), transparent stays 0."""
+    h, w = len(px), len(px[0])
+
+    def opaque(x, y):
+        return 0 <= x < w and 0 <= y < h and px[y][x] != 0
+    core = {(x, y) for y in range(h) for x in range(w)
+            if opaque(x, y) and all(opaque(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))}
+    face_rows = max(1, h // 4)
+    base = VISION_BASE[fig]
+    out = []
+    for y in range(h):
+        row = []
+        for x in range(w):
+            if not opaque(x, y):
+                row.append(0)
+                continue
+            if (x, y) in core:
+                role = ROLE_CORE
+            elif any((x + dx, y + dy) in core for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                role = ROLE_OUTLINE
+            else:
+                role = ROLE_CORE            # a thin part: no core beside it
+            if role != ROLE_OUTLINE and y < face_rows:
+                role = ROLE_FACE
+            row.append(base + role)
+        out.append(row)
+    return out
+
+
 # ---------------------------------------------------- the game's binary file
 # ZPDATA/SPRITES.ZPG:
 #   +0   4    "ZPGF"
-#   +4   1    format version (1)
+#   +4   1    format version (2)
 #   +5   1    pages (8K each, from PAGE_GFX0), 1..GFX_PAGES_MAX
-#   +6   1    purposes (ANIMS: the game's GFX_ANIMS)
+#   +6   1    directory entries: 2 x the purposes (the game's GFX_ENTRIES)
 #   +7   9    (reserved, 0)
 #   +16  pages x 8192: the pages, each loaded to $C000 (slot 6)
 # Page 0 starts with the directory (GFX_DIR, $C000):
-#   the purposes, 4 bytes each in ANIMS order: frames, 0, address of its
-#     frame list (2);
+#   the purposes, 4 bytes each in ANIMS order, then again for the vision
+#     set (vision_pixels: entry GFX_ANIMS + n is purpose n's): frames, 0,
+#     address of its frame list (2);
 #   a frame list: an address (2) per frame, of its levels of detail:
 #   levels: a count, then 7 bytes each, the farthest first (min_z largest):
 #     min_z (2), width, height, page (0..), address of its pixels (2);
@@ -318,17 +367,21 @@ def mirror(px):
 #     the number of pixels, then each a Layer 2 palette entry (SPR_PAL0 +
 #     colour) or 0 (transparent, skipped).
 MAGIC = b"ZPGF"
-BIN_VERSION = 1
+BIN_VERSION = 2
 HEADER = 16
 PAGE = 8192
 GFX_ADDR = 0xC000
 GFX_PAGES_MAX = 4
 
 
-def lod_bytes(lod):
-    """A level's pixel data (the rows, as the game draws them)."""
+def lod_bytes(lod, fig=None):
+    """A level's pixel data (the rows, as the game draws them); with fig,
+    the vision set's (vision_pixels)."""
+    px = pixels(lod)
+    if fig is not None:
+        px = vision_pixels(px, fig)
     out = bytearray()
-    for r in pixels(lod):
+    for r in px:
         opaque = [i for i, v in enumerate(r) if v]
         if not opaque:
             out += bytes((0, 0))
@@ -344,17 +397,19 @@ def build(figures):
     used, bytes used).  ValueError if it won't fit."""
     # the directory's size first: then the pixel blocks after it
     entries = []                        # per purpose: [frame: [(min_z, w, h, bytes)]]
-    for fig, a in ANIMS:
-        d = figures[fig]
-        zs = min_zs(d)[a]
-        frames = []
-        for fi, fr in enumerate(d["anims"][a]["frames"]):
-            lods = []
-            for li, lod in enumerate(fr["lods"]):
-                w, h = lod_size(lod)
-                lods.append((zs[fi][li], w, h, lod_bytes(lod)))
-            frames.append(sorted(lods, key=lambda t: -t[0]))     # farthest first
-        entries.append(frames)
+    for vision in (False, True):        # the purposes, then their vision set
+        for fig, a in ANIMS:
+            d = figures[fig]
+            zs = min_zs(d)[a]
+            frames = []
+            for fi, fr in enumerate(d["anims"][a]["frames"]):
+                lods = []
+                for li, lod in enumerate(fr["lods"]):
+                    w, h = lod_size(lod)
+                    lods.append((zs[fi][li], w, h, lod_bytes(lod, fig if vision else None)))
+                frames.append(sorted(lods, key=lambda t: -t[0]))     # farthest first
+            entries.append(frames)
+    assert len(entries) == 2 * len(ANIMS)
     dir_size = 4 * len(entries)
     for frames in entries:
         dir_size += 2 * len(frames) + sum(1 + 7 * len(l) for l in frames)
@@ -396,5 +451,5 @@ def build(figures):
                 p += 7
     assert p == dir_size
     used = page * PAGE + off
-    head = MAGIC + bytes((BIN_VERSION, len(pages), len(ANIMS))) + bytes(HEADER - 7)
+    head = MAGIC + bytes((BIN_VERSION, len(pages), len(entries))) + bytes(HEADER - 7)
     return head + b"".join(bytes(pg) for pg in pages), len(pages), used

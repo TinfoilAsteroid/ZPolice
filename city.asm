@@ -201,20 +201,49 @@ div_frac:
 .d:     pop bc
         ret
 
-; E = A / C, A = A mod C  (8-bit unsigned)
+; E = A / C, A = A mod C  (8-bit unsigned, C 1..127).  By reciprocal:
+; q = (A * R) >> 16, R = rcp8[C] = ceil(65536 / C), exact for every A
+; (gentables.py checks it); then the remainder A - q C.  Keeps C, D, H, L
+; (walk_edge's); B is lost.
 div8:
-        ld e,a
-        xor a
-        ld b,8
-.lp:    sla e
-        rla
-        jr c,.s
-        cp c
-        jr c,.n
-.s:     sub c
-        inc e
-.n:     djnz .lp
+        push hl
+        push de
+        ld e,a                          ; A (the dividend)
+        ld a,c
+        dec a
+        jr z,.one                       ; C = 1
+        ld l,c
+        ld h,high rcp8
+        ld d,(hl)                       ; R low
+        set 7,l
+        ld h,(hl)                       ; R high
+        ld l,e                          ; (A kept)
+        mul d,e                         ; A * R low
+        ld b,d
+        ld d,h
+        ld e,l
+        mul d,e                         ; A * R high
+        ld a,b
+        add a,e
+        ld a,d
+        adc a,0                         ; q = (A Rh + (A Rl >> 8)) >> 8
+        ld b,a
+        ld d,a
+        ld e,c
+        mul d,e                         ; q C (< 256)
+        ld a,l
+        sub e                           ; the remainder
+        pop de
+        pop hl
+        ld e,b                          ; E = q
         ret
+.one:   ld b,e                          ; over 1: q = A, remainder 0
+        xor a
+        pop de
+        pop hl
+        ld e,b
+        ret
+        ASSERT low rcp8 == 0 && VIEW_H <= 128   ; (C, an edge's rows, < 128)
 
 ;==============================================================================
 ; Perspective projection
@@ -308,23 +337,26 @@ zpatch:
         ex de,hl
         bsrl de,b
         ex de,hl
+        ld c,OP_BSRL                    ; (scale_comp: right)
         jr .nrm
 .lt512: ld b,0
+        ld c,OP_BSRL                    ; (right by 0: as it is)
         or a
         jr nz,.nrm                      ; 256..511 already normalised
         ld e,l                          ; Z < 256: shift left by 8-log2(L)
         ld d,high lgtab
         ld a,(de)
         sub 8
-        ld c,a                          ; negative shift count
         neg
-        ld b,a
+        ld b,a                          ; the count
         ex de,hl
         bsla de,b
         ex de,hl
-        ld b,c
+        ld c,OP_BSLA                    ; (scale_comp: left)
 .nrm:   ld a,b                          ; patch shift and reciprocal into
-        ld (scale_comp.sh+1),a                  ; scale_comp's immediates
+        ld (scale_comp.sh+1),a          ; scale_comp's immediates: the shift's
+        ld a,c                          ; count and its opcode (the barrel
+        ld (scale_comp.op+1),a          ; shift's second byte: which way)
         ld h,high rtab_lo               ; L = Zn - 256
         ld a,(hl)
         ld (scale_comp.rl+1),a
@@ -534,20 +566,17 @@ c2_scr:
 ; with a 10-bit Xn and a 16-bit result
 scomp16:
         call abs_hl
-        ld a,(scale_comp.sh+1)
-        or a
-        jr z,.sd
         ex de,hl
-        jp m,.l
+        ld a,(scale_comp.sh+1)          ; the shift zpatch set: its count,
         ld b,a
+        ld a,(scale_comp.op+1)          ; and which way (its opcode)
+        cp OP_BSLA
+        jr z,.l
         bsrl de,b
-        ex de,hl
-        jr .sd
-.l:     neg
-        ld b,a
-        bsla de,b
-        ex de,hl
-.sd:    ld a,h
+        jr .s
+.l:     bsla de,b
+.s:     ex de,hl
+        ld a,h
         cp 4
         jr c,.ok
         ld hl,1023                      ; (rounding at the guard band's edge)
@@ -650,7 +679,10 @@ c2_isect:
     ENDIF
 
 ; HL = signed component -> A = round(|HL| * 128 / Z)
-; The shift and reciprocal for this Z are patched in by project.
+; The shift and reciprocal for this Z are patched in by zpatch: the shift
+; as a barrel shift whose count and direction (its opcode, BSRL or BSLA)
+; are both patched, so it runs straight through (a right shift by 0 for a Z
+; already 256..511 leaves it as it is).
 scale_comp:
         bit 7,h
         jr z,.ap
@@ -660,20 +692,11 @@ scale_comp:
         sbc a,a
         sub h
         ld h,a
-.ap:
-.sh:    ld a,0
-        or a
-        jr z,.sd
+.ap:    ex de,hl
+.sh:    ld b,0                          ; (zpatch: the count)
+.op:    bsrl de,b                       ; (zpatch: bsrl, or bsla)
         ex de,hl
-        jp m,.l
-        ld b,a
-        bsrl de,b
-        ex de,hl
-        jr .sd
-.l:     neg
-        ld b,a
-        bsla de,b
-        ex de,hl
+        ASSERT {b scale_comp.op} == $ED && {b scale_comp.op+1} == OP_BSRL
 .sd:    ld a,h
         cp 2
         jr nc,.big
@@ -1700,6 +1723,7 @@ clear_screen:
 ;   row columns from the far edges inwards, the camera row/column last.
 ;==============================================================================
 draw_city:
+        call walk_patch                 ; this frame's cell steps
     IFDEF OCCLUSION_CULL
         call occ_begin
         ld a,(occ_on)
@@ -1740,10 +1764,16 @@ draw_cells:
         dec (hl)
         jr .f2
 
+; The cell walks (draw_row here, occ_row in city2.asm) keep the cell's
+; yaw-space centre (X, Z1) in the alternate registers HL', DE' (nothing else
+; uses the alternate set, the interrupt routine included), and step it one
+; cell at a time by (cosY, sinY), patched into the steps each frame
+; (walk_patch).  draw_bld reads it from there.
 draw_row:
         ld a,(cell_j)
         cp GRID
         ret nc
+        call row_base
         ld a,(cx)
         ld hl,view_r
         sub (hl)
@@ -1756,14 +1786,14 @@ draw_row:
         call try_cell
         ld hl,cell_i
         inc (hl)
-        ld hl,(row_x)                   ; one cell +x: (X,Z1) += (cosY,sinY)
-        ld de,(cos_y)
-        add hl,de
-        ld (row_x),hl
-        ld hl,(row_z1)
-        ld de,(sin_y)
-        add hl,de
-        ld (row_z1),hl
+        exx                             ; one cell +x: (X,Z1) += (cosY,sinY)
+.cp:    ld bc,0                         ; (cosY: walk_patch)
+        add hl,bc
+        ex de,hl
+.sp:    ld bc,0                         ; (sinY)
+        add hl,bc
+        ex de,hl
+        exx
         jr .l
 .r:     ld a,(cx)
         ld hl,view_r
@@ -1773,24 +1803,69 @@ draw_row:
 .r2:    ld a,(cell_i)
         ld hl,cx
         cp (hl)
-        jr z,try_cell                   ; camera column last
+        jp z,try_cell                   ; camera column last
         call try_cell
         ld hl,cell_i
         dec (hl)
-        ld hl,(row_x)                   ; one cell -x
-        ld de,(cos_y)
+        exx                             ; one cell -x
+.cm:    ld bc,0                         ; (cosY)
         or a
-        sbc hl,de
-        ld (row_x),hl
-        ld hl,(row_z1)
-        ld de,(sin_y)
+        sbc hl,bc
+        ex de,hl
+.sm:    ld bc,0                         ; (sinY)
         or a
-        sbc hl,de
-        ld (row_z1),hl
+        sbc hl,bc
+        ex de,hl
+        exx
         jr .r2
 
-; Yaw-rotated centre of cell (cell_i, cell_j) -> row_x, row_z1.  Moving one
-; cell (256 units) in x then changes (X, Z1) by exactly the raw (cosY, sinY).
+; This frame's (cosY, sinY) into the cell walks' steps (draw_row, occ_row)
+walk_patch:
+        ld hl,(cos_y)
+        ld (draw_row.cp+1),hl
+        ld (draw_row.cm+1),hl
+    IFDEF OCCLUSION_CULL
+        ld (occ_row.cp+1),hl
+        ld (occ_row.cm+1),hl
+    ENDIF
+        ld hl,(sin_y)
+        ld (draw_row.sp+1),hl
+        ld (draw_row.sm+1),hl
+    IFDEF OCCLUSION_CULL
+        ld (occ_row.sp+1),hl
+        ld (occ_row.sm+1),hl
+    ENDIF
+        ret
+
+; A = cell_j: its row's first city_map byte (city_map + j * GRID) -> cell_row
+row_base:
+        ld l,a
+        ld h,0
+        ROWOFS
+        ld de,city_map
+        add hl,de
+        ld (cell_row),hl
+        ret
+
+; HL = v, A = k -> HL = v * k, modulo 65536: exactly v added k times (k
+; small, its product with each byte of v at most 16 bits).  Keeps BC.
+kmul:
+        ld e,a
+        ld d,l
+        mul d,e                         ; low byte * k
+        push de
+        ld d,h
+        ld e,a
+        mul d,e                         ; high byte * k: its low byte counts
+        ld a,e
+        pop hl
+        add a,h
+        ld h,a
+        ret
+
+; Yaw-rotated centre of cell (cell_i, cell_j) -> (X, Z1) in HL', DE' (the
+; cell walks').  Moving one cell (256 units) in x then changes (X, Z1) by
+; exactly the raw (cosY, sinY).
 row_start:
         ld a,(cell_i)
         ld h,a
@@ -1807,9 +1882,13 @@ row_start:
         sbc hl,de
         ld (t_dz),hl
         call rot_yaw
-        ld (row_x),hl
+        push hl                         ; X
         ld hl,(t_z1)
-        ld (row_z1),hl
+        push hl                         ; Z1
+        exx
+        pop de
+        pop hl
+        exx
         ret
 
 try_cell:
@@ -1825,14 +1904,9 @@ try_cell:
 ; Transform and draw the building in (cell_i, cell_j)
 ;------------------------------------------------------------------------------
 draw_cell:
-        ld a,(cell_j)
-        ld l,a
-        ld h,0
-        ROWOFS
+        ld hl,(cell_row)                ; (the row's first map byte: row_base)
         ld a,(cell_i)
         add hl,a
-        ld de,city_map
-        add hl,de
         ld a,(hl)
         ld c,a
         and CELL_CODE
@@ -1888,16 +1962,18 @@ BLD_R           equ 256             ; cull radius: 181 (half diagonal) * sqrt2
 draw_bld:
         ; Horizontal frustum cull, valid at any pitch: a visible point has
         ; |X|*c <= Z1 with c = cosP - 0.5|sinP|.  Reject the bounding circle
-        ; (radius BLD_R) round the cell's yaw-space centre (row_x, row_z1,
-        ; kept up to date by draw_row).  First, as it needs nothing else:
+        ; (radius BLD_R) round the cell's yaw-space centre (X, Z1, kept up
+        ; to date in HL', DE' by the walk).  First, as it needs nothing else:
         ; most cells it rejects then cost no more.  (Level flight: c is
         ; exactly 1.0, so no multiply.)
         push hl
         push bc
-        ld hl,(row_z1)
-        ld (t_z1),hl
-        ld hl,(row_x)
+        exx                             ; the walk's (X, Z1): HL', DE'
+        ld (t_z1),de
         ld (t_x),hl
+        push hl
+        exx
+        pop hl
         call abs_hl
         ld a,(pitch)
         or a
@@ -1954,8 +2030,6 @@ draw_bld:
         inc h
         ld (bld_z1),hl
 
-        ld hl,vecs0
-        ld (bld_vecs),hl
         ; (the frustum test was first: t_x, t_z1 hold the cell's centre)
     IFDEF OCCLUSION_CULL
         ld a,(occ_on)
@@ -1963,25 +2037,19 @@ draw_bld:
         call nz,occ_pretest
         ret c                           ; surely hidden: skip the transform
     ENDIF
-        ; centre -> corner (x0,z0), still in yaw space
-        ld ix,(bld_vecs)
-        ld l,(ix+12)
-        ld h,(ix+13)
+        ; centre -> corner (x0,z0), still in yaw space (vecs0: the frame's
+        ; edge vectors and corner offset, make_vecs)
+        ld hl,(vecs0+12)
         ld de,(t_x)
         add hl,de
         ld (vtx+0),hl
-        ld l,(ix+14)
-        ld h,(ix+15)
+        ld hl,(vecs0+14)
         ld de,(t_z1)
         add hl,de
         ld (t_z1),hl
         call rot_pitch
         ld (vtx+2),hl
         ld (vtx+4),de
-        ld hl,(bld_vecs)
-        ld de,cur_vx
-        ld bc,12
-        ldir                            ; cur_vx, cur_vz
 
         ; vertical edge vector (0, h cosP, h sinP); level flight: (0, h, 0)
         ; exactly (cosP 1.0, sinP 0), no multiplies
@@ -2003,13 +2071,15 @@ draw_bld:
 .vyd:
 
         ; vertices: index = x + 2*z + 4*top  (box edges are shared vectors)
-        VADD vtx+16, vtx+0,  cur_vx
-        VADD vtx+32, vtx+0,  cur_vz
-        VADD vtx+48, vtx+16, cur_vz
-        VADD vtx+64, vtx+0,  vy_vec
-        VADD vtx+80, vtx+16, vy_vec
-        VADD vtx+96, vtx+32, vy_vec
-        VADD vtx+112,vtx+48, vy_vec
+        VBOX0 0                         ; X (vy's X is 0)
+        VBOX 2                          ; Y
+        ld a,(pitch)
+        or a
+        jr nz,.vbz
+        VBOX0 4                         ; Z: level flight, vy's Z is 0
+        jr .vbd
+.vbz:   VBOX 4
+.vbd:
 
         ; Back face culling is exact in world space for an axis aligned box.
         ; C = visible faces: bit0 -X, bit1 +X, bit2 -Z, bit3 +Z, bit4 top
@@ -2399,16 +2469,13 @@ face_set:   db 0                        ; 0: corners at offsets 0-127 (vtx, an
                                         ; even record), FACE_SET2: 128-255
 
 ; --- building / view work areas ---
-cur_vx:     ds 6
-cur_vz:     ds 6
-vy_vec:     dw 0,0,0
+vy_vec:     dw 0,0,0                    ; (its X: always 0, VBOX0)
 cell_i:     db 0
 cell_j:     db 0
 bld_h:      dw 0
 bld_wall:   db 0                        ; 1: perimeter wall cell (SKY_IS_WALL)
 bld_col:    db 0
 face_col:   db 0
-bld_vecs:   dw 0
 bld_x0:     dw 0
 bld_x1:     dw 0
 bld_z0:     dw 0
@@ -2417,8 +2484,7 @@ t_dx:       dw 0
 t_dz:       dw 0
 t_z1:       dw 0
 t_x:        dw 0
-row_x:      dw 0
-row_z1:     dw 0
+cell_row:   dw 0                        ; city_map + cell_j * GRID (row_base)
 bld_used:   db 0
 vtx_hi:     db high vtx                 ; corners draw_face reads (vtx or a record)
 bld_used0:  db 0                        ; corners of drawn faces (unrotated)

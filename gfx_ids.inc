@@ -3,9 +3,10 @@
 ; the game asks for, in ZPDATA/SPRITES.ZPG's order
 SPR_PAL0        equ 192     ; Layer 2 entry of figure colour 0
 GFX_ANIMS       equ 13
+GFX_ENTRIES     equ 26     ; the directory: the purposes, then their vision set
 GFX_PAGES_MAX   equ 4
 GFX_DIR         equ $C000
-GFX_VERSION     equ 1
+GFX_VERSION     equ 2
 GFX_HEADER      equ 16
 ANIM_ZOMBIE_WALK_FRONT          equ 0
 ANIM_ZOMBIE_WALK_SIDE           equ 1

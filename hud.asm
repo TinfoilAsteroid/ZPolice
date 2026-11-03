@@ -518,7 +518,7 @@ wpn_glyph:  db GLYPH_SPACE              ; WPN_NONE
             db GLYPH_C                  ; WPN_CHAIN: chain gun
             db GLYPH_R                  ; WPN_ROCKETS: rocket pod
             db GLYPH_S                  ; WPN_MISSILE: missile pod
-            db GLYPH_SPACE              ; WPN_BOMB (none yet)
+            db GLYPH_B                  ; WPN_BOMB: bomb
             db GLYPH_A                  ; WPN_AUTOCANNON: autocannon
             db GLYPH_P                  ; WPN_PROX: proximity cannon
         ASSERT $ - wpn_glyph == WPN_LAST + 1

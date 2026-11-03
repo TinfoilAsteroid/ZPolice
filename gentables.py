@@ -55,6 +55,14 @@ emit_bytes("rtab_hi", [r >> 8 for r in rt])
 # floor(log2(n)) for normalising Z with the barrel shifter (page aligned).
 emit_bytes("lgtab", [0] + [n.bit_length() - 1 for n in range(1, 256)])
 
+# Reciprocals for div8 (an 8-bit dividend over a divisor C, 2..127: an
+# edge's rows, VIEW_H at most 128): R = ceil(65536 / C), so the quotient is
+# exactly (A * R) >> 16 for every A 0..255 (A C (R - 65536/C) < 65536).
+# Low bytes at +C, high bytes at +128+C (one page, page aligned).
+rcp = [0, 0] + [-(-65536 // c) for c in range(2, 128)]
+assert all((a * r) >> 16 == a // c for c, r in enumerate(rcp) if c >= 2 for a in range(256))
+emit_bytes("rcp8", [r & 0xFF for r in rcp] + [r >> 8 for r in rcp])
+
 # Horizon screen row for each pitch: 64 + 128*tan(pitch), clamped to 0..128
 # (the 3D viewport is the top 256x128 of the screen).
 hz = []
@@ -597,6 +605,7 @@ MAP_DIR = "maps"
 os.makedirs(MAP_DIR, exist_ok=True)
 city_maps = {}                         # city number -> (cells, families)
 city_palettes = {}                     # city number -> its hand-set shades
+city_final = {}                        # city number -> its palette, as written
 os.makedirs(os.path.join(MAP_DIR, "generated"), exist_ok=True)
 assert citymap.MAP_CHARS == MAP_CHARS and citymap.GRID == GRID
 assert (citymap.PAD, citymap.TERRACE, citymap.VOID) == (PAD_CODE, TERRACE_CODE, VOID_CODE)
@@ -646,6 +655,7 @@ for n, (name, tod, sky, (s_map, s_rat, s_col, s_pal)) in enumerate(CITIES, 1):
         assert not any(map(is_transparent, pal[:256]))
         print(f"{name}: {len(city_palettes[n])} colour families set by hand")
     spritefile.apply_palette(pal, SPR_PAL)     # the figures' colours (entries 192-223)
+    city_final[n] = list(pal)          # (the levels' vision palettes start from it)
     hdr = b"ZPCY" + bytes((1, n)) + name.ljust(8).encode() + pal_pair(sky) + bytes(16)
     assert len(hdr) == 32
     data = hdr + b"".join(pal_pair(c) for c in pal) + bytes(col) + bytes(city)
@@ -707,7 +717,9 @@ def level_generate(lv):
     return level_text(lv, cn, CITIES[cn - 1][0], values, waves_specials, changes)
 
 import levelpal
-hand = level_pals = 0
+import visionpal                       # the vision modes' palettes (tools/visionpal.py)
+os.makedirs(os.path.join(LEVEL_DIR, "generated"), exist_ok=True)
+hand = level_pals = vision_hand = 0
 for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
     path = os.path.join(LEVEL_DIR, f"LEVEL{lv:02d}.TXL")
     if not os.path.exists(path):
@@ -744,17 +756,44 @@ for lv in range(1, CITY_LEVELS * len(CITIES) + 1):
             errs = [str(e)]
         if errs:
             raise SystemExit(f"{ppath}: the palette can't be used:\n  " + "\n  ".join(errs))
-        write_data(f"LEVEL{lv:02d}.ZPP",
-                   levelpal.binary(lv, spritefile.apply_palette(list(pd["pal"]), SPR_PAL)))
+        normal = spritefile.apply_palette(list(pd["pal"]), SPR_PAL)
+        write_data(f"LEVEL{lv:02d}.ZPP", levelpal.binary(lv, normal))
         level_pals += 1
-    elif os.path.exists(zpp):          # (its palette file was removed)
-        try:
-            os.remove(zpp)
-            print(f"removed {zpp} (no {ppath} now)")
-        except OSError:
-            print(f"could not remove {zpp} (in use): level {lv} would still use it, delete it")
+    else:
+        normal = list(city_final[d["cn"]])     # its city's
+        if os.path.exists(zpp):        # (its palette file was removed)
+            try:
+                os.remove(zpp)
+                print(f"removed {zpp} (no {ppath} now)")
+            except OSError:
+                print(f"could not remove {zpp} (in use): level {lv} would still use it, delete it")
+    # its vision palettes (tools/visionpal.py): generated from that, each
+    # written to levels/generated/ to start from, and a hand-tuned one
+    # (levels/LEVELnn_NVG.json ...) used in its place; ZPDATA/LEVELnn.ZPV
+    palettes = [normal]
+    for mode in visionpal.MODES[1:]:
+        gen = visionpal.vision(normal, mode)
+        gpath = visionpal.path_for(os.path.join(LEVEL_DIR, "generated"), lv, mode)
+        gtext = levelpal.text(lv, d["cn"], gen)
+        if not os.path.exists(gpath) or open(gpath, encoding="utf-8").read() != gtext:
+            with open(gpath, "w", encoding="utf-8", newline="\n") as f:
+                f.write(gtext)
+        vpath = visionpal.path_for(LEVEL_DIR, lv, mode)
+        if os.path.exists(vpath):
+            try:
+                vd = levelpal.load(vpath)
+                errs = levelpal.problems(lv, vd, d["cn"])
+            except ValueError as e:
+                errs = [str(e)]
+            if errs:
+                raise SystemExit(f"{vpath}: the palette can't be used:\n  " + "\n  ".join(errs))
+            gen = list(vd["pal"])
+            vision_hand += 1
+        palettes.append(gen)
+    write_data(f"LEVEL{lv:02d}.ZPV", visionpal.binary(lv, palettes))
 print(f"levels: {LEVEL_DIR}/LEVEL01..{CITY_LEVELS * len(CITIES):02d}.TXL -> {DATA_DIR}/.ZPL and .TXL"
-      f" ({hand} differing from the rules); {level_pals} with their own palette (.ZPP)")
+      f" ({hand} differing from the rules); {level_pals} with their own palette (.ZPP);"
+      f" vision palettes (.ZPV), {vision_hand} hand-tuned")
 lines.append(f"LEVEL_LAST      equ {CITY_LEVELS * len(CITIES)}      ; the last level (gentables.py)")
 lines.append(f"CITY_LEVELS     equ {CITY_LEVELS}       ; levels played in each city (gentables.py)")
 
@@ -766,7 +805,7 @@ lines.append("")
 # Split into the resident tables (sin_tables.asm, htabs.asm, city_map.asm,
 # l2_pallets.asm: below) and the city page's tables
 # (tables_city.inc).  Comment lines go with the label that follows them.
-CITY_TABLES = {"rtab_lo", "rtab_hi", "lgtab", "used_tab"}
+CITY_TABLES = {"rtab_lo", "rtab_hi", "lgtab", "rcp8", "used_tab"}
 main_l, city_l, pending, dest = [], [], [], None
 for ln in lines:
     if ln.strip() == "ALIGN 256":

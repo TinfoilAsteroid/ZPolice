@@ -141,7 +141,8 @@ K_GUN_DN    equ 16                      ; down,
 K_GUN_CTR   equ 17                      ; and back to the centre
 K_PAUSE     equ 18                      ; pause / resume (main_loop)
 K_BOOST     equ 19                      ; the booster on / off (player.asm)
-K_ACTIONS   equ 20
+K_VISION    equ 20                      ; the next vision mode (vis_cycle)
+K_ACTIONS   equ 21
 
 ;------------------------------------------------------------------------------
 ; Read all the input banks: key_prev = last scan, key_now = this one, every
@@ -451,6 +452,7 @@ key_prev:   ds KEY_BANKS                ; the scan before (must follow key_now)
             dw KB_V                     ; K_GUN_CTR
             dw KB_BREAK                 ; K_PAUSE
             dw KB_X                     ; K_BOOST
+            dw KB_N                     ; K_VISION
     ENDM
 ; The joystick defaults: the stick flies (left / right turn, up / down climb
 ; and descend), FIRE (Mega Drive B) fires; a Mega Drive pad's C / A are
@@ -473,6 +475,7 @@ key_prev:   ds KEY_BANKS                ; the scan before (must follow key_now)
             dw 0                        ; K_GUN_CTR
             dw J1_START                 ; K_PAUSE
             dw J1_MODE                  ; K_BOOST (a 6-button pad's MODE)
+            dw 0                        ; K_VISION
     ENDM
 key_defs:   KEY_DEFAULTS
             ASSERT $ - key_defs == K_ACTIONS*2

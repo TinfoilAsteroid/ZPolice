@@ -1,13 +1,15 @@
 # Z-Police TODO
 
-## Tomorrow (2026-11-03)
+## Today (2026-11-03)
 
-- Test the booster module (the salvage reward at 45: fitted, its fuel, the
-  boost, the HUD fuel gauge, saved and loaded).
-- Add the functionality for night and thermal vision: Night Vision - Green
-  (salvage 25), Night Vision - Monochrome (65) and Thermal Vision (85).
-  The rewards, their flags (`vision_owned`: `VIS_NV_GREEN`, `VIS_NV_MONO`,
-  `VIS_THERMAL`) and the save game are done; using them in flight isn't.
+- Vision modes (built and tested in the emulator: the rest is in DONE.md):
+  - Check the colours in CSpect in each mode, in play.
+  - The panel's city map changes colour with the mode (it draws cells in
+    their building colours): keep it, or give the map its own colours.
+  - The terrace round the pad is magenta in thermal (its top counts as a
+    roof): keep it, or keep the terrace and pad families cold.
+  - Try the map editor's palettes by hand (its code is checked, not its
+    window): Edit colours on a vision palette, Save in level mode.
 
 ## Before a release
 
@@ -16,6 +18,11 @@
   "Controls".
 - Set `DEBUG_LOADOUT equ 0` in `zpolice.asm`: a new game would otherwise
   start with 4 of every weapon in store.
+- Comment out `DEFINE DEBUG_UNLOCK_ALL` in `zpolice.asm`: a new game would
+  otherwise start with the booster, the vertical thrusters and all three
+  vision modes.
+- Check `START_SALVAGE` in `zpolice.asm` is 0 (it is now; raise it only to
+  test the salvage rewards).
 
 ## Suggested features, enhancements and optimisations (2026-10-30, to review)
 
@@ -57,27 +64,19 @@ Items marked "(also below)" repeat an open point further down this file.
 
 ### Gameplay
 
-- Use the bomb weapon type (`WPN_BOMB` is defined but not used).
 - Ghosts respawning during a level, not only at the start (also below).
 - New monster types, or a boss every 10 levels.
 - Add super zombie, big and bulky as wide has 20 hit points.
 - At the end of each city will be a boss monster/wave
 - Barricade gameplay: rebuild or place barricades, or repair them at the
   pad, using salvage.
+- For the weapon slots, add an ammo count, when the slot is exhausted it flashes 000
 - Salvage points can be used to repair barriers. Before moving to VTOL load out page
   salvage points can be used at 1 point to generate a pool of 25 hit points.On the repair screen a mini map will be displayed and the damage status listed for each barrier and terrace as a simple list.
   When the player navigates down the list the barrier or terrace will highlight red.
   Pressing 0 applies 5 repair points from the pool each time it is pressed to the highlighted location. Any unspent repair points are carried between levels.
 - More uses for salvage: armour, fuel, a faster reload, a bigger passenger
   cabin.
-- Vision modules, unlocked by salvage (as the booster module): thermal and
-  night vision (green and grey), with a key to cycle through the views (normal, thermal,
-  night vision green/ night vision grey ; only the ones unlocked). This changes how the colour palette
-  switches: today each level loads its city's one Layer 2 palette (with its
-  time-of-day tint); each view would need its own palette for the city
-  (e.g. thermal: buildings dark, zombies, humans and ghosts bright), made by
-  gentables.py and swapped in when the view changes, with the fixed colours
-  (HUD, blips, particles) kept the same in every one.
 - A score, a high-score table saved to SD, and a results screen per level
   (time, kills, humans lost).
 - Difficulty settings: easy, normal, hard.

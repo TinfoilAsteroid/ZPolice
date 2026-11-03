@@ -75,15 +75,19 @@ def load(path):
     return {"level": int(d.get("level", 0)), "city": int(d.get("city", 0)), "pal": pal}
 
 
-def save(path, lv, city, pal):
-    """Write a level's palette (256 (r, g, b)) as levels/LEVELnn_PAL.json,
-    one family a line."""
+def text(lv, city, pal):
+    """A level's palette file's text (256 (r, g, b)), one family a line."""
     lines = [f'  "{f:02d}": ' + json.dumps([list(c) for c in pal[f * 4:f * 4 + 4]])
              for f in range(FAMILIES)]
-    text = ('{\n "format": "%s", "version": %d,\n "level": %d, "city": %d,\n "families": {\n'
+    return ('{\n "format": "%s", "version": %d,\n "level": %d, "city": %d,\n "families": {\n'
             % (FORMAT, VERSION, lv, city) + ",\n".join(lines) + "\n }\n}\n")
+
+
+def save(path, lv, city, pal):
+    """Write a level's palette (256 (r, g, b)) as levels/LEVELnn_PAL.json
+    (or a vision palette, levels/LEVELnn_NVG.json ...: tools/visionpal.py)."""
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+        f.write(text(lv, city, pal))
 
 
 def problems(lv, d, city=None):

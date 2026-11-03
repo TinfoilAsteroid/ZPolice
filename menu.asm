@@ -311,7 +311,13 @@ sa_reward:
         ld hl,txt_sa_repair
         ld e,7
         call sa_line
-        ; fall through
+        ; fall through (to sa_next: keep it next)
+
+; The next reward line
+sa_next:
+        ld hl,sa_row
+        inc (hl)
+        ret
 
 ; A vision mode: A = its VIS_* bit, HL = its name: the VTOL has it now
 ; (vision_owned), and a line says so.  Preserves BC.
@@ -326,12 +332,6 @@ sa_vision:
         call sa_line
         call sa_next
         pop bc
-        ret
-
-; The next reward line
-sa_next:
-        ld hl,sa_row
-        inc (hl)
         ret
 
 ; HL -> text, E = column: print it on the reward row (if there is room)
@@ -408,7 +408,7 @@ salvage_tab:
         dw 35
         db WPN_NONE, SA_VTHRUST         ; (was a full repair)
         dw 40
-        db WPN_LASER, 0
+        db WPN_BOMB, 0                  ; (was a pulse laser)
         dw 45
         db WPN_NONE, SA_BOOSTER         ; (was a full repair)
         dw 50

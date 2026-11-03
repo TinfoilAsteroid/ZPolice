@@ -72,7 +72,7 @@ in place.
 | Page | Contents |
 |------|----------|
 | 10 `PAGE_ULA0` | ULA screen: the first half of bank 5, bitmap and attributes; used for the HUD (`hud.asm`, Layer 1). Not assembled. |
-| 34 `PAGE_CITY2` | `city2.asm`, the second city page (end `$879A`, about 6.2K free): the street dots, bullets, rockets, particles, gunsight and occlusion culling. Mapped here over the ULA screen only while `main_loop` draws the city, beside the city page in MMU 7; the ULA screen goes back before `draw_hud`. |
+| 34 `PAGE_CITY2` | `city2.asm`, the second city page (end `$8A3B`, about 5.6K free): the street dots, bullets, rockets, particles, gunsight and occlusion culling. Mapped here over the ULA screen only while `main_loop` draws the city, beside the city page in MMU 7; the ULA screen goes back before `draw_hud`. |
 
 ## MMU 5: `$A000`–`$BFFF` (NextReg `$55`), resident
 
@@ -125,7 +125,8 @@ back before they run.
 | `ZPDATA/LEVELnn.ZPL`: whole file, at most 376 bytes | 30 | `ll_lbuf`, `$C19F` | `load_level` |
 | `ZPDATA/CITYnn.ZPC`: header and palette, the first 544 bytes | 30 | `ll_cbuf`, `$C317` | `load_level` |
 | `ZPDATA/LEVELnn.ZPP`: the level's own palette (only if it has one), 520 bytes | 30 | `ll_cbuf`, `$C317` (once the city's header is used) | `load_level` |
-| `ZPDATA/SPRITES.ZPG`: the figures' graphics, a 16-byte header then 1–4 pages of 8K | 35 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
+| `ZPDATA/LEVELnn.ZPV`: the level's 4 vision palettes (normal, night vision green and monochrome, thermal), 2,056 bytes | 30 | `ll_vbuf` (kept there: `vis_cycle` swaps one into the Layer 2 palette in flight, with this page mapped) | `load_level` (`vis_load`) |
+| `ZPDATA/SPRITES.ZPG`: the figures' graphics and their vision set, a 16-byte header then 1–4 pages of 8K | 35 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
 
 `load_level` then sends the palette to the Layer 2 palette (NextReg `$44`).
 The rest of the city file goes to MMU 3.
@@ -134,7 +135,7 @@ The rest of the city file goes to MMU 3.
 
 | Page               | File             | End     |
 |--------------------|------------------|---------|
-| 1 `PAGE_CITY`      | `city.asm` (includes `tables_city.inc`) | `$F851`: about 1,970 bytes free |
+| 1 `PAGE_CITY`      | `city.asm` (includes `tables_city.inc`: the projection's and `div8`'s reciprocals, log2, used corners) | `$F956`: about 1,700 bytes free |
 | 2 `PAGE_HUD`       | `hud.asm`        | `$E402` |
 | 9 `PAGE_SPR0`      | `sprite_data.asm`: sprite pattern bank 0, paged in only to run its own loader\
                                         | `$EB1A` |

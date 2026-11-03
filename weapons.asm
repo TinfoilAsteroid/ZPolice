@@ -105,6 +105,9 @@ update_weapons:
 .fly:   ld a,(ix+B_KIND)
         cp BK_MISSILE
         call z,msl_steer                ; a missile turns to its target
+        ld a,(ix+B_KIND)
+        cp BK_BOMB
+        call z,bomb_steer               ; a bomb's glide steepens
         call bullet_step
 .nx:    ld de,BREC
         add ix,de
@@ -136,8 +139,10 @@ gun_fire:
         jr z,.missile
         cp WPN_AUTOCANNON
         jp z,.autocannon
+        cp WPN_BOMB
+        jp z,bomb_drop
         cp WPN_PROX
-        jr z,.prox
+        jp z,.prox
         cp WPN_GUN
         ret nz
         call free_round                 ; machine gun: one round
@@ -630,6 +635,73 @@ msl_steer:
 .p2:    ld a,(ms_chg)                   ; turned to a new heading or climb?
         or a
         ret z
+        ld hl,MISSILE_STEP
+        jp rnd_dir
+.lost:  ld (ix+B_TGT),$FF               ; no more tracking
+        ret
+
+;------------------------------------------------------------------------------
+; Bomb (WPN_BOMB, the selected slot's): gun_fire jumps here.  One bomb,
+; released straight ahead at the VTOL's speed + BOMB_SPEED (at least 1 unit
+; a frame), gliding down from BOMB_ANGLE, steeper every BOMB_STEEPEN frames
+; (bomb_steer), to the ground or whatever it hits first.
+;------------------------------------------------------------------------------
+bomb_drop:
+        call free_round
+        ret c
+        call take_ammo
+        ret c
+        ld a,BOMB_INTERVAL-1
+        ld (gun_wait),a
+        ld a,(speed)                    ; (signed: reversing, less)
+        add a,BOMB_SPEED
+        jp p,.pos
+        xor a
+.pos:   or a
+        jr nz,.st
+        inc a                           ; at least 1
+.st:    ld l,a
+        ld h,0
+        push hl
+        call spawn_round
+        pop hl
+        ld (ix+B_KIND),BK_BOMB          ; no direct damage: its blast
+        ld (ix+B_TGT),l                 ; its length a frame
+        ld a,(yaw_frac)                 ; its heading: the view's,
+        ld (ix+B_YAW),a
+        ld a,(yaw)
+        ld (ix+B_YAW+1),a
+        ld (ix+B_PIT),BOMB_STEEPEN      ; (the low byte: frames to steeper)
+        ld (ix+B_PIT+1),-BOMB_ANGLE & $FF   ; gliding down
+        call rnd_dir
+        ld a,SFX_ROCKET                 ; (a release woosh)
+        ld (sfx_req),a
+        ret
+        ASSERT BOOST_SPEED+BOMB_SPEED < 128 ; (a signed byte, and B_TGT's)
+        ASSERT SPEED_MAX <= BOOST_SPEED
+
+        ASSERT BOMB_ANGLE < MSL_PITCH_MAX && BOMB_STEEPEN > 0
+
+; Bomb IX, before its step: every BOMB_STEEPEN frames (B_PIT's low byte
+; counts them down) its climb one angle step steeper (B_PIT's high byte),
+; to -MSL_PITCH_MAX, and its direction afresh
+bomb_steer:
+        dec (ix+B_PIT)
+        ret nz
+        ld (ix+B_PIT),BOMB_STEEPEN
+        ld a,(ix+B_PIT+1)
+        cp -MSL_PITCH_MAX & $FF
+        ret z                           ; as steep as it goes
+        dec (ix+B_PIT+1)
+        ld l,(ix+B_TGT)                 ; its length a frame
+        ld h,0
+        jp rnd_dir
+
+; Round IX's direction from its heading and climb (the high bytes of B_YAW,
+; B_PIT), HL = its length along its path a frame: B_SIN, B_COS, B_S,
+; B_SLOPE, and its cell spans afresh.  (A missile turning, a bomb diving.)
+rnd_dir:
+        ld (sr_len),hl
         ld a,(ix+B_YAW+1)               ; its new direction
         push af
         call get_sin
@@ -648,14 +720,10 @@ msl_steer:
         add a,64
         call get_sin
         ld (sr_cos),hl
-        ld hl,MISSILE_STEP
-        ld (sr_len),hl
         call round_climb
         xor a                           ; the cell spans afresh
         ld (ix+B_TDX),a
         ld (ix+B_TDX+1),a
-        ret
-.lost:  ld (ix+B_TGT),$FF               ; no more tracking
         ret
 
 ; A = the angle wanted, HL = B_YAW or B_PIT: turn missile IX's angle there
@@ -1928,9 +1996,10 @@ zdamage:
         ret
 
 ;------------------------------------------------------------------------------
-; Rocket, missile or autocannon shell IX has stopped (at B_X, B_Y, B_Z): its
-; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, AUTOCANNON_DMG) to every zombie,
-; human and base tile within its reach (rb_r: BLAST_R, MISSILE_R, AUTOCANNON_R) on
+; Rocket, missile, bomb or shell IX has stopped (at B_X, B_Y, B_Z): its
+; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, BOMB_DMG, AUTOCANNON_DMG, ...) to
+; every zombie, human and base tile (a bomb's: the VTOL too, rb_vtol)
+; within its reach (rb_r: BLAST_R, MISSILE_R, BOMB_R, AUTOCANNON_R, ...) on
 ; each axis, and its orange particles.  Plain integer box tests: anything
 ; further than rb_r on any one axis is skipped.
 ;------------------------------------------------------------------------------
@@ -1954,6 +2023,12 @@ rocket_blast:
         ld e,SFX_BOOM_AUTOCANNON
         cp BK_AUTOCANNON
         jr z,.k
+        ld hl,BOMB_R                    ; a bomb (the missile's boom)
+        ld b,BOMB_DMG
+        ld c,BOMB_PARTS
+        ld e,SFX_BOOM_MISSILE
+        cp BK_BOMB
+        jr z,.k
         ld hl,PROX_R                    ; a proximity shell
         ld b,PROX_DMG
         ld c,PROX_PARTS
@@ -1975,6 +2050,9 @@ rocket_blast:
         ld h,(ix+B_Z+1)
         ld (rb_z),hl
         call fire_burst                 ; the orange shower
+        ld a,(ix+B_KIND)                ; a bomb's hits the VTOL too
+        cp BK_BOMB
+        call z,rb_vtol
         ; zombies and special monsters (their feet's height, +21)
         push iy
         ld iy,zombies
@@ -2129,6 +2207,27 @@ rocket_blast:
         ld (rb_j),a
         jr .bj
 
+; A bomb's burst: the VTOL takes rb_dmg if it is within rb_r on each axis
+; (its camera point)
+rb_vtol:
+        ld a,(vtol_dead)
+        or a
+        ret nz                          ; (a wreck already)
+        ld hl,(cam_x+1)
+        ld de,(rb_x)
+        call rb_near
+        ret nc
+        ld hl,(cam_z+1)
+        ld de,(rb_z)
+        call rb_near
+        ret nc
+        ld hl,(cam_y)
+        ld de,(rb_y)
+        call rb_near
+        ret nc
+        ld a,(rb_dmg)
+        jp vtol_damage                  ; (resident)
+
 ; Carry set if |HL - DE| <= rb_r (signed)
 rb_near:
         or a
@@ -2140,12 +2239,31 @@ rb_near:
         sbc hl,de
         ret
 
-; HL = s -> HL = height of the path there, y0 + s * slope
+; HL = s -> HL = height of the path there, y0 + s * slope, the drop (or
+; climb) rounded to the nearest unit: truncated, a slow round's (a bomb's,
+; 20 units a frame) lost up to 1 unit a frame, flattening its glide.  s is
+; within one frame's path (under 32768).
 b_y_at:
         ld de,(b_slope)
-        call fmul
-        ld de,(b_y0)
+        bit 7,d
+        jr z,.up
+        push hl                         ; descending: DE = |slope|
+        ex de,hl
+        call neg_hl
+        ex de,hl
+        pop hl
+        call .mag
+        call neg_hl
+        jr .add
+.up:    call .mag
+.add:   ld de,(b_y0)
         add hl,de
+        ret
+.mag:   add hl,hl                       ; round(s * DE / 256), both >= 0:
+        call fmul                       ;   (floor(2 s DE / 256) + 1) / 2
+        inc hl
+        srl h
+        rr l
         ret
 
 ; HL = s: move round IX to that point of this frame's path

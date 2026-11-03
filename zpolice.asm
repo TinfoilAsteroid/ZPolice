@@ -227,7 +227,9 @@ BK_MISSILE      equ 2
 BK_AUTOCANNON   equ 3           ; an autocannon shell: drawn as a round, bursts
 BK_PROX         equ 4           ; a proximity shell: as autocannon, and bursts
                                 ; passing near a monster (PROX_R)
-B_TGT           equ 27          ; a missile: the monster it tracks ($FF none)
+BK_BOMB         equ 5           ; a bomb: dives, drawn as a rocket, bursts
+B_TGT           equ 27          ; a missile: the monster it tracks ($FF none);
+                                ; a bomb: its length along its path a frame
 B_YAW           equ 28          ;   its heading, 8.8 (yaw units: 256 a turn)
 B_PIT           equ 30          ;   and climb, 8.8 signed (as pitch)
 NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
@@ -302,6 +304,24 @@ MISSILE_INTERVAL equ ROCKET_INTERVAL    ; frames between missiles
 MISSILE_R       equ TILE_UNITS  ; 1.0 tile (20 m)
 MISSILE_DMG     equ 15
 MISSILE_PARTS   equ 20
+; Bomb (WPN_BOMB, on a wing pylon): BOMB_SHOTS bombs.  Released straight
+; ahead at the VTOL's speed + BOMB_SPEED units a frame (at least 1), it
+; glides down from BOMB_ANGLE (10 degrees below level), steeper by one angle
+; step (1.4 degrees) every BOMB_STEEPEN frames (to MSL_PITCH_MAX), its speed
+; kept, until it hits something (a building, a monster, the ground).  Its
+; burst does BOMB_DMG to everything within BOMB_R (2 tiles) on each of the
+; x, y and z axes, the VTOL too (and the terrace, barricades and pad), and
+; sprays BOMB_PARTS particles.
+BOMB_SHOTS      equ 1           ; a pod holds one
+BOMB_RELOAD     equ 30          ; frames to reload it on the pad
+BOMB_INTERVAL   equ 14          ; frames between bombs (about a second)
+BOMB_SPEED      equ 20          ; units a frame more than the VTOL's speed
+BOMB_ANGLE      equ 7           ; 10 degrees below level at the start: 7
+                                ; angle steps of 1.4 (9.8 degrees)
+BOMB_STEEPEN    equ 5           ; frames between steps steeper
+BOMB_R          equ 2*TILE_UNITS    ; 2 tiles (40 m)
+BOMB_DMG        equ 30
+BOMB_PARTS      equ 30
 ; Missile lock (lock_update, weapons.asm): with the missile pod selected, a
 ; square reticule wanders near the view's centre (RET_WANDER_R) until a
 ; monster is seen within LOCK_RANGE
@@ -405,6 +425,16 @@ START_LEVEL     equ START_LEVEL_SET
     ELSE
 START_LEVEL     equ 1
     ENDIF
+; The salvage a new game starts with (newGame, game_reset).  The rewards at
+; or below it (salvage_tab, menu.asm) are never given: only totals passed
+; after it count.  0 for a release.
+START_SALVAGE   equ 0
+
+; DEBUG_UNLOCK_ALL: a new game starts with every upgrade the salvage gives
+; (game_reset): the booster module (its tank full), the vertical thrusters
+; and all three vision modes.  Weapons: DEBUG_LOADOUT.  Comment it out for a
+; release.  Command line: -DDEBUG_UNLOCK_ALL
+        DEFINE DEBUG_UNLOCK_ALL
 
 ; Debug: key 0 kills every monster and rescues every human left, so the
 ; next wave starts (after the last, the level ends); key 9 the same, on to
@@ -542,6 +572,9 @@ OP_INC_L        equ $2C
 OP_DEC_L        equ $2D
 OP_INC_H        equ $24
 OP_DEC_H        equ $25
+; and for scale_comp's barrel shift (the second byte, after $ED: zpatch)
+OP_BSLA         equ $28             ; bsla de,b
+OP_BSRL         equ $2A             ; bsrl de,b
 
 ; HL = HL * GRID  (a map row offset)
         MACRO ROWOFS
@@ -553,20 +586,54 @@ OP_DEC_H        equ $25
         add hl,hl
         ENDM
 
-; dst = src + vec  (three 16-bit components)
-        MACRO VADD QD, QS, QV
-        ld hl,(QS)
-        ld de,(QV)
+; A building's 8 corners (vtx, 16 bytes each; index = x + 2*z + 4*top) from
+; corner 0, component C (0 X, 2 Y, 4 Z) at a time: v1 = v0 + vx, v3 = v1 +
+; vz, v2 = v0 + vz (vx, vz: vecs0, its edge vectors), and each top corner
+; its bottom corner + vy (vy_vec, the vertical edge).  The sums the corners
+; share are made once, in registers (draw_bld, city.asm).
+        MACRO VBOX C
+        ld hl,(vtx+C)                   ; v0
+        ld de,(vecs0+C)                 ; vx
+        ld bc,(vecs0+6+C)               ; vz
+        push hl
         add hl,de
-        ld (QD),hl
-        ld hl,(QS+2)
-        ld de,(QV+2)
+        ld (vtx+16+C),hl                ; v1 = v0 + vx
+        push hl
+        add hl,bc
+        ld (vtx+48+C),hl                ; v3 = v1 + vz
+        ld de,(vy_vec+C)                ; vy
         add hl,de
-        ld (QD+2),hl
-        ld hl,(QS+4)
-        ld de,(QV+4)
+        ld (vtx+112+C),hl               ; v7 = v3 + vy
+        pop hl
         add hl,de
-        ld (QD+4),hl
+        ld (vtx+80+C),hl                ; v5 = v1 + vy
+        pop hl
+        add hl,bc
+        ld (vtx+32+C),hl                ; v2 = v0 + vz
+        add hl,de
+        ld (vtx+96+C),hl                ; v6 = v2 + vy
+        ld hl,(vtx+C)
+        add hl,de
+        ld (vtx+64+C),hl                ; v4 = v0 + vy
+        ENDM
+; The same for a component of vy that is 0 (X always; Z in level flight):
+; each top corner is its bottom corner
+        MACRO VBOX0 C
+        ld hl,(vtx+C)                   ; v0
+        ld (vtx+64+C),hl                ; v4 = v0
+        ld de,(vecs0+C)
+        ld bc,(vecs0+6+C)
+        push hl
+        add hl,de
+        ld (vtx+16+C),hl                ; v1 = v0 + vx
+        ld (vtx+80+C),hl                ; v5
+        add hl,bc
+        ld (vtx+48+C),hl                ; v3 = v1 + vz
+        ld (vtx+112+C),hl               ; v7
+        pop hl
+        add hl,bc
+        ld (vtx+32+C),hl                ; v2 = v0 + vz
+        ld (vtx+96+C),hl                ; v6
         ENDM
 
 ; Copy cached screen corner of face vertex (HL)+ into p2buf (DE)+ with the
@@ -692,8 +759,8 @@ game_reset:
         ld (vtol_dead),a
         ld (dead_down),a
         ld (dead_vy),a
-        ld hl,0
-        ld (salvage_points),hl          ; no salvage yet
+        ld hl,START_SALVAGE
+        ld (salvage_points),hl          ; the salvage to start with
         ld hl,wpn_stock                 ; and no weapons in store or
         ld b,2*(WPN_LAST+1)             ; unlocked (wpn_unlocked follows)
 .ws:    ld (hl),0
@@ -716,13 +783,12 @@ game_reset:
         ld (boost_on),a
         ld (vision_owned),a             ; no vision modes (salvage rewards)
         ld (vthrust_fitted),a           ; no vertical thrusters (salvage)
+        ld (vision_mode),a              ; normal vision
     IF DEBUG_LOADOUT
         ld hl,wpn_stock+1               ; debug: every weapon unlocked, and
-        ld b,WPN_LAST                   ; DEBUG_STOCK of each in store (not
-.dbg:   ld a,WPN_LAST+1                 ; the bomb: none yet)
+        ld b,WPN_LAST                   ; DEBUG_STOCK of each in store
+.dbg:   ld a,WPN_LAST+1
         sub b                           ; (the type)
-        cp WPN_BOMB
-        jr z,.dbn
         ld (hl),DEBUG_STOCK
         ld de,wpn_unlocked-wpn_stock
         add hl,de
@@ -735,6 +801,15 @@ game_reset:
         ld (boost_fitted),a
         ld a,BOOST_FUEL_MAX
         ld (boost_fuel),a
+    ENDIF
+    IFDEF DEBUG_UNLOCK_ALL
+        ld a,1                          ; debug: every upgrade: the booster
+        ld (boost_fitted),a             ; (full), the vertical thrusters, and
+        ld (vthrust_fitted),a           ; the vision modes
+        ld a,BOOST_FUEL_MAX
+        ld (boost_fuel),a
+        ld a,VIS_NV_GREEN | VIS_NV_MONO | VIS_THERMAL
+        ld (vision_owned),a
     ENDIF
         ret
 
@@ -813,6 +888,12 @@ main_loop:
         ld a,K_PAUSE                    ; paused until the pause control is
         call key_pressed                ; pressed again
         call nz,game_pause
+        ld a,K_VISION                   ; the next vision mode the VTOL has
+        call key_pressed                ; (level_load.asm: its palettes are
+        jr z,.nv                        ; there)
+        nextreg LOGIC_MMU,PAGE_LEVEL
+        call vis_cycle
+.nv:
         nextreg LOGIC_MMU,PAGE_PLAYER   ; input/movement logic at $C000
         call update_player
         call setup_frame
@@ -1066,11 +1147,11 @@ floor_y:
 ; (resident, for the weapons page and the load-out screen)
 wpn_cfg:    db 0, 0, WS_ANY                             ; WPN_NONE (empty)
             db AMMO_INF, 0, WS_CENTRE                   ; WPN_GUN
-            db AMMO_INF, 0, WS_ANY                      ; WPN_LASER
+            db AMMO_INF, 0, WS_CENTRE                   ; WPN_LASER
             db AMMO_INF, 0, WS_CENTRE                   ; WPN_CHAIN
             db ROCKET_SHOTS, ROCKET_RELOAD, WS_PYLONS   ; WPN_ROCKETS
             db MISSILE_SHOTS, MISSILE_RELOAD, WS_PYLONS ; WPN_MISSILE
-            db 0, 0, 0                                  ; WPN_BOMB (none yet)
+            db BOMB_SHOTS, BOMB_RELOAD, WS_PYLONS       ; WPN_BOMB
             db AUTOCANNON_SHOTS, AUTOCANNON_RELOAD, WS_PYLONS ; WPN_AUTOCANNON
             db PROX_SHOTS, PROX_RELOAD, WS_PYLONS       ; WPN_PROX
         ASSERT WPN_ROCKETS == 4 && WPN_MISSILE == 5 && WPN_AUTOCANNON == 7
@@ -1734,6 +1815,18 @@ vision_owned: db 0                      ; (newGame: none)
 ; 1: the vertical thrusters (a salvage reward, part of the VTOL from then
 ; on, no fuel): it climbs to MAX_Y_THRUST instead of MAX_Y.  Saved.
 vthrust_fitted: db 0
+; The vision mode in use (K_VISION steps through the ones the VTOL has:
+; vis_cycle, level_load.asm): its palette is in the Layer 2 palette and, if
+; not 0, the figures are drawn from their vision set (spr_lod).  Not saved.
+VM_NORMAL       equ 0
+VM_NV_GREEN     equ 1                   ; (VIS_NV_GREEN)
+VM_NV_MONO      equ 2                   ; (VIS_NV_MONO)
+VM_THERMAL      equ 3                   ; (VIS_THERMAL): mode n has bit n-1
+VM_MODES        equ 4                   ;   of vision_owned
+        ASSERT VIS_NV_GREEN == 1<<(VM_NV_GREEN-1) && VIS_NV_MONO == 1<<(VM_NV_MONO-1)
+        ASSERT VIS_THERMAL == 1<<(VM_THERMAL-1)
+vision_mode: db VM_NORMAL
+vis_ok:     db 0                        ; 1: this level's vision palettes loaded
 boost_fitted: db 0                      ; 1: the booster module (salvage)
 boost_fuel: db 0                        ; its fuel, 0..BOOST_FUEL_MAX
 boost_on:   db 0                        ; 1: boosting (speed BOOST_SPEED)

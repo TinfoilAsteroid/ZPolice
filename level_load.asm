@@ -35,6 +35,10 @@ LPF_SIZE        equ LPF_PAL+512
 LEVEL_VERSION   equ 2               ; the files' format versions (+4): the
 CITY_VERSION    equ 1               ;   level file's 2 (specials by wave)
 LPAL_VERSION    equ 1
+; Vision palette file (ZPDATA/LEVELnn.ZPV: tools/visionpal.py)
+VPF_PAL         equ 8               ; 4 palettes (VM_MODES), 256 pairs each
+VPF_SIZE        equ VPF_PAL+4*512
+VPAL_VERSION    equ 1
 LDERR_BADFILE   equ 255             ; error code: not a valid file
 
 ;------------------------------------------------------------------------------
@@ -160,7 +164,7 @@ load_level:
         jr c,.view
         ld hl,ll_cbuf+LPF_PAL
         call ll_palette
-.view:
+.view:  call vis_load                   ; its vision palettes
         ; the draw distance, 2..VIEW_R tiles; the ground dots one less
         ld a,(level_cur+LV_VIEW_R)
         cp 2
@@ -180,6 +184,85 @@ load_level:
         pop af
         scf
         ret
+
+;------------------------------------------------------------------------------
+; The vision modes' palettes (tools/visionpal.py has the format):
+; ZPDATA/LEVELnn.ZPV, the level's 4 palettes (normal, night vision green,
+; night vision monochrome, thermal), kept in ll_vbuf.  vis_ok = 1 if it is
+; there and whole (without it, only normal vision).  Every level starts in
+; normal vision (vision_mode 0).
+; (load_level: the file handler in slot 7.)
+;------------------------------------------------------------------------------
+vis_load:
+        xor a
+        ld (vis_ok),a
+        ld a,(ll_level+12)
+        ld (ll_vpal+12),a
+        ld a,(ll_level+13)
+        ld (ll_vpal+13),a
+        ld hl,ll_vpal
+        ld de,ll_vbuf
+        ld bc,VPF_SIZE+1                ; (one more: a longer file isn't one)
+        call fh_load
+        jr c,.none
+        ld hl,-VPF_SIZE
+        add hl,bc
+        ld a,h
+        or l
+        jr nz,.none                     ; (not all of it)
+        ld hl,ll_vbuf
+        ld de,ll_vmagic
+        ld c,VPAL_VERSION
+        call ll_check
+        jr c,.none
+        ld a,1
+        ld (vis_ok),a
+.none:  xor a                           ; each level starts in normal vision
+        ld (vision_mode),a              ; (its palette is in already)
+        ret
+
+; K_VISION pressed (main_loop, this page in slot 6): the next vision mode
+; the VTOL has (vision_owned), or back to normal after the last; its
+; palette into the Layer 2 palette.  Nothing without the level's vision
+; palettes, or with no vision mode.
+vis_cycle:
+        ld a,(vis_ok)
+        or a
+        ret z
+        ld a,(vision_owned)
+        and (1<<(VM_MODES-1))-1
+        ret z                           ; none yet
+        ld a,(vision_mode)
+.nx:    inc a
+        cp VM_MODES
+        jr nc,.norm                     ; past the last: normal
+        ld b,a                          ; has it?  bit (mode - 1)
+        ld c,1
+.bit:   dec b
+        jr z,.tst
+        sla c
+        jr .bit
+.tst:   ld b,a
+        ld a,(vision_owned)
+        and c
+        ld a,b
+        jr z,.nx
+        jr .set
+.norm:  xor a
+.set:   ld (vision_mode),a
+        ; fall through
+
+; The vision mode's palette (vision_mode, 0..VM_MODES-1, from ll_vbuf) into
+; the Layer 2 palette
+vis_apply:
+        ld a,(vision_mode)
+        add a,a                         ; * 512: high byte * 2
+        ld h,a
+        ld l,0
+        ld de,ll_vbuf+VPF_PAL
+        add hl,de
+        ; fall through
+        ASSERT VM_MODES*512 == VPF_SIZE-VPF_PAL
 
 ; HL -> 256 palette pairs (RRRGGGBB, low blue bit): into Layer 2 palette 0
 ll_palette:
@@ -244,8 +327,8 @@ gfx_load:
         cp GFX_PAGES_MAX+1
         jr nc,.cl
         ld (gl_n),a
-        ld a,(ll_cbuf+6)                ; the game's purposes
-        cp GFX_ANIMS
+        ld a,(ll_cbuf+6)                ; the game's purposes, and their
+        cp GFX_ENTRIES                  ;   vision set
         jr nz,.cl
         ld a,PAGE_GFX0
         ld (gl_pg),a
@@ -286,6 +369,9 @@ ll_lpal:    db "ZPDATA/LEVEL00.ZPP", 0  ; digits at +12, +13 (as ll_level's)
 ll_lmagic:  db "ZPLV"
 ll_cmagic:  db "ZPCY"
 ll_pmagic:  db "ZPPL"
+ll_vpal:    db "ZPDATA/LEVEL00.ZPV", 0  ; digits at +12, +13 (as ll_level's)
+ll_vmagic:  db "ZPVS"
+ll_vbuf:    ds VPF_SIZE+1               ; the level's vision palettes (vis_load)
 ll_lbuf:    ds LVF_MAX                  ; the level file
 ll_cbuf:    ds CTF_DATA                 ; the city file's header and palette;
                                         ; then the level's palette file

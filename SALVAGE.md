@@ -15,15 +15,15 @@ load-out screen. A full repair restores the VTOL to full integrity.
 
 ## Rewards by score
 
-| Salvage | Weapon to the store | Other |
-|--------:|---------------------|-------|
+| Salvage | Weapon to the store | Other                                             |
+|--------:|---------------------|---------------------------------------------------|
 | 10      | Pulse laser         |                                                   |
 | 15      |                     | Full repair                                       |
 | 20      | Chain gun           |                                                   |
 | 25      |                     | Night Vision - Green, fitted at once              |
 | 30      | Rocket pod          |                                                   |
 | 35      |                     | Vertical Thrusters, fitted at once: climb to 30 m |
-| 40      | Pulse laser         |                                                   |
+| 40      | Bomb                |                                                   |
 | 45      |                     | Booster module, fitted at once, its tank full     |
 | 50      | Chain gun           |                                                   |
 | 55      | Proximity cannon    | Full repair                                       |
@@ -43,38 +43,44 @@ load-out screen. A full repair restores the VTOL to full integrity.
 | 125     | Autocannon          | Full repair                                       |
 | 130     | Missile pod         | Full repair                                       |
 | 135     | Missile pod         | Full repair                                       |
-| 140     | Missile pod         | Full repair                                       |
+| 140     | Missile 
+1pod         | Full repair                                       |
 | 145     | Missile pod         | Full repair                                       |
-| 150, 155, 160 … | | Full repair, every 5 points from then on |
+| 150     |                     | Full repair, every 5 points from then on          |
+| 155     |                     | Full repair, every 5 points from then on          |
+| 160     |                     | Full repair, every 5 points from then on          |
 
 ## Totals
 
-| Reward | How many | At |
-|--------|---------:|----|
-| Pulse laser | 4 | 10, 40, 65, 90 |
-| Chain gun | 4 | 20, 50, 75, 95 |
-| Rocket pod | 4 | 30, 60, 80, 100 |
-| Autocannon    | 4 | 105, 110, 120, 125 |
-| Missile pod | 5 | 115, 130, 135, 140, 145 |
-| Proximity cannon | 2 | 55, 70 |
-| Booster module | 1 | 45 |
-| Night Vision - Green | 1 | 25 |
-| Night Vision - Monochrome | 1 | 65 |
-| Thermal Vision | 1 | 85 |
-| Vertical Thrusters | 1 | 35 |
-| Full repair | 3 below 100, then every 5 points from 100 on | 15, 55, 70, 100, 105, 110 … |
+| Reward                    | How many | At                                         |
+|---------------------------|---------:|--------------------------------------------|
+| Pulse laser               | 3        | 10, 65, 90                                 |
+| Chain gun                 | 4        | 20, 50, 75, 95                             |
+| Rocket pod                | 4        | 30, 60, 80, 100                            |
+| Autocannon                | 4        | 105, 110, 120, 125                         |
+| Missile pod               | 5        | 115, 130, 135, 140, 145                    |
+| Proximity cannon          | 2        | 55, 70                                     |
+| Bomb                      | 1        | 40                                         |
+| Booster module            | 1        | 45                                         |
+| Night Vision - Green      | 1        | 25                                         |
+| Night Vision - Monochrome | 1        | 65                                         |
+| Thermal Vision            | 1        | 85                                         |
+| Vertical Thrusters        | 1        | 35                                         |
+| Full repair               | 3        | below 100, then every 5 points from 100 on | 
 
 The vertical thrusters become part of the VTOL: from then on it can climb
 to 30 m instead of 15 m, with no fuel needed. While they're fitted, the
 HUD's altitude bar is drawn at half scale, so 30 m fills it.
 
-The vision modes go straight onto the VTOL, as the booster does. The game
-records them (`vision_owned`) and keeps them in the save game, but using
-them in flight is still to come.
+The vision modes go straight onto the VTOL, as the booster does. N steps
+through the ones it has in flight (see README "Vision modes").
+
+The bomb goes on a wing pylon, one to a pod. It glides down from 10°,
+steepening as it falls, and its blast does 30 damage to everything within
+2 tiles, the VTOL included (see README "Bomb").
 
 ## Not given by salvage
 
-- **Bomb:** the weapon type is defined, but no score awards it.
 - **Ammunition:** at the end of every level, every fitted weapon gets its
   full load back. This happens whatever your score, so it isn't a salvage
   reward.

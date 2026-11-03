@@ -259,7 +259,7 @@ would otherwise look like line 0 and end a frame early.
   * the player state from `start_state`: position on the base pad,
     heading, pitch, speed, weapon slots, selected slot, slot flash;
   * no rounds or laser beam, the gun and laser timers, `level` =
-    `START_LEVEL`, `salvage_points` = 0 (a 16-bit score, not used yet);
+    `START_LEVEL`, `salvage_points` = `START_SALVAGE` (a 16-bit score, 0);
   * the level's files (`load_level`): its record, its city's map, colours
     and palette, its draw distance. See "Levels and cities".
   * both Layer 2 buffers cleared and Layer 2 made visible again;
@@ -440,7 +440,7 @@ Interrupts are on from the main menu onwards, in IM 2 (`interrupts.asm`),
 | SPACE | fire the selected weapon (hold) | 1–5 | select weapon slot: 1 = centre, 2–5 = wing pylons |
 | R   | tilt the centre gun up | F   | tilt the centre gun down |
 | V   | recentre the centre gun | 0 / 9 | debug: kill all / next city (see below) |
-| 8   | debug: change the centre gun (see below) | | |
+| 8   | debug: change the centre gun (see below) | N | next vision mode (once one is fitted: see below) |
 | BREAK | pause / resume | X | boost on / off (once the booster is fitted: see below) |
 
 **Joystick:** Kempston or Mega Drive (3 or 6 buttons), in either joystick
@@ -480,8 +480,8 @@ on. Set `DEBUG_KILLALL equ 0` for a release: the code and the keys go.
 
 **Debug load-out (`DEBUG_LOADOUT` in `zpolice.asm`):** a new game starts with
 every weapon unlocked and `DEBUG_STOCK` (4) of each in store, so they can all
-be fitted on the load-out screen before level 1. The bomb is left out: it has
-no weapon yet and fits no slot. The machine gun is still fitted in slot 1 as
+be fitted on the load-out screen before level 1, the bomb too. The machine
+gun is still fitted in slot 1 as
 well. Set `DEBUG_LOADOUT equ 0` for a release, and a new game starts with
 the machine gun only.
 
@@ -537,10 +537,11 @@ none), and either one works.
   `joy_defaults`, so putting the defaults back is one copy.
 * **Redefine keys screen (`keydef_screen`, keydef.asm, `PAGE_KEYDEF` page
   33 in slot 6):** option 9 on the main menu (`keydef_go`, resident, pages
-  it in). It lists every control (20, BOOST the last) with its key and
-  joystick input ("-" for none): white, the highlighted one green. The
-  title shares the top row with the KEY and JOYSTICK headings, to fit
-  them all.
+  it in). It lists every control (21, VISION MODE the last) with its key
+  and joystick input ("-" for none): white, the highlighted one green. The
+  title shares the top row with the KEY and JOYSTICK headings, and the
+  keys' help is one line at the bottom (row 23; messages on row 22), to
+  fit them all.
   * **Q / A** move the highlight up and down.
   * **SPACE** shows PRESS A KEY OR JOYSTICK and waits a second. The next
     input (any bank: `kd_new_key`) then becomes the control's key, or its
@@ -553,8 +554,10 @@ none), and either one works.
     saved, KEYS NOT SAVED (SD CARD?) shows for a second.
   * These keys are fixed, whatever the controls are set to.
   * **Saved definitions:** `ZPDATA/KEYS.ZPK`, beside the level files:
-    "ZPKY", a version byte (`KF_VERSION`, 1), the number of controls (20),
-    then `key_defs` and `joy_defs` (2 bytes a control): 86 bytes. The
+    "ZPKY", a version byte (`KF_VERSION`, 2), the number of controls (21),
+    then `key_defs` and `joy_defs` (2 bytes a control): 90 bytes. A
+    version 1 file (20 controls, from before the vision control) isn't
+    used: the defaults load instead, once. The
     definitions are in the input page, in slot 7, where the file handler
     goes too, so they go through a buffer in the redefine page (`kd_buf`).
   * **Loaded at start-up:** `start` pages the redefine page into slot 6 and
@@ -613,6 +616,45 @@ zpolice.asm).
 * The engines' sound tops out at `SPEED_MAX` (the boost sounds flat out),
   and a crash at boost speed does 56 ÷ 4 = 14 damage.
 * `DEBUG_LOADOUT` also fits the booster with a full tank, for testing.
+
+**Vision modes:** salvage rewards fitted at once (`vision_owned`): night
+vision green at 25, night vision monochrome at 65, thermal at 85.
+* **N** (the vision control, `K_VISION`, redefinable) steps to the next
+  mode the VTOL has, then back to normal after the last (`vis_cycle`,
+  level_load.asm). With none fitted it does nothing. The mode in use is
+  `vision_mode` (`VM_*`); every level starts in normal vision, and it
+  isn't saved.
+* **Palettes:** each level has 4, in `ZPDATA/LEVELnn.ZPV` (made by
+  gentables.py: `tools/visionpal.py` has the format and the rules), loaded
+  with the level into `ll_vbuf` (`vis_load`). A mode's palette goes into
+  the Layer 2 palette when it is chosen; each level starts with its normal
+  palette.
+  * Night vision green: every colour's brightness as a green (1 to 7), the
+    roads (0, 1, 0). Monochrome: white to grey. Thermal: the buildings in
+    cold blues, their roofs warmer (towards magenta and red), the roads
+    (0, 0, 1).
+  * Only the 3D view changes: the HUD's and city map's colours, the
+    gunsight, the missile reticule, tracers, the laser and the particles
+    keep their normal colours (`visionpal.KEEP`).
+  * Hand-tuned: a level's own `levels/LEVELnn_NVG.json`, `_NVM.json`,
+    `_THM.json` (the format of `levels/LEVELnn_PAL.json`), if it has one,
+    is used in place of the generated one. Make them in the map editor
+    (level mode): its four palettes side by side, each with Copy normal,
+    Convert to green / grey / thermal and Generated. gentables also writes
+    the generated ones to `levels/generated/`, for reference.
+* **Figures:** in a vision mode they are drawn from their vision set
+  (`spr_lod`: the directory's entries `GFX_ANIMS` on), made by
+  gengraphics.py from the normal figures (`spritefile.vision_pixels`): each
+  pixel is its figure's face (the top quarter), core, or outline (an edge
+  next to the core), each one palette entry the vision palettes colour.
+
+  | Figure | Night vision green | Monochrome | Thermal |
+  |--------|--------------------|------------|---------|
+  | human | bright green | white | white face, yellow core, orange outline |
+  | zombie, ghoul | mid green | mid grey | orange face, red body |
+  | ghost, banshee | black | black | red body, white outline |
+
+  A ghost fading out keeps its normal fade colours (shared with the map).
 
 **The VTOL:** the player's craft is 10 m long and 3 m wide (`VTOL_LEN_M`,
 `VTOL_WID_M`). Its position (`cam_x`, `cam_z`, the camera) is its centre.
@@ -773,7 +815,7 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
 * The types are `WPN_NONE` 0, `WPN_GUN` 1 (machine gun), `WPN_LASER` 2
   (pulse laser), `WPN_CHAIN` 3 (chain gun), `WPN_ROCKETS` 4 (rocket
   pod), `WPN_MISSILE` 5 (missile pod), `WPN_AUTOCANNON` 7 (autocannon) and
-  `WPN_PROX` 8 (proximity cannon; `WPN_LAST`). The placeholder `WPN_BOMB` is 6. They are defined at
+  `WPN_PROX` 8 (proximity cannon; `WPN_LAST`), and `WPN_BOMB` 6 (bomb). They are defined at
   the top of `zpolice.asm`.
 * **Weapon type details (`wpn_cfg`, resident in zpolice.asm):**
   `WCFG_SIZE` (3) bytes per type: its full load (`WCFG_LOAD`), frames to
@@ -786,12 +828,13 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
   | Weapon | Slots (keys) | Full load | Reload |
   |--------|--------------|-----------|--------|
   | Machine gun | 1 | infinite | – |
-  | Pulse laser | any | infinite | – |
+  | Pulse laser | 1 | infinite | – |
   | Chain gun | 1 | infinite | – |
   | Rocket pod | 2–5 | 12 | 1 every 15 frames |
   | Missile pod | 2–5 | 4 | 1 every 30 frames |
   | Autocannon | 2–5 | 50 | 1 every 7 frames |
   | Proximity cannon | 2–5 | 50 | 1 every 7 frames |
+  | Bomb | 2–5 | 1 | 1 every 30 frames |
 
   The masks are `WS_CENTRE`, `WS_PYLONS` and `WS_ANY`. An empty slot fits
   anywhere; the placeholder bomb fits nowhere yet. Nothing enforces the
@@ -1029,6 +1072,33 @@ Weapon type 5 (`WPN_MISSILE`), on a wing pylon. A pod holds 4 missiles
   burst's kind (`rb_r`, `rb_dmg`, `rb_parts`).
 * **Burst:** `MISSILE_PARTS` (20) orange particles for 10 frames.
 
+### Bomb
+Weapon type 6 (`WPN_BOMB`), on a wing pylon. A pod holds 1 bomb
+(`BOMB_SHOTS`), reloaded on the pad in 30 frames (`BOMB_RELOAD`); the HUD
+letter B. A salvage reward at 40.
+* **Dropping (`bomb_drop`):** SPACE releases one, straight ahead at the
+  VTOL's speed + `BOMB_SPEED` (20) units a frame (at least 1: reversing,
+  less). At most one every `BOMB_INTERVAL` (14) frames.
+* **Glide:** it leaves at `BOMB_ANGLE` below level, 10° (7 of the angle's
+  1.4° steps: 9.8°), keeps its speed, and every `BOMB_STEEPEN` (5) frames
+  dives one step steeper (`bomb_steer`: the low byte of `B_PIT` counts the
+  frames; its direction afresh, `rnd_dir`), to 79°, until it hits a
+  building, a monster or the ground (`B_KIND` = `BK_BOMB`). From 15 m,
+  hovering, it lands about 710 units ahead 39 frames later, at about 18°.
+* **Drawing:** the rocket's white streak (`draw_rocket`) without its
+  yellow trail, 2 pixels wide.
+* **Heights:** a round's height (`b_y_at`) rounds each frame's drop to the
+  nearest unit. Truncated, a slow round lost up to a unit a frame: the
+  bomb's glide came out at half its angle.
+* **Blast:** `rocket_blast`: `BOMB_DMG` (30) to everything within `BOMB_R`
+  (2 tiles, 512 units) on each of the x, y and z axes: monsters, humans,
+  the terrace, barricades and the landing pad, and the VTOL (`rb_vtol`).
+  The missile's boom, and `BOMB_PARTS` (30) orange particles.
+* **Danger:** hovering at 15 m, the bomb lands beyond the blast's reach.
+  Flying on after it, the VTOL closes the gap, so it can be inside the
+  blast and take 30. Low down (40 units up), the bomb lands about 180 units
+  ahead, well within reach.
+
 ### Damage
 Weapons do damage in hit points:
 
@@ -1039,6 +1109,7 @@ Weapons do damage in hit points:
 | Pulse laser (`LASER_DMG`) | 1 per beam frame on a target |
 | Rocket blast (`BLAST_DMG`) | 20 to everything in range |
 | Missile blast (`MISSILE_DMG`) | 15 to everything within 1.0 tile |
+| Bomb blast (`BOMB_DMG`) | 30 to everything within 2 tiles, the VTOL too |
 | Autocannon shell burst (`AUTOCANNON_DMG`) | 4 to everything within 3 m |
 | Proximity shell burst (`PROX_DMG`) | 3 to everything within 2 m |
 
@@ -1427,7 +1498,7 @@ NextReg select alone, so this still works):
 | `htabs.asm` | generated: `hztab` (horizon row per pitch) and `htab` (building height per map code), resident |
 | `city_map.asm` | generated: the constants every city shares: the base and perimeter wall (`PAD_*`, `TERRACE_*`, `BASE_YAW`, `WALL_FAMILY`). The maps themselves are in the city files |
 | `l2_pallets.asm` | generated: checks on the fixed Layer 2 colour slots. The palettes themselves are in the city files |
-| `gentables.py` | generates `sin_tables.asm`, `htabs.asm`, `city_map.asm` and `l2_pallets.asm` (above), the data files in `ZPDATA/` (cities and levels), `tables_city.inc` (reciprocal, log2, used corners) and `tables_hspr.inc` (the human status hardware sprite patterns) |
+| `gentables.py` | generates `sin_tables.asm`, `htabs.asm`, `city_map.asm` and `l2_pallets.asm` (above), the data files in `ZPDATA/` (cities and levels), `tables_city.inc` (reciprocals, log2, used corners) and `tables_hspr.inc` (the human status hardware sprite patterns) |
 | `layer2_cls.asm` | zxnDMA equates, the fill command block and `dma_fill` (resident, in the main page): used by `clear_screen`, the occlusion buffer's reset (`occ_begin`), `menu_clear` and `ula_init` |
 | `tools/nexsim.py` | small headless Z80N emulator used for testing: dumps every flipped frame to PNG and counts T-states per routine |
 | `build.bat` | build script: the generators, sjasmplus, then the regression tests |
@@ -1497,6 +1568,9 @@ $E000-$FFFF  core function page, swapped with NextReg $57 (CODE_MMU):
   * Nothing in step 3 uses the ULA screen. The video hardware shows it
     from bank 5 whatever the CPU has mapped, so it stays on screen.
   * The interrupt routine uses only slots 1 and 5, so interrupts stay on.
+    It must never use the alternate registers either: the cell walks keep
+    their place in HL', DE' through the whole drawing (see "City drawing
+    (2026-11-03)" under "Performance").
   * Both pages are mapped together, so their code and variables call and
     use each other directly. Their variables stay in the city page.
   * The cost is 2 `nextreg`s a frame (40 T).
@@ -1944,7 +2018,8 @@ pad in the centre, and the perimeter wall.
 
     | Salvage | Reward |
     |---------|--------|
-    | 10, 40, 90 | laser |
+    | 10, 90 | laser |
+    | 40 | bomb (was a laser) |
     | 65 | laser and night vision, monochrome |
     | 20, 50, 75, 95 | chain gun |
     | 30, 60, 80 | rocket pod |
@@ -1959,7 +2034,12 @@ pad in the centre, and the perimeter wall.
     | 115, 130, 135, 140, 145 | missile pod and full repair |
     | 150, 155, ... | full repair |
 
-    `newGame` clears the salvage and the stock.
+    `newGame` clears the stock and sets the salvage to `START_SALVAGE` (0;
+    raised only to test the rewards). Rewards at or below the starting
+    salvage are never given. With `DEBUG_UNLOCK_ALL` defined (a test
+    setting: comment it out for a release), a new game starts with every
+    upgrade: the booster (full), the vertical thrusters and all three
+    vision modes.
   * **Load-out screen (`loadout_screen`, loadout.asm, `PAGE_LOADOUT` page
     32 in slot 6):** before the first level (`newGame` ends with `jp
     loadout_go`) and after each LEVEL COMPLETE, `loadout_go` (resident)
@@ -2325,7 +2405,7 @@ view pixel-identical to before, also with interrupts (see "Interrupts").
 in level flight, up to 21 by the occlusion pre-test (about 5,000 T each, up
 to 9% at street level, mostly its column-by-column cover check). So:
 * `draw_bld` does the frustum test first, from the cell's centre alone
-  (`row_x`, `row_z1`, radius `BLD_R`), before reading its colour and height
+  (the walk's X, Z1, radius `BLD_R`), before reading its colour and height
   or setting up its corners: the same test on the same numbers.
 * The occlusion cover buffer has a coarse partner, `OCC_YBUF8`: per 8
   columns, a bound at least the most of their 8 cover rows. `occ_hidden`
@@ -2397,6 +2477,57 @@ against the first profile (ten views: 17,039,249 → 15,564,686 T).
     * `clip_poly` swaps its own buffers;
     * four unused variables (`pj_x`, `pj_y`, `pj_sh`, `pj_r`) were removed.
   * About 10 bytes of the page were left. (Since then the DMA fill moved to the main page and part of the city code to a second page, `city2.asm`: see "Code pages".)
+
+**City drawing (2026-11-03):** 15.5% off the frame over the ten views
+(20,774,778 → 17,564,747 T): level flight 1,867K → 1,541K T a frame (15.0
+→ 18.2 fps), pitched 2,422K → 2,079K (11.6 → 13.5 fps). Every view
+pixel-identical to before, and each change also compared with the build
+before it over 151 random views with the camera over a road (every level's
+city): identical.
+* **Street dots** (`draw_dots`, 13% of a frame before, 4–5% now): a dot is
+  worked out only at a corner whose four cells are all open (road, or out of
+  bounds). A corner a building, terrace or pad cell touches is always drawn
+  over by it (its faces cover their own corners; the box hides those behind
+  it): over the ten views all 551 such dots drawn were covered.
+  * The four cells are read as two pairs, each shared with the next corner;
+    away from the map's edges with two pointers and no bounds checks.
+  * An open corner's (X, Z1) is its row's first corner's + k (cosY, sinY),
+    k its column (`kmul`): exactly the old step-by-step sums. The row's
+    first corner is rotated only if the row has an open corner.
+  * In level flight the frustum cull skips its multiply (`cull_c` is
+    exactly 1.0).
+  * Compared with drawing every corner (the test switch `DOTS_ALL`) over 227
+    random views: 55 differ, by 1–5 pixels, each a dot that peeked a pixel
+    out from the foot of a building corner (the dot's and the building's
+    corner are worked out differently).
+* **Cell walk** (`draw_row`, `occ_row`): the cell's yaw-space centre (X, Z1)
+  lives in the alternate registers HL', DE' for the whole walk (nothing else
+  uses the alternate set: the interrupt routine must not either), stepped by
+  (cosY, sinY) patched into the steps each frame (`walk_patch`); `draw_bld`
+  reads it from there. `draw_cell` finds its map byte from the row's base
+  (`row_base`, `cell_row`) rather than j × 64 + i. The occlusion walk gets
+  to the camera column with one exact multiply (`walk_back`, `walk_fwd`)
+  rather than up to 8 single steps.
+* **Corners** (`VBOX`, `VBOX0`, zpolice.asm): the 8 corners a component at a
+  time, the sums the corners share made once in registers; a component of
+  the vertical edge that is 0 (X always, Z in level flight) copies the
+  bottom corners to the top. The edge vectors are read from `vecs0` itself
+  (no copy a building).
+* **`div8`** (a sloped edge's x step): by reciprocal, q = (A × R) >> 16 with
+  R = ⌈65536 / C⌉ (`rcp8`, gentables.py, which checks it exact for every A
+  0–255 and C 2–127), and the remainder A − qC: about 180 T rather than 410.
+* **Occlusion records** (`occ_record`): the corners copied by one 128-byte
+  DMA transfer (`occ_dma`) rather than 72 `LDI`s, the DMA then put back as
+  the spans need it.
+* **`scale_comp`**: `zpatch` patches the barrel shift's count and its opcode
+  (`BSRL` or `BSLA`, `OP_BSRL`, `OP_BSLA`), so the shift runs straight
+  through (a right shift by 0 for a Z already normalised).
+* Looked at and not used: the alternate registers in the span filler, the
+  edge walker and the occlusion tests (an `EXX` costs more than the memory
+  traffic it would save there), and reusing the buildings' projected
+  corners for the dots (the roads aren't drawn as polygons, so no road
+  corner is ever projected; the building corners that are, are exactly the
+  dots the buildings cover).
 
 ## Tuning
 
@@ -2496,6 +2627,7 @@ by playing doesn't change the results.
 | `test_save.py` | CONTINUE without a save game stays on the menu; S on the pause screen saves, and CONTINUE brings back the level, weapons, stock, hit points, salvage and booster |
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
+| `test_vision.py` | each level's vision palettes load; N steps through the modes the VTOL has (all three, or thermal only), each one's palette swapped in, and does nothing with none; in a vision mode a human is drawn from the vision set |
 | `test_humans.py` | a waiting human stands while the VTOL is far off and waves when it's near; on the road it flees a monster along the road, taking the open way when one is blocked; on a roof it never flees |
 
 **When the picture is meant to change** (the renderer, the figures, level

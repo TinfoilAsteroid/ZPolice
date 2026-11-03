@@ -18,6 +18,15 @@
 
 ;==============================================================================
 ; Street intersection markers - one dot per grid corner near the camera
+; whose 4 cells are all open: no building, terrace or pad cell touches it
+; (out of bounds counts as open: it is never drawn).  A corner a building
+; touches is always drawn over by it (its faces cover their own corners, and
+; the box hides those behind it), so it isn't worked out at all.
+;   A row's corners have cells j-1 above and j below; each corner shares its
+; left pair of cells with the corner before, so one pair is read a corner.
+; An open corner's (X, Z1) is its row's first corner's (worked out once, by
+; full rotation, only if the row has an open corner) + k (cosY, sinY), k its
+; column in the row: exactly what stepping +256 world units k times gives.
 ;==============================================================================
 draw_dots:
         ld a,(cz)
@@ -30,13 +39,191 @@ draw_dots:
         ld (dot_rows),a
 .row:   ld a,(dot_j)
         cp GRID+1
-        jr nc,.nrow
-        ; first corner of the row by full rotation, then step along x:
-        ; +256 world units in x adds exactly (cosY, sinY) to (X, Z1)
+        jp nc,.nrow
+        ; the rows of cells above and below the corners (0: off the map)
+        ld hl,0
+        or a
+        jr z,.pa                        ; j = 0: none above
+        dec a
+        ld l,a
+        ROWOFS
+        ld de,city_map
+        add hl,de
+.pa:    ld (dot_pa),hl
+        ld hl,0
+        ld a,(dot_j)
+        cp GRID
+        jr nc,.pb                       ; j = GRID: none below
+        ld l,a
+        ROWOFS
+        ld de,city_map
+        add hl,de
+.pb:    ld (dot_pb),hl
         ld a,(cx)
         ld hl,dot_r
         sub (hl)
         ld (dot_i),a
+        ld (dot_i0),a
+        xor a
+        ld (dot_k),a
+        ld (dot_rs),a                   ; (the row's start: not worked out)
+        ld a,(dot_r)
+        add a,a
+        add a,2
+        ld (dot_cols),a                 ; corners in the row
+    IFNDEF DOTS_ALL
+        ; Away from the map's edges (both rows of cells on the map, and the
+        ; row's cell columns i0-1 .. i0+cols-1): the cells walked with two
+        ; pointers, no bounds to check (the usual case)
+        ld hl,(dot_pa)
+        ld a,h
+        or a
+        jr z,.slow
+        ld hl,(dot_pb)
+        ld a,h
+        or a
+        jr z,.slow
+        ld a,(dot_i0)
+        dec a
+        cp GRID
+        jr nc,.slow                     ; (the first cell column: before 0)
+        ld e,a
+        ld a,(dot_cols)
+        ld b,a                          ; B = corners left
+        add a,e
+        cp GRID
+        jr nc,.slow                     ; the last past the map
+        ld a,e
+        add hl,a                        ; HL -> cell (i0-1, j) below
+        ex de,hl
+        ld hl,(dot_pa)
+        add hl,a                        ; HL -> cell (i0-1, j-1) above
+        ld c,$FF                        ; C: the left pair open?
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.f0a
+        cp VOID_CODE
+        jr nz,.f0c
+.f0a:   ld a,(de)
+        and CELL_CODE
+        jr z,.fl
+        cp VOID_CODE
+        jr z,.fl
+.f0c:   ld c,0
+.fl:    inc hl                          ; the corner's right pair
+        inc de
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.fa                        ; road above
+        cp VOID_CODE
+        jr nz,.fc                       ; a building above: covered
+.fa:    ld a,(de)
+        and CELL_CODE
+        jr z,.fo
+        cp VOID_CODE
+        jr z,.fo
+.fc:    ld c,0                          ; covered (and the next's left pair)
+        djnz .fl
+        jp .nrow
+.fo:    ld a,c                          ; the right pair open: the corner is
+        ld c,$FF                        ; if its left pair was
+        or a
+        jr z,.fn
+        push hl
+        push de
+        push bc
+        ld a,(dot_cols)
+        sub b
+        ld (dot_k),a                    ; its column in the row
+        call dot_at
+        pop bc
+        pop de
+        pop hl
+.fn:    djnz .fl
+        jp .nrow
+        ASSERT 2*VIEW_R+1 < GRID        ; (a row's cells fit the map)
+.slow:
+    ENDIF
+        ld a,(dot_i)
+        dec a
+        call dot_pair                   ; the first corner's left cells
+        sbc a,a
+        ld c,a                          ; C = $FF: open
+        ld a,(dot_cols)
+        ld b,a                          ; corners in the row
+.col:   ld a,(dot_i)
+        call dot_pair                   ; its right cells (keeps BC)
+        sbc a,a
+        ld e,a
+        and c                           ; both pairs open?
+        ld c,e                          ; (the right pair: the next's left)
+        jr z,.nx
+        ld a,(dot_i)
+        cp GRID+1
+        jr nc,.nx                       ; past the map
+        push bc
+        call dot_at                     ; work it out, plot it if in view
+        pop bc
+.nx:    ld hl,dot_i
+        inc (hl)
+        ld hl,dot_k
+        inc (hl)
+        djnz .col
+.nrow:  ld hl,dot_j
+        inc (hl)
+        ld hl,dot_rows
+        dec (hl)
+        jp nz,.row
+        ret
+
+; A = cell column x: carry set if cells (x, j-1) and (x, j) are both open
+; (none a building, terrace or pad; off the map is open).  Keeps BC.
+; (DOTS_ALL, for testing: every corner open, as before the skip.)
+dot_pair:
+    IFDEF DOTS_ALL
+        scf
+        ret
+    ENDIF
+        cp GRID
+        jr nc,.open                     ; (x = -1 wraps to 255: off the map)
+        ld e,a
+        ld d,0
+        ld hl,(dot_pa)
+        ld a,h
+        or a
+        jr z,.b                         ; no row above
+        add hl,de
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.b                         ; road
+        cp VOID_CODE
+        jr z,.b                         ; out of bounds: not drawn
+        or a                            ; covered (carry clear)
+        ret
+.b:     ld hl,(dot_pb)
+        ld a,h
+        or a
+        jr z,.open                      ; no row below
+        add hl,de
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.open
+        cp VOID_CODE
+        jr z,.open
+        or a
+        ret
+.open:  scf
+        ret
+        ASSERT high city_map != 0       ; (0: no row)
+
+; The open corner dot_k along the row: (X, Z1) = the row's first corner's
+; + dot_k (cosY, sinY) into (t_x, t_z1), then plot it
+dot_at:
+        ld a,(dot_rs)
+        or a
+        jr nz,.st
+        ; the row's first corner (dot_i0, dot_j) by full rotation
+        ld a,(dot_i0)
         ld h,a
         ld l,0
         ld de,(cam_x+1)
@@ -51,42 +238,34 @@ draw_dots:
         sbc hl,de
         ld (t_dz),hl
         call rot_yaw
-        ld (t_x),hl
-        ld a,(dot_r)
-        add a,a
-        add a,2
-        ld (dot_cols),a
-.col:   ld a,(dot_i)
-        cp GRID+1
-        call c,plot_dot
-        ld hl,(t_x)
-        ld de,(cos_y)
+        ld (dot_x0),hl
+        ld hl,(t_z1)
+        ld (dot_z0),hl
+        ld a,1
+        ld (dot_rs),a
+.st:    ld hl,(cos_y)
+        call dot_kmul
+        ld de,(dot_x0)
         add hl,de
         ld (t_x),hl
-        ld hl,(t_z1)
-        ld de,(sin_y)
+        ld hl,(sin_y)
+        call dot_kmul
+        ld de,(dot_z0)
         add hl,de
         ld (t_z1),hl
-        ld hl,dot_i
-        inc (hl)
-        ld hl,dot_cols
-        dec (hl)
-        jr nz,.col
-.nrow:  ld hl,dot_j
-        inc (hl)
-        ld hl,dot_rows
-        dec (hl)
-        jr nz,.row
-        ret
+        ; fall through
 
 ; Plot the ground point (t_x, t_z1)
 plot_dot:
         ld hl,(t_x)
         ld (tmpv+0),hl
         call abs_hl
+        ld a,(pitch)
+        or a
+        jr z,.lv                        ; level flight: cull_c is exactly 1.0
         ld de,(cull_c)
         call fmul
-        ld de,(t_z1)
+.lv:    ld de,(t_z1)
         or a
         sbc hl,de
         ret p                           ; outside horizontal frustum / behind
@@ -106,6 +285,18 @@ plot_dot:
         ld (hl),DOT_COL
         ret
 
+; HL = v -> HL = v * dot_k, modulo 65536 (as v added dot_k times)
+dot_kmul:
+        ld a,(dot_k)
+        jp kmul                         ; (city.asm)
+
+dot_pa:     dw 0                        ; draw_dots: the row of cells above
+dot_pb:     dw 0                        ;   and below the corners (0: none),
+dot_i0:     db 0                        ;   the row's first corner column,
+dot_k:      db 0                        ;   the corner's column in the row,
+dot_rs:     db 0                        ;   1: its start worked out,
+dot_x0:     dw 0                        ;   its first corner's X, Z1
+dot_z0:     dw 0
 ;==============================================================================
 ; Rounds and the laser beam (`bullets`, laser_rec; moved by weapons.asm): a
 ; line along the path each covered this frame, from where it started to
@@ -122,11 +313,13 @@ draw_bullets:
         or a
         jr z,.nx
         ld a,(ix+B_KIND)
+        cp BK_BOMB
+        jr z,.rkt                       ; a bomb: as a rocket
         cp BK_ROCKET
         jr c,.rnd                       ; a round (or an autocannon shell)
         cp BK_MISSILE+1
         jr nc,.rnd
-        call draw_rocket                ; a rocket or a missile
+.rkt:   call draw_rocket                ; a rocket, a missile or a bomb
         jr .nx
 .rnd:   ld a,(ix+B_STATE)
         cp 3                            ; 3: laser beam
@@ -166,8 +359,9 @@ draw_bullets:
         ret
 
 ; Rocket IX: a white streak ROCKET_LEN (1 m) long from its head back along
-; its path, then a yellow trail to ROCKET_TRAIL (1.5 m) behind the head.
-; Drawn only when every point drawn is in view (it's tiny: no clipping).
+; its path, then a yellow trail to ROCKET_TRAIL (1.5 m) behind the head.  A
+; bomb (BK_BOMB): the streak only, no trail, 2 pixels wide.  Drawn only when
+; every point drawn is in view (it's tiny: no clipping).
 draw_rocket:
         push ix
         pop hl
@@ -184,6 +378,9 @@ draw_rocket:
         ld (rk_sx),a
         ld a,c
         ld (rk_sy),a
+        ld a,(ix+B_KIND)                ; a bomb: no trail
+        cp BK_BOMB
+        jr z,.white
         ld a,ROCKET_TRAIL               ; the end of the trail
         call rk_back
         call bul_cam
@@ -212,6 +409,22 @@ draw_rocket:
         ld h,a
         ld a,ROCKET_COL
         ld (line_col),a
+        push de
+        push hl
+        call draw_line
+        pop hl
+        pop de
+        ld a,(ix+B_KIND)                ; a bomb: twice as wide, the same
+        cp BK_BOMB                      ; line a pixel to the right
+        ret nz
+        ld a,l
+        inc a
+        ret z                           ; (at the right edge)
+        ld l,a
+        ld a,e
+        inc a
+        ret z
+        ld e,a
         jp draw_line
 
 ; A = distance d (units) -> HL -> rk_pt = rocket IX's head - d * (sin, slope,
@@ -595,20 +808,23 @@ occ_cells:
         djnz .n
         ret
 
+; One row front to back.  (X, Z1) is the walk's, in HL', DE' (as draw_row's,
+; city.asm), stepped one cell at a time by (cosY, sinY) patched in by
+; walk_patch.  Each half starts where draw_row's does and gets to the camera
+; column by k steps at once (walk_back, walk_fwd: exactly k single steps).
 occ_row:
         ld a,(cell_j)
         cp GRID
         ret nc
-        ; right half, as draw_row: start at cx+R, step down to cx
+        call row_base
+        ; right half, as draw_row: start at cx+R, back R cells to cx
         ld a,(cx)
         ld hl,view_r
         add a,(hl)
         ld (cell_i),a
         call row_start
         ld a,(view_r)
-        ld b,a
-.d:     call occ_stepm
-        djnz .d
+        call walk_back
         ld a,(cx)
         ld (cell_i),a
         call try_cell                   ; camera column first
@@ -617,11 +833,18 @@ occ_row:
 .r:     push bc
         ld hl,cell_i
         inc (hl)
-        call occ_stepp
+        exx                             ; one cell +x
+.cp:    ld bc,0                         ; (cosY: walk_patch)
+        add hl,bc
+        ex de,hl
+.sp:    ld bc,0                         ; (sinY)
+        add hl,bc
+        ex de,hl
+        exx
         call try_cell                   ; then cx+1 .. cx+R
         pop bc
         djnz .r
-        ; left half, as draw_row: start at cx-R, step up to cx-1
+        ; left half, as draw_row: start at cx-R, on R-1 cells to cx-1
         ld a,(cx)
         ld hl,view_r
         sub (hl)
@@ -629,9 +852,7 @@ occ_row:
         call row_start
         ld a,(view_r)
         dec a
-        ld b,a
-.u:     call occ_stepp
-        djnz .u
+        call walk_fwd
         ld a,(cx)
         dec a
         ld (cell_i),a
@@ -642,34 +863,62 @@ occ_row:
 .l:     push bc
         ld hl,cell_i
         dec (hl)
-        call occ_stepm
+        exx                             ; one cell -x
+.cm:    ld bc,0                         ; (cosY)
+        or a
+        sbc hl,bc
+        ex de,hl
+.sm:    ld bc,0                         ; (sinY)
+        or a
+        sbc hl,bc
+        ex de,hl
+        exx
         call try_cell
         pop bc
         djnz .l
         ret
+        ASSERT VIEW_R >= 2              ; (view_r - 1 > 0: the djnz counts)
 
-; One cell +x / -x in yaw space: (X, Z1) +/-= (cosY, sinY).  Keeps B.
-occ_stepp:
-        ld hl,(row_x)
-        ld de,(cos_y)
-        add hl,de
-        ld (row_x),hl
-        ld hl,(row_z1)
-        ld de,(sin_y)
-        add hl,de
-        ld (row_z1),hl
+; A = k: the walk's (X, Z1) (HL', DE') + k (cosY, sinY), or - for
+; walk_back: the same as k single steps (kmul's products are modulo 65536,
+; as the steps' sums are)
+walk_fwd:
+        ld b,a
+        ld hl,(cos_y)
+        call kmul                       ; (keeps BC)
+        push hl                         ; k cosY
+        ld a,b
+        ld hl,(sin_y)
+        call kmul
+        push hl                         ; k sinY
+        exx
+        ex de,hl
+        pop bc
+        add hl,bc                       ; Z1 + k sinY
+        ex de,hl
+        pop bc
+        add hl,bc                       ; X + k cosY
+        exx
         ret
-occ_stepm:
-        ld hl,(row_x)
-        ld de,(cos_y)
+walk_back:
+        ld b,a
+        ld hl,(cos_y)
+        call kmul
+        push hl                         ; k cosY
+        ld a,b
+        ld hl,(sin_y)
+        call kmul
+        push hl                         ; k sinY
+        exx
+        ex de,hl
+        pop bc
         or a
-        sbc hl,de
-        ld (row_x),hl
-        ld hl,(row_z1)
-        ld de,(sin_y)
+        sbc hl,bc                       ; Z1 - k sinY
+        ex de,hl
+        pop bc
         or a
-        sbc hl,de
-        ld (row_z1),hl
+        sbc hl,bc                       ; X - k cosY
+        exx
         ret
 
 ; HL -> a city_map byte: list the cell (as its city_col address) if humans
@@ -776,29 +1025,19 @@ occ_record:
 .keep:  pop bc                          ; no bounds: keep, but no cover
         ld a,VIEW_H                     ; (and nothing cut)
         ld (bld_cut),a
-.store: ld de,(occ_rp)
-        ld hl,vtx
-        ; corners: only bytes 0-8 of each 16 are used (X,Y,Z,oc,sx,sy), at
-        ; the same offsets from the record's start (vtx is page aligned, the
-        ; record at +0 or +128 in its page)
-        REPT 8
-        ldi
-        ldi
-        ldi
-        ldi
-        ldi
-        ldi
-        ldi
-        ldi
-        ldi
-        ld a,l
-        add a,7
-        ld l,a
+.store: ; the corners: vtx's 8 x 16 bytes into the record, at the same
+        ; offsets from its start (vtx is page aligned, the record at +0 or
+        ; +128 in its page), by one DMA transfer; then the DMA put back as
+        ; fill_spans needs it (port A the fixed colour byte, length high 0:
+        ; clear_screen.spans).  (Only bytes 0-8 of each corner are used:
+        ; X, Y, Z, oc, sx, sy; the first's 9-15 are written next.)
+        ld hl,(occ_rp)
+        ld (occ_dma_dst),hl
+        ld hl,occ_dma
+        ld bc,occ_dma_n<<8 | IO_DATAGEAR_DMA_PORT
+        otir                            ; (the CPU waits while it copies)
+        ld de,(occ_rp)
         ld a,e
-        add a,7
-        ld e,a
-        ENDR
-        ld a,(occ_rp)
         add a,OR_VIS
         ld e,a
         ld hl,bld_vis                   ; bld_vis .. bld_cut: record order
@@ -815,6 +1054,25 @@ occ_record:
         add hl,de
         ld (occ_rp),hl
         ret
+
+; occ_record's copy: vtx's 128 bytes to the record (occ_dma_dst), memory to
+; memory, both addresses counting up; then port A back on the fixed colour
+; byte and the length's high byte 0, as the spans need (clear_screen.spans)
+occ_dma:    db DMA_DISABLE
+            db DMA_WRO_BLOCK_PORTA_A2B_XFR  ; port A start, length:
+            dw vtx
+            dw 128
+            db DMA_WR1_P1INC_MEMORY         ; port A counts up,
+            db DMA_WR2_P2INC_MEMORY         ; port B counts up
+            db DMA_WR4_CONT_MODE            ; continuous, port B start:
+occ_dma_dst: dw 0
+            db DMA_LOAD, DMA_ENABLE
+            db DMA_WRO_BLOCK_PORTA_A2B_XFR  ; and back: port A, length
+            dw l2_cls_byte
+            dw 0
+            db DMA_WR1_P1FIXED_MEMORY       ; port A fixed
+occ_dma_n   equ $ - occ_dma
+        ASSERT low vtx == 0 && OR_VIS + OR_N <= 16
 
 ; Before the transform: rough screen bounds of the building from its cell
 ; centre (t_x, t_z1; at pitch 0 camera Z = Z1), a circle of radius OCC_R
@@ -1152,21 +1410,28 @@ occ_cut:
 ; fig_draw (zombie page) projects the figure and calls spr_lod for its
 ; size, then spr_draw.
 ;==============================================================================
-        ASSERT GFX_ANIMS*4 <= 256       ; (the purpose table in one 256 bytes)
+        ASSERT GFX_ENTRIES*4 <= 256     ; (the purpose table in one 256 bytes)
+        ASSERT GFX_ENTRIES == 2*GFX_ANIMS   ; (the purposes, their vision set)
         ASSERT low GFX_DIR == 0
 
 ; The level of detail for the figure's distance: fig_anim's frame fig_frame
 ; (wrapped round its frames) at the level whose min_z is the largest not
 ; past Z (zt+4; the levels are listed farthest first, the last's min_z 0).
-; Sets zw, zh, spr_pg and spr_ptr.  Carry set if there are no graphics.
+; In a vision mode (vision_mode not 0) from the vision set: the directory's
+; entries GFX_ANIMS on.  Sets zw, zh, spr_pg and spr_ptr.  Carry set if
+; there are no graphics.
 spr_lod:
         ld a,(gfx_ok)
         or a
         scf
         ret z
         nextreg LOGIC_MMU,PAGE_GFX0     ; the directory
+        ld a,(vision_mode)
+        or a
         ld a,(fig_anim)
-        add a,a
+        jr z,.set
+        add a,GFX_ANIMS                 ; the vision set's
+.set:   add a,a
         add a,a
         ld l,a
         ld h,high GFX_DIR

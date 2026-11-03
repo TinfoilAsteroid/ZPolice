@@ -52,7 +52,9 @@ IM2_ROUTINE     equ ((high im2_table)+2)*$101
 ;------------------------------------------------------------------------------
 ; The interrupt routine, each video frame (50 a second): the engines' sound
 ; (engine_tick) and the sound effects (sfx_tick).  On its own stack: SP may
-; be the span filler's.
+; be the span filler's.  It must never use the alternate registers (EXX,
+; EX AF,AF'): the city's cell walks keep their place in HL', DE' across
+; the whole drawing (draw_row, city.asm).
 ;------------------------------------------------------------------------------
 im2_routine:
         ld (isr_sp),sp                  ; its own stack at once (no PUSH on

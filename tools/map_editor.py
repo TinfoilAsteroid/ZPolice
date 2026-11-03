@@ -57,6 +57,20 @@ when the level starts.  Reset puts a family back to the city's shades; when
 none differs from the city's, Save removes the file (Level > Use the city's
 colours does that for the whole level).
 
+The palettes are shown side by side: Normal, then the vision modes' (Night
+vision green, Night vision mono, Thermal: tools/visionpal.py).  Click a
+palette's title (or a family in it) to show the map in it and edit it with
+"Edit colours...".  The vision palettes are a level's (in city mode they are
+shown, made from the city's, not edited).  Each is generated from the normal
+palette unless the level has its own: "Copy normal" puts the normal colours
+in it, "Convert to green / grey / thermal" turns its colours into the mode's
+(by brightness: shades of green, white to grey, or blues with warmer roofs;
+the HUD's fixed colours kept, the figures' set), and "Generated" puts it back
+to the one made from normal.  Save writes a level's own to
+levels/LEVELnn_NVG.json, _NVM.json, _THM.json (removing it if it's back to
+generated); gentables.py puts them in ZPDATA/LEVELnn.ZPV.  The preview draws
+the view in the palette shown.
+
 Level menu: "Edit a level's map changes" shows the city as one of its levels
 changes it; painting then changes that level only (its CHANGES, at most 64,
 saved to levels/LEVELnn.TXL by Save), not the city.  "Back to the city map"
@@ -84,6 +98,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import citymap as cm
 import levelfile as lf
 import levelpal as lp
+import visionpal as vp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_DIR = os.path.join(ROOT, "maps")
@@ -102,6 +117,12 @@ PAL_GX = 3 * SWATCH + 6                 # a family group's pitch: across,
 PAL_GY = SWATCH + 6                     #   and down
 PAL_W = PAL_COLS * PAL_GX
 PAL_H = (cm.FAMILIES // PAL_COLS) * PAL_GY
+# The palettes side by side: the normal one, then the vision modes'
+# (tools/visionpal.py), each a level's own (LEVELnn_PAL.json,
+# LEVELnn_NVG.json ...) or made from the one before (the city's, generated)
+VISION = vp.MODES[1:]                   # "NVG", "NVM", "THM"
+PAL_TITLES = ["Normal", "Night vision green", "Night vision mono", "Thermal"]
+CONVERT = {"NVG": "Convert to green", "NVM": "Convert to grey", "THM": "Convert to thermal"}
 FLASH_MS = 3000                         # Show bad colours: flash this long,
 FLASH_STEP = 250                        # on / off every this many ms
 TOOLS = [("Building", "bld"), ("Road", "road"), ("Outer wall", "wall"),
@@ -179,6 +200,10 @@ class Editor:
         self.pal = grey_palette()       # as shown: pal_gen with pal_over (or lpal)
         self.lpal = None                # level mode: the level's own palette
                                         #   (256 (r, g, b)), None: the city's
+        self.vpal = {m: None for m in VISION}   # level mode: its vision palettes
+                                        #   (None: generated from the normal one)
+        self.active = tk.IntVar(value=0)        # the palette shown and edited:
+                                        #   0 normal, 1.. VISION's
         self.dirty = False
         self.undo = []                  # changes: lists of (index, code, family)
         self.stroke = None              # the change being made
@@ -298,11 +323,32 @@ class Editor:
         tk.Label(side, text="Height (building)", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(8, 0))
         tk.Scale(side, from_=1, to=15, orient=tk.HORIZONTAL, variable=self.height,
                  length=PAL_W, command=lambda v: self.tool.set("bld")).pack(anchor=tk.W)
-        tk.Label(side, text="Colour family", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(8, 0))
-        self.pcanvas = tk.Canvas(side, width=PAL_W, height=PAL_H,
-                                 bg="#303030", highlightthickness=0)
-        self.pcanvas.pack(anchor=tk.W)
-        self.pcanvas.bind("<Button-1>", self.on_palette)
+        tk.Label(side, text="Colour family (click a palette's title to show and edit it)",
+                 font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(8, 0))
+        pf = tk.Frame(side)
+        pf.pack(anchor=tk.W)
+        self.pcanvases, self.vbuttons, self.vnote = [], [], {}
+        for k, title in enumerate(PAL_TITLES):
+            col = tk.Frame(pf, padx=(0 if k == 0 else 6))
+            col.pack(side=tk.LEFT, anchor=tk.N)
+            tk.Radiobutton(col, text=title, variable=self.active, value=k,
+                           command=self.set_palette).pack(anchor=tk.W)
+            pc = tk.Canvas(col, width=PAL_W, height=PAL_H, bg="#303030", highlightthickness=0)
+            pc.pack(anchor=tk.W)
+            pc.bind("<Button-1>", lambda ev, k=k: self.on_palette(ev, k))
+            self.pcanvases.append(pc)
+            if k:                       # a vision mode's: from the normal one
+                m = VISION[k - 1]
+                bb = tk.Frame(col)
+                bb.pack(anchor=tk.W, pady=(2, 0))
+                b1 = tk.Button(bb, text="Copy normal", command=lambda m=m: self.cmd_vision_copy(m))
+                b2 = tk.Button(bb, text=CONVERT[m], command=lambda m=m: self.cmd_vision_convert(m))
+                b3 = tk.Button(bb, text="Generated", command=lambda m=m: self.cmd_vision_reset(m))
+                for b in (b1, b2, b3):
+                    b.pack(side=tk.LEFT, padx=(0, 2))
+                self.vbuttons += [b1, b2, b3]
+                self.vnote[m] = tk.Label(col, text="", fg="#606060")
+                self.vnote[m].pack(anchor=tk.W)
         self.fam_label = tk.Label(side, text="")
         self.fam_label.pack(anchor=tk.W)
         bf = tk.Frame(side)
@@ -399,26 +445,43 @@ class Editor:
                                          width=2, tags="overlay")
 
     def draw_palette(self):
-        pc = self.pcanvas
-        pc.delete("all")
-        for f in range(cm.FAMILIES):
-            x, y = self.pal_xy(f)
-            for k, e in enumerate(PAL_ORDER):   # dark (base), face, roof
-                pc.create_rectangle(x + k * SWATCH, y, x + (k + 1) * SWATCH, y + SWATCH,
-                                    fill=hex_rgb(self.pal[f * 4 + e]), width=0)
-            if self.pickable(f):        # its SHADE_DARK, to pick: a white border
-                pc.create_rectangle(x - 1, y - 1, x + SWATCH + 1, y + SWATCH + 1,
-                                    outline="white", width=1)
-            else:                       # the wall's, terrace's, pad's: not for picking
-                pc.create_line(x, y + SWATCH, x + 3 * SWATCH, y, fill="#303030", width=2)
-            if self.family_set(f):      # shades set by hand: a mark under it
-                pc.create_line(x, y + SWATCH + 2, x + 3 * SWATCH, y + SWATCH + 2, fill="orange")
-        x, y = self.pal_xy(self.family)
-        pc.create_rectangle(x - 3, y - 3, x + SWATCH + 3, y + SWATCH + 3, outline="yellow", width=2)
+        """The four palettes side by side; the active one's selected family
+        in yellow (the others' in grey)."""
+        act = self.active.get()
+        for pk, pc in enumerate(self.pcanvases):
+            pal = self.palette_of(pk)
+            pc.delete("all")
+            for f in range(cm.FAMILIES):
+                x, y = self.pal_xy(f)
+                for k, e in enumerate(PAL_ORDER):   # dark (base), face, roof
+                    pc.create_rectangle(x + k * SWATCH, y, x + (k + 1) * SWATCH, y + SWATCH,
+                                        fill=hex_rgb(pal[f * 4 + e]), width=0)
+                if self.pickable(f):    # its SHADE_DARK, to pick: a white border
+                    pc.create_rectangle(x - 1, y - 1, x + SWATCH + 1, y + SWATCH + 1,
+                                        outline="white", width=1)
+                else:                   # the wall's, terrace's, pad's: not for picking
+                    pc.create_line(x, y + SWATCH, x + 3 * SWATCH, y, fill="#303030", width=2)
+                if self.family_set(f, pk):  # shades set by hand: a mark under it
+                    pc.create_line(x, y + SWATCH + 2, x + 3 * SWATCH, y + SWATCH + 2, fill="orange")
+            x, y = self.pal_xy(self.family)
+            pc.create_rectangle(x - 3, y - 3, x + SWATCH + 3, y + SWATCH + 3,
+                                outline="yellow" if pk == act else "#909090", width=2)
+        for m in VISION:                # each vision palette: whose, and its buttons
+            if self.level is None:
+                text = "made from the city's (level mode to edit)"
+            elif self.vpal[m] is None:
+                text = "generated from normal"
+            else:
+                text = f"level {self.level}'s own"
+            self.vnote[m].config(text=text)
+        state = tk.NORMAL if self.level is not None else tk.DISABLED
+        for b in self.vbuttons:
+            b.config(state=state)
         notes = {cm.WALL_FAMILY: " (the wall's)"}
         hand = ((", the level's own" if self.level is not None else ", set by hand")
                 if self.family_set(self.family) else "")
-        self.fam_label.config(text=f"family {self.family:02d}{notes.get(self.family, '')}: "
+        self.fam_label.config(text=f"{PAL_TITLES[act]}: family {self.family:02d}"
+                                   f"{notes.get(self.family, '')}: "
                                    f"SHADE_DARK, entry {cm.city_col(self.family)}{hand}")
 
     @staticmethod
@@ -655,10 +718,13 @@ class Editor:
         else:
             self.tool.set(tools[code])
 
-    def on_palette(self, ev):
+    def on_palette(self, ev, pk=0):
         at = self.pal_family(ev.x, ev.y)
         if at is None:
             return
+        if pk != self.active.get():     # a click on another palette: show it
+            self.active.set(pk)
+            self.set_palette()
         f, shade = at
         if f == cm.WALL_FAMILY:
             self.say(f"family {f:02d} is the perimeter wall's: paint the wall with the Outer wall tool")
@@ -843,14 +909,45 @@ class Editor:
         """The city's palette: as generated, with its hand-set shades."""
         return cm.apply_palette(list(self.pal_gen), self.pal_over)
 
-    def ref_palette(self):
+    def normal_palette(self):
+        """The normal palette: the level's own, or the city's."""
+        if self.level is not None and self.lpal is not None:
+            return list(self.lpal)
+        return self.city_palette()
+
+    def generated_vision(self, m):
+        """Vision mode m's palette as gentables.py makes it, from the normal."""
+        return vp.vision(self.normal_palette(), m)
+
+    def palette_of(self, pk):
+        """Palette pk (0 normal, 1.. VISION's): as it is now."""
+        if pk == 0:
+            return self.normal_palette()
+        m = VISION[pk - 1]
+        if self.level is not None and self.vpal[m] is not None:
+            return list(self.vpal[m])
+        return self.generated_vision(m)
+
+    def ref_palette(self, pk=None):
         """What a family's Reset goes back to: the generated palette (the
-        city map), or the city's (a level)."""
+        city map), or the city's (a level); a vision palette's, the one
+        generated from the normal."""
+        pk = self.active.get() if pk is None else pk
+        if pk:
+            return self.generated_vision(VISION[pk - 1])
         return self.city_palette() if self.level is not None else self.pal_gen
 
-    def family_set(self, f):
+    def family_set(self, f, pk=None):
         """Family f's shades are set here: by hand on the city, or differ
-        from the city's in this level's own palette."""
+        from the city's in this level's own palette (a vision palette: from
+        its generated one)."""
+        pk = self.active.get() if pk is None else pk
+        if pk:
+            v = self.vpal[VISION[pk - 1]] if self.level is not None else None
+            if v is None:
+                return False
+            ref = self.ref_palette(pk)
+            return any(tuple(v[f * 4 + k]) != tuple(ref[f * 4 + k]) for k in range(4))
         if self.level is None:
             return f in self.pal_over
         if self.lpal is None:
@@ -859,10 +956,22 @@ class Editor:
         return any(tuple(self.lpal[f * 4 + k]) != tuple(ref[f * 4 + k]) for k in range(4))
 
     def set_family(self, f, shades):
-        """Family f's 3 shades (None: back to the reference's)."""
+        """Family f's 3 shades in the active palette (None: back to the
+        reference's)."""
         ref = self.ref_palette()
         if shades is None:
             shades = [tuple(ref[f * 4 + k]) for k in range(3)]
+        pk = self.active.get()
+        if pk:                          # a vision palette: the level's own
+            m = VISION[pk - 1]
+            if self.level is None:
+                return self.say("the vision palettes are a level's: Level > Edit a level's "
+                                "map changes to edit them")
+            v = self.vpal[m] if self.vpal[m] is not None else self.generated_vision(m)
+            for k, c in enumerate(shades):
+                v[f * 4 + k] = tuple(c)
+            self.vpal[m] = None if [tuple(c) for c in v] == [tuple(c) for c in ref] else v
+            return
         if self.level is None:
             if list(shades) == [tuple(ref[f * 4 + k]) for k in range(3)]:
                 self.pal_over.pop(f, None)      # (as generated: no need to keep it)
@@ -877,11 +986,42 @@ class Editor:
                 self.lpal = None                # (all the city's: none of its own)
 
     def set_palette(self):
-        if self.level is not None and self.lpal is not None:
-            self.pal = list(self.lpal)
-        else:
-            self.pal = self.city_palette()
+        """The map drawn in the active palette (its colours: normal, or a
+        vision mode's)."""
+        self.pal = self.palette_of(self.active.get())
         self.redraw()
+
+    def vision_changed(self, m, what):
+        self.dirty = True
+        self.set_title()
+        self.active.set(VISION.index(m) + 1)
+        self.set_palette()
+        self.say(f"level {self.level}'s {PAL_TITLES[VISION.index(m) + 1].lower()} palette: {what} "
+                 f"(File > Save writes {rel(vp.path_for(LEVEL_DIR, self.level, m))})")
+
+    def cmd_vision_copy(self, m):
+        """A vision palette's Copy normal: the normal palette as it is."""
+        if self.level is None:
+            return self.say("the vision palettes are a level's: Level > Edit a level's map changes")
+        self.vpal[m] = self.normal_palette()
+        self.vision_changed(m, "the normal colours copied in (Convert to make them the mode's)")
+
+    def cmd_vision_convert(self, m):
+        """A vision palette's Convert: its colours as the mode's (green,
+        grey, or thermal: blues, warmer roofs), the fixed ones kept and the
+        figures' set (tools/visionpal.py)."""
+        if self.level is None:
+            return self.say("the vision palettes are a level's: Level > Edit a level's map changes")
+        v = vp.vision(self.palette_of(VISION.index(m) + 1), m)
+        self.vpal[m] = None if v == self.generated_vision(m) else v
+        self.vision_changed(m, "converted" + (" (the same as generated)" if self.vpal[m] is None else ""))
+
+    def cmd_vision_reset(self, m):
+        """A vision palette's Generated: back to the one made from normal."""
+        if self.level is None:
+            return self.say("the vision palettes are a level's: Level > Edit a level's map changes")
+        self.vpal[m] = None
+        self.vision_changed(m, "back to generated from normal (Save removes its file)")
 
     def cmd_palette(self):
         """Edit a colour family's 3 shades (Edit colours...): the city's, or
@@ -951,6 +1091,19 @@ class Editor:
                     messagebox.showwarning("Level palette", f"{rel(ppath)}:\n\n- " + "\n- ".join(errs))
             except (OSError, ValueError) as e:
                 messagebox.showerror("Can't read the level palette", f"{rel(ppath)}: {e}")
+        for m in VISION:                # its vision palettes, hand-tuned ones
+            self.vpal[m] = None
+            vpath = vp.path_for(LEVEL_DIR, lv, m)
+            if os.path.exists(vpath):
+                try:
+                    vd = lp.load(vpath)
+                    errs = lp.problems(lv, vd, self.city)
+                    self.vpal[m] = list(vd["pal"])
+                    pnote += f"; {rel(vpath)}"
+                    if errs:
+                        messagebox.showwarning("Vision palette", f"{rel(vpath)}:\n\n- " + "\n- ".join(errs))
+                except (OSError, ValueError) as e:
+                    messagebox.showerror("Can't read the vision palette", f"{rel(vpath)}: {e}")
         self.undo, self.dirty, self.sel = [], False, None
         self.set_palette()
         self.set_title()
@@ -964,6 +1117,7 @@ class Editor:
             return
         self.cells, self.fams = list(self.base[0]), list(self.base[1])
         self.level = self.base = self.lpal = None
+        self.vpal = {m: None for m in VISION}
         self.undo, self.dirty, self.sel = [], False, None
         self.set_palette()
         self.set_title()
@@ -1014,9 +1168,10 @@ class Editor:
                 js, str(x), str(z), "--heading", str(heading), "--height", str(height), "--out", png]
         if self.level is not None:
             args += ["--level", str(self.level)]
-            if self.lpal is not None:   # (its own colours, saved or not)
-                pj = os.path.join(tmp, "palette.json")
-                lp.save(pj, self.level, self.city, self.lpal)
+            if self.lpal is not None or self.active.get():   # (its own colours, or the
+                pj = os.path.join(tmp, "palette.json")       #   vision palette shown:
+                lp.save(pj, self.level, self.city,           #   saved or not)
+                        self.palette_of(self.active.get()))
                 args += ["--palette", pj]
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.say(f"drawing the view from ({x}, {z}), heading {heading:g}, height {height} "
@@ -1134,6 +1289,15 @@ class Editor:
                 pnote = f" (removed {rel(ppath)}: the city's colours)"
             else:
                 pnote = ""
+            for m in VISION:            # its vision palettes: its own, or none
+                vpath = vp.path_for(LEVEL_DIR, self.level, m)
+                if self.vpal[m] is not None:
+                    lp.save(vpath, self.level, self.city, self.vpal[m])
+                    errs += lp.problems(self.level, lp.load(vpath), self.city)
+                    pnote += f", {rel(vpath)}"
+                elif os.path.exists(vpath):     # generated from normal again
+                    os.remove(vpath)
+                    pnote += f" (removed {rel(vpath)})"
         except (OSError, ValueError) as e:
             return messagebox.showerror("Can't save the level", str(e))
         self.dirty = False
@@ -1203,8 +1367,12 @@ class PaletteDialog:
             self.swatches.append(gen)
         tk.Label(top, text="(set / city's)" if ed.level is not None else "(set / generated)").grid(
             row=5, column=4, columnspan=2)
+        pk = ed.active.get()
         if ed.level is not None:
-            w.title(f"Colour family - level {ed.level}'s own palette")
+            w.title(f"Colour family - level {ed.level}'s own {PAL_TITLES[pk].lower()} palette")
+        elif pk:
+            w.title(f"Colour family - {PAL_TITLES[pk].lower()} (made from the city's: "
+                    "a level's to edit)")
         bf = tk.Frame(w, padx=8, pady=6)
         bf.pack()
         tk.Button(bf, text="Apply", command=self.apply).pack(side=tk.LEFT)
@@ -1248,7 +1416,17 @@ class PaletteDialog:
             hand = "set by hand" if self.ed.family_set(f) else "as generated"
         self.note.config(text=f"  {notes.get(f, 'a building colour')}: {hand}")
 
+    def vision_locked(self):
+        """A vision palette outside level mode: shown, not edited."""
+        if self.ed.active.get() and self.ed.level is None:
+            messagebox.showinfo("A level's", "The vision palettes are a level's own: Level > Edit a "
+                                "level's map changes, then edit them there.", parent=self.win)
+            return True
+        return False
+
     def apply(self):
+        if self.vision_locked():
+            return
         f, sh = self.family(), self.shades()
         bad = [SHADE_NAMES[k] for k, c in enumerate(sh) if cm.is_transparent(c)]
         if bad:
@@ -1258,18 +1436,23 @@ class PaletteDialog:
         self.changed(f"family {f:02d}'s shades {'set' if self.ed.family_set(f) else 'as before'}")
 
     def reset(self):
+        if self.vision_locked():
+            return
         f = self.family()
         self.ed.set_family(f, None)
         self.ed.set_palette()
         self.load()
-        self.changed(f"family {f:02d} back to the {'city' if self.ed.level is not None else 'generated'} shades")
+        back = ("generated" if self.ed.active.get() or self.ed.level is None else "city")
+        self.changed(f"family {f:02d} back to the {back} shades")
 
     def changed(self, what):
         self.ed.dirty = True
         self.ed.set_title()
         self.ed.set_palette()
         self.show()
-        where = (f" in level {self.ed.level}'s own palette" if self.ed.level is not None else "")
+        pk = self.ed.active.get()
+        where = (f" in level {self.ed.level}'s own {PAL_TITLES[pk].lower()} palette"
+                 if self.ed.level is not None else "")
         self.ed.say(what + where + " (File > Save keeps it; build.bat puts it in the game)")
 
 
