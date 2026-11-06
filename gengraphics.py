@@ -135,9 +135,57 @@ def walker(skin, shirt, trousers, shoes, height):
             "walk_rear": {"frames": [lods_of(p, height) for p in rear]}}
 
 
+# The lich: a skeleton in a crown, 16 x 32, its legs in 2 frames.  B bone,
+# d dark grey (shadow), Y gold, y dark gold, R red (eyes, the crown's jewels)
+LICH_TOP_F = ["....Y..YY..Y....", "....YY.YY.YY....", "....YYYYYYYY....", "....yRyyyyRy....",
+              ".....BBBBBB.....", ".....BBBBBB.....", ".....BRBBRB.....", ".....BBBBBB.....",
+              "......BddB......", "......BdBd......", ".......BB.......", "...BBBBBBBBBB...",
+              "..BB.BBBBBB.BB..", "..B..B.BB.B..B..", "..B..BBBBBB..B..", "..B..B.BB.B..B..",
+              "..B..BBBBBB..B..", "..B...B..B...B..", "..B...BBBB...B..", ".BB....BB....BB."]
+LICH_TOP_S = [".....Y.YY.Y.....", ".....YYYYYY.....", ".....YYYYYY.....", ".....yRyyyy.....",
+              "....BBBBBBB.....", "....BBBBBBB.....", "....BRBBBBB.....", "....BBBBBBB.....",
+              ".....BdBBB......", ".....dBBB.......", ".......BB.......", "......BBBB......",
+              ".....BBBBBB.....", "....BBBB.BB.....", "....BBBBBB......", "...BB.BB.BB.....",
+              "...B.BBBBB......", "..BB..B.BB......", "..B...BBB.......", ".BB....BB......."]
+LICH_LEGS_F = [["......BBBB......", ".....BBBBBB.....", ".....BB..BB.....", ".....B....B.....",
+                ".....B....B.....", ".....B....B.....", "....BB....B.....", "....B.....B.....",
+                "....B.....BB....", "....B......B....", "...BB......BB...", "...BBB.....BBB.."],
+               ["......BBBB......", ".....BBBBBB.....", ".....BB..BB.....", ".....B....B.....",
+                ".....B....B.....", ".....B....B.....", ".....B....BB....", ".....B.....B....",
+                "....BB.....B....", "....B......B....", "...BB......BB...", "..BBB.....BBB..."]]
+LICH_LEGS_S = [["......BBB.......", ".....BBBBB......", ".....BB.BB......", "....BB...B......",
+                "....B....BB.....", "....B.....B.....", "...BB.....B.....", "...B......BB....",
+                "...B.......B....", "..BB.......B....", "..B........BB...", ".BBB.......BBB.."],
+               ["......BBB.......", ".....BBBBB......", "......BBB.......", "......BB........",
+                "......BB........", ".......B........", ".......BB.......", "........B.......",
+                "........B.......", "........BB......", ".........B......", ".......BBBB....."]]
+LICH_COL = {".": 0, "B": 25, "d": 4, "Y": 16, "y": 17, "R": 11}
+
+
+def lich_lods(art):
+    """The levels of detail of a 16 x 32 lich frame."""
+    px = [[LICH_COL[ch] for ch in row] for row in art]
+    lods = []
+    for k, (w, h) in enumerate([(16, 32), (12, 24), (8, 16), (6, 12), (3, 6)]):
+        p = px if k == 0 else sf.shrink(px, w, h)
+        lods.append({"min_z": 0 if k == 0 else None, **sf.from_pixels(p)})
+    return {"lods": lods}
+
+
+def lich_figure():
+    front = [LICH_TOP_F + legs for legs in LICH_LEGS_F]
+    side = [LICH_TOP_S + legs for legs in LICH_LEGS_S]
+    rear = [[row.replace("R", "B").replace("d", "B")[::-1] for row in f] for f in front]
+    return {"walk_front": {"frames": [lich_lods(f) for f in front]},
+            "walk_side": {"frames": [lich_lods(f) for f in side]},
+            "walk_rear": {"frames": [lich_lods(f) for f in rear]}}
+
+
 def default_figure(fig):
     H = sf.figure_height(fig)
-    if fig == "zombie":
+    if fig == "lich":
+        anims = lich_figure()
+    elif fig == "zombie":
         anims = walker(8, 14, 15, 5, H)
     elif fig == "ghoul":
         anims = walker(26, 22, 27, 5, H)

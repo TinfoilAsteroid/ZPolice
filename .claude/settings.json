@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Richard/AppData/Local/Temp/claude/518c3351647f351f/4f7589a0-7fa6-4740-9680-098a7fb785ca/scratchpad/**)",
+      "Bash(python -)",
+      "Bash(python ed1.py)"
+    ]
+  }
+}

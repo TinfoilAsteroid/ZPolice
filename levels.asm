@@ -40,7 +40,11 @@ LV_SIZE         equ LV_WAVE_DATA+LV_MAX_WAVES*LV_WAVE_REC   ; 113 bytes
 SPEC_GHOST      equ 0
 SPEC_BANSHEE    equ 1
 SPEC_GHOUL      equ 2
-SPEC_IDS        equ 3               ; (how many types)
+SPEC_LICH       equ 3
+SPEC_IDS        equ 4               ; (how many types)
+SPEC_CLUSTER    equ 4               ; not a monster: the wave's zombies spawn in
+                                    ; this many clusters (zcluster, zombie.asm)
+        ASSERT SPEC_CLUSTER >= SPEC_IDS ; (spec_wave skips it)
 SPEC_NONE       equ 255
 
 ; -> HL = the current level's record

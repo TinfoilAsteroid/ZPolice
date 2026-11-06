@@ -315,7 +315,11 @@ draw_bullets:
         ld a,(ix+B_KIND)
         cp BK_BOMB
         jr z,.rkt                       ; a bomb: as a rocket
-        cp BK_ROCKET
+        cp BK_FIREBALL
+        jr nz,.nfb
+        call draw_fireball
+        jr .nx
+.nfb:   cp BK_ROCKET
         jr c,.rnd                       ; a round (or an autocannon shell)
         cp BK_MISSILE+1
         jr nc,.rnd
@@ -357,6 +361,71 @@ draw_bullets:
         pop bc
         djnz .lp
         ret
+
+; Fireball IX: a ball of fire 5 pixels across, with a trail back along its
+; path.  Drawn only when its middle is in view, the trail if its end is.
+draw_fireball:
+        push ix
+        pop hl
+        inc hl                          ; head: B_X, B_Y, B_Z
+        call bul_cam
+        ret nz
+        ld (bl_x),a
+        ld a,c
+        ld (bl_y),a
+        ld a,FB_TRAIL
+        call rk_back
+        call bul_cam
+        jr nz,.ball
+        ld e,a
+        ld d,c
+        ld a,(bl_x)
+        ld l,a
+        ld a,(bl_y)
+        ld h,a
+        ld a,FB_TRAIL_COL
+        ld (line_col),a
+        call draw_line
+.ball:  ld a,(bl_x)                     ; (the ball whole, or not at all)
+        sub 2
+        cp 256-4
+        ret nc
+        ld a,(bl_y)
+        sub 2
+        cp VIEW_H-4
+        ret nc
+        ld a,FB_COL
+        ld (line_col),a
+        ld a,(bl_y)                     ; its rows, widest in the middle
+        dec a
+        ld c,1
+        call .row
+        ld a,(bl_y)
+        ld c,2
+        call .row
+        ld a,(bl_y)
+        inc a
+        ld c,1
+        call .row
+        ld a,(bl_y)                     ; and its top and bottom
+        sub 2
+        ld h,a
+        add a,4
+        ld d,a
+        ld a,(bl_x)
+        ld l,a
+        ld e,a
+        jp draw_line
+.row:   ld h,a                          ; row A, C pixels each side
+        ld d,a
+        ld a,(bl_x)
+        ld e,a
+        sub c
+        ld l,a
+        ld a,e
+        add a,c
+        ld e,a
+        jp draw_line
 
 ; Rocket IX: a white streak ROCKET_LEN (1 m) long from its head back along
 ; its path, then a yellow trail to ROCKET_TRAIL (1.5 m) behind the head.  A

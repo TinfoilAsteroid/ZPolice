@@ -28,9 +28,9 @@ import nexsim  # noqa: E402
 FRAME_T = 28_000_000 // 50           # T-states per 50 Hz frame at 28 MHz
 
 
-def load_sym():
+def load_sym(path=os.path.join(ROOT, "zpolice.sym")):
     sym = {}
-    for line in open(os.path.join(ROOT, "zpolice.sym")):
+    for line in open(path):
         m = re.match(r"([\w.]+):\s+EQU\s+0x([0-9A-F]+)", line)
         if m:
             sym[m.group(1)] = int(m.group(2), 16)

@@ -136,7 +136,8 @@ lines.append("")
 #   +6   113  the level record (levels.asm): level, city name (8), zombies a
 #             wave, waves, fast zombies, draw distance (tiles, 2..VIEW_R),
 #             then each wave's specials, LV_MAX_WAVES (10) of 10 bytes: 5
-#             special types (SPEC_IDS: ghost 0, banshee 1, ghoul 2; 255
+#             special types (SPEC_IDS: ghost 0, banshee 1, ghoul 2, lich 3;
+#             4 is CLUSTERS, not a monster: the wave's zombies in that many; 255
 #             none), then how many of each.  Wave 1 is the level's start.
 #   +119 1    number of map changes, then 4 bytes each: x, z, cell code,
 #             city_col (hand-made layout changes for this level)
@@ -273,7 +274,7 @@ FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
     47: ("HUMAN_BLIP", (2, 5, 7)),        # humans on the city map (bright blue)
     51: ("MAP_ZOMBIE_MID", (0, 5, 0)),    # zombie blip shades: mid green
     55: ("MAP_ZOMBIE_DARK", (0, 3, 0)),   #   and dark green
-    91: ("PANEL_L2", (1, 1, 3)),         # the ULA panel colour ($25), on Layer 2
+    91: ("PANEL_L2", (1, 1, 3)),         # (unused: was the ULA panel colour)
     95: ("GAUGE_AMBER", (7, 5, 0)),      # ground height gauge (amber)
     99: ("GHOST_COL", (7, 7, 7)),        # ghosts (white sheet); map blip shade 1
     103: ("MAP_GHOST_MID", (5, 5, 5)),   # ghost map blip shades: light grey
@@ -692,18 +693,22 @@ def level_generate(lv):
     zomb = 10 + 5 * ((lv - 1) % CITY_LEVELS)
     waves = 1 + (lv - 1) // CITY_LEVELS
     fast = min(zomb, (lv + 1) // 2)
-    assert zomb <= 30                  # NZOMB, zombie.asm
+    assert zomb <= 40                  # NZOMB, zombie.asm
     # Specials, wave by wave (wave 1 is the level's start), as the game had
     # them built in: ghosts in wave 1 from level 5 (1, rising to 5); a
     # banshee on each even wave (2 from level 11, 3 from 31); ghouls on each
     # odd wave from level 21 (2 from 30, 3 from 40).  At most NSPEC (8) at
-    # once: 5 ghosts and 3 ghouls in wave 1.
+    # once: 5 ghosts and 3 ghouls in wave 1.  A city's boss, a lich, comes
+    # first (so it always gets a record) in the last wave of its last level.
+    # Every 3rd level, the middle wave's zombies spawn in clusters.
     ghosts = 0 if lv < 5 else min(5, (lv - 3) // 2)
     banshees = 1 if lv <= 10 else 2 if lv <= 30 else 3
     ghouls = 0 if lv < 21 else 1 if lv < 30 else 2 if lv < 40 else 3
     waves_specials = []
     for w in range(1, waves + 1):
         sp = []
+        if w == waves and lv % CITY_LEVELS == 0:
+            sp.append((SPEC_NAMES.index("LICH"), 1))
         if w == 1 and ghosts:
             sp.append((SPEC_NAMES.index("GHOST"), ghosts))
         if w % 2 == 0:
@@ -711,6 +716,8 @@ def level_generate(lv):
         elif ghouls:
             sp.append((SPEC_NAMES.index("GHOUL"), ghouls))
         assert sum(n for _, n in sp) <= 8      # NSPEC, zombie.asm
+        if lv % 3 == 0 and w == (waves + 1) // 2:
+            sp.append((SPEC_NAMES.index("CLUSTERS"), 4))
         waves_specials.append(sp)
     values = (zomb, waves, fast, VIEW_R)
     changes = []                       # (x, z, code, col): none
@@ -945,94 +952,13 @@ print("wrote tables_font.inc")
 
 
 # ---------------------------------------------------------------------------
-# Human status sprites -> tables_hspr.inc (sprites.asm): four 16x16 8-bit
-# hardware sprite patterns, after the HUD's passenger markers.  Pixels are
-# RRRGGGBB (the sprite palette is left as the identity); $E3 is transparent.
-#   0 HSPR_FIELD   waiting in the field, not yet rescued: an empty square
-#   1 HSPR_ABOARD  aboard the VTOL: a person sitting in a chair
-#   2 HSPR_SAVED   rescued: a green person standing
-#   3 HSPR_DEAD    dead: a white person with a red cross over them
-SPR_T, SPR_W, SPR_G, SPR_R, SPR_C = 0xE3, 0xFF, 0x1C, 0xE0, 0x92   # grey chair
-def glyph2x(rows):              # an 8x8 HUD glyph, doubled to 16x16
-    out = []
-    for b in rows:
-        line = "".join("#" if b & (0x80 >> i) else "." for i in range(8))
-        line = "".join(ch * 2 for ch in line)
-        out += [line, line]
-    return out
-HSPR_MAN = glyph2x([0x18, 0x18, 0x7E, 0x18, 0x18, 0x24, 0x24, 0x66])  # HUD man
-HSPR_SEAT = glyph2x([0x00, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x00])  # HUD seat
-HSPR_SIT = [                    # side on, facing right: W person, C chair
-    "................",
-    "......WWW.......",
-    "......WWW.......",
-    "......WWW.......",
-    ".......W........",
-    "..C...WWWWW.....",
-    "..C...WWW..W....",
-    "..C...WWW...W...",
-    "..C...WWW.......",
-    "..C...WWWWWWW...",
-    "..C...WWWWWWW...",
-    "..CCCCCCCCCWW...",
-    "..C.......CWW...",
-    "..C.......C.W...",
-    "..C.......C.WW..",
-    "................",
-]
-def hspr(art, col):
-    return [col.get(ch, SPR_T) for row in art for ch in row]
-dead = hspr(HSPR_MAN, {"#": SPR_W})
-for i in range(16):             # the red cross: both diagonals, 2 pixels thick
-    for x in (i, 15 - i):
-        dead[i * 16 + x] = SPR_R
-        dead[i * 16 + min(15, x + 1)] = SPR_R
-HSPR = [("HSPR_FIELD", hspr(HSPR_SEAT, {"#": SPR_W})),
-        ("HSPR_ABOARD", hspr(HSPR_SIT, {"W": SPR_W, "C": SPR_C})),
-        ("HSPR_SAVED", hspr(HSPR_MAN, {"#": SPR_G})),
-        ("HSPR_DEAD", dead)]
-HSPR_N = len(HSPR)
-
-# Compass bar sprites (hud_sprites.asm), after the human status ones: the
-# letters N, E, S, W (red, the menu font's 5x7 letters doubled, centred),
-# a yellow dot for NE / SE / SW / NW, a small white dot for the 22.5 degree
-# marks between, and a white pointer (the heading) for under the bar.
-SPR_Y = 0xFC                            # yellow
-def letter16(ch):
-    art = [list("." * 16) for _ in range(16)]
-    for r, row in enumerate(FONT5x7[ch]):
-        for c, px in enumerate(row):
-            if px == "#":
-                for dy in (0, 1):
-                    for dx in (0, 1):
-                        art[1 + 2 * r + dy][3 + 2 * c + dx] = "#"
-    return ["".join(row) for row in art]
-def block16(x0, y0, w, h):
-    return ["".join("#" if x0 <= x < x0 + w and y0 <= y < y0 + h else "." for x in range(16))
-            for y in range(16)]
-POINTER = ["......." + "#" * 2 + ".......",
-           "......" + "#" * 4 + "......",
-           "....." + "#" * 6 + ".....",
-           "...." + "#" * 8 + "...."] + ["." * 16] * 12
-HSPR += [("CSPR_N", hspr(letter16("N"), {"#": SPR_R})),
-         ("CSPR_E", hspr(letter16("E"), {"#": SPR_R})),
-         ("CSPR_S", hspr(letter16("S"), {"#": SPR_R})),
-         ("CSPR_W", hspr(letter16("W"), {"#": SPR_R})),
-         ("CSPR_DOT", hspr(block16(6, 6, 4, 4), {"#": SPR_Y})),
-         ("CSPR_TICK", hspr(block16(7, 7, 2, 2), {"#": SPR_W})),
-         ("CSPR_PTR", hspr(POINTER, {"#": SPR_W}))]
-hl = ["; ---- generated by gentables.py - do not edit ----", "",
-      "; sprite bank 0: 16x16 8-bit patterns (RRRGGGBB, $E3 transparent): the",
-      "; human status sprites, then the compass bar's"]
-for n, (name, _) in enumerate(HSPR):
-    hl.append(f"{name:15s} equ {n}")
-hl.append(f"HSPR_COUNT      equ {HSPR_N}      ; the human status ones")
-hl.append(f"SPRB0_PATTERNS  equ {len(HSPR)}     ; all of bank 0's")
-hl.append("hspr_patterns:")
-for name, pix in HSPR:
-    hl.append(f"; {name}")
-    for r in range(16):
-        hl.append("        db " + ",".join(f"${v:02X}" for v in pix[r * 16:r * 16 + 16]))
+# The HUD's hardware sprites -> tables_hspr.inc (sprites.asm): sprites/hud.json,
+# made with tools/hud_sprite_editor.py
+import hudsprites
+hud_sprites = hudsprites.load()
+hud_errs = hudsprites.problems(hud_sprites)
+if hud_errs:
+    raise SystemExit("sprites/hud.json: " + "; ".join(hud_errs))
 with open("tables_hspr.inc", "w") as f:
-    f.write("\n".join(hl) + "\n")
+    f.write(hudsprites.table_text(hud_sprites))
 print("wrote tables_hspr.inc")

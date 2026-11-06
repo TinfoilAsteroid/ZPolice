@@ -5,13 +5,89 @@
 ; table to the hardware; main_loop calls it once a frame, after the flip.
 ;
 ; Sprites used: 0..HUMAN_MAX-1 the humans, CSPR_SPR0.. the compass bar's
-; marks, CSPR_PTR_SPR its pointer.
+; marks, CSPR_PTR_SPR its pointer, FRM_SPR0.. the viewport's frame.
 ;==============================================================================
 
 hud_sprites:
+        ld a,(frm_on)                   ; the frame, once (they stay set)
+        or a
+        call z,frame_spr
         call hum_hud
         call compass_spr
         jp spr_update
+
+;------------------------------------------------------------------------------
+; The viewport's frame: curved corners and edges in hardware sprites, over
+; Layer 2 and the border, so nothing is drawn into the view.  Set once after
+; the sprites are hidden (frm_on; spr_hide_all clears it).  frame_tab: x, y,
+; pattern and flags, then scale across and down: the edges are 1-row patterns
+; stretched, FRM_H across (two at x8 overlapping, 224 pixels) and FRM_V down
+; (two at x4 overlapping, 96).  The panel's bottom corners are rounded too.
+;------------------------------------------------------------------------------
+FRM_SPR0        equ CSPR_PTR_SPR+1  ; the frame's sprites (12)
+FRM_L           equ SPR_SCREEN_X
+FRM_R           equ SPR_SCREEN_X+256-SPR_SIZE
+FRM_T           equ SPR_SCREEN_Y
+FRM_B           equ SPR_SCREEN_Y+VIEW_H-SPR_SIZE
+FRM_PB          equ SPR_SCREEN_Y+192-SPR_SIZE   ; the panel's bottom corners
+FRM_X8          equ 3               ; (scale codes)
+FRM_X4          equ 2
+FRM_REC         equ 8
+
+frame_tab:
+        dw FRM_L, FRM_T
+        db FRM_CRN, 0, 0, 0
+        dw FRM_R, FRM_T
+        db FRM_CRN, SPRF_XMIRROR, 0, 0
+        dw FRM_L, FRM_B
+        db FRM_CRN_P, SPRF_YMIRROR, 0, 0
+        dw FRM_R, FRM_B
+        db FRM_CRN_P, SPRF_XMIRROR|SPRF_YMIRROR, 0, 0
+        dw FRM_L, FRM_PB
+        db FRM_CRN_S, SPRF_YMIRROR, 0, 0
+        dw FRM_R, FRM_PB
+        db FRM_CRN_S, SPRF_XMIRROR|SPRF_YMIRROR, 0, 0
+        dw FRM_L+SPR_SIZE, FRM_T                ; the top edge
+        db FRM_H, 0, FRM_X8, 0
+        dw FRM_R-16*8, FRM_T
+        db FRM_H, 0, FRM_X8, 0
+        dw FRM_L, FRM_T+SPR_SIZE                ; the left edge
+        db FRM_V, 0, 0, FRM_X4
+        dw FRM_L, FRM_B-16*4
+        db FRM_V, 0, 0, FRM_X4
+        dw FRM_R, FRM_T+SPR_SIZE                ; the right edge
+        db FRM_V, SPRF_XMIRROR, 0, FRM_X4
+        dw FRM_R, FRM_B-16*4
+        db FRM_V, SPRF_XMIRROR, 0, FRM_X4
+frame_tab_end:
+FRM_COUNT       equ (frame_tab_end-frame_tab)/FRM_REC
+        ASSERT FRM_SPR0+FRM_COUNT == SPR_COUNT
+
+frame_spr:
+        ld a,1
+        ld (frm_on),a
+        ld ix,frame_tab
+        ld a,FRM_SPR0
+.lp:    push af
+        ld c,(ix+0)
+        ld b,(ix+1)
+        ld e,(ix+2)
+        ld d,(ix+3)
+        ld h,(ix+4)
+        ld l,(ix+5)
+        call spr_set
+        pop af
+        push af
+        ld e,(ix+6)
+        ld d,(ix+7)
+        call spr_scale
+        ld de,FRM_REC
+        add ix,de
+        pop af
+        inc a
+        cp FRM_SPR0+FRM_COUNT
+        jr nz,.lp
+        ret
 
 ;------------------------------------------------------------------------------
 ; The compass bar, across the top of the screen in the top border (sprite
@@ -168,4 +244,5 @@ hum_hud:
 
 
 cs_spr:     db 0                        ; compass_spr: the next mark's sprite
+frm_on:     db 0                        ; 1: the frame's sprites are set
 hh_base:    db 0                        ; hum_hud: the bottom sprite's row

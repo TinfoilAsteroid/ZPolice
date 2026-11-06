@@ -150,6 +150,9 @@ zblip:
         inc a
         ld (ix+14),a
         ld a,(ix+15)                    ; a ghost or banshee: its own shades
+        ld hl,lshades                   ; (a lich: flashing red)
+        cp ZT_LICH
+        jr z,.z
         ld hl,zshades
         cp ZT_GHOST
         jr c,.z
@@ -285,6 +288,7 @@ map_under:
 ; Map data
 ;==============================================================================
 zshades:    db MAP_ZOMBIE, MAP_ZOMBIE_MID, MAP_ZOMBIE_DARK, MAP_ZOMBIE_MID
+lshades:    db MAP_ZOMBIE_ATK, MAP_ZOMBIE_ATK, MAP_BG, MAP_BG
 gshades:    db GHOST_COL, MAP_GHOST_MID, MAP_GHOST_DARK, MAP_GHOST_MID
 bshades:    db BANSHEE_COL, MAP_BANSHEE_MID, MAP_BANSHEE_DARK, MAP_BANSHEE_MID
 mp_addr:    dw ULA_BMP                  ; player dot: ULA byte, mask, flash

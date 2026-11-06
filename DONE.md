@@ -4,6 +4,18 @@ Completed items moved from TODO.md, under the same headings.
 
 ## Graphics
 
+- (Done 2026-11-06: `build.bat release`: a release build with the debug
+  settings off, in a `release/` folder that runs as it stands, with a
+  short manual, `docs/MANUAL.txt`. See README, "Building and running".)
+- (Done 2026-11-06: a HUD sprite editor, `tools/hud_sprite_editor.py`, for the
+  16x16 hardware sprites, now in `sprites/hud.json`. See README, "HUD sprites
+  and their editor".)
+- (Done 2026-11-04: a fancier HUD. The weapon slots show their ammo down a
+  bar, hundreds at the top (INF for infinite, red at 000), their slot number
+  above it if used; trim round the gauges, the weapon slots and the panel's
+  sections; a viewport frame with curved corners, in hardware sprites. See
+  README, the HUD sections.)
+
 - (Done 2026-11-02: a sprite editor for the humans and monsters
   (tools/sprite_editor.py), their graphics as JSON (sprites/), 32 colours of
   their own in every palette (entries 192-223), purposes (zombie walking
@@ -43,6 +55,21 @@ Completed items moved from TODO.md, under the same headings.
   zombie is hit. See README "Sound effects".)
 
 ## Gameplay
+
+- (Done 2026-11-04: zombie clusters. CLUSTERS n on a wave's line in a level
+  file spawns its zombies in n clusters: n parents at random, the rest in
+  turn within 2 tiles of each, on streets. On trial on levels 2 and 4, with
+  40 zombies and 4 clusters; and 4 clusters on the middle wave of every 3rd
+  level. See README "Waves and level progress".)
+
+- (Done 2026-11-04: the boss, a lich: a skeleton in a crown, twice a
+  zombie's height, in the last wave of each city's last level. It walks the
+  streets at 4 times a zombie's speed, its map blip flashing red, with 50
+  hit points + 25 a city. Fireballs at where the VTOL will be (200 m/s),
+  +/-1.5 degrees, within 200 m, every 60 frames, 10 fewer a city, to 10; they
+  burst at a building, the ground, the VTOL or after 200 m, for 10 within
+  5 m to the VTOL, humans and the base, not monsters. See README "Special
+  monsters".)
 
 - (Done 2026-11-03: the linked chain guns. Linked Chain Gun L (salvage 50,
   was a chain gun) fits only slot 4, just left of slot 1 on the HUD;

@@ -10,8 +10,8 @@
 ;                 game_pause), its level at its wave (load_save,
 ;                 continue_game, zpolice.asm); NO SAVED GAME if there's none
 ;   9  Redefine keys -> keydef_screen (keydef.asm)
-; game_over_screen (the landing pad destroyed) shows GAME OVER for 10
-; seconds, then returns here.
+; game_over_screen (the landing pad destroyed) shows GAME OVER until SPACE
+; is pressed, then returns here.
 ;==============================================================================
 
 
@@ -51,8 +51,7 @@ main_menu:
         call menu_print
         jr .loop
 
-; The landing pad has been destroyed: GAME OVER for GAME_OVER_FR frames
-; (10 seconds), then the main menu
+; The game is over: GAME OVER until SPACE is pressed, then the main menu
 game_over_screen:
         ld sp,stack_top
         call menu_clear
@@ -61,39 +60,17 @@ game_over_screen:
         ld c,MENU_TITLE
         ld hl,txt_game_over
         call menu_print
-        ld bc,GAME_OVER_FR
-.w:     push bc
-        call menu_frame
-        call zrand                      ; (keep stirring the seed)
-        pop bc
-        dec bc
-        ld a,b
-        or c
-        jr nz,.w
+        call space_prompt
         jp main_menu
 
 txt_game_over:
         db "GAME OVER", 0
 
-; The level's last wave is wiped out: LEVEL COMPLETE, until SPACE is pressed
-; (newly: one held down for firing as the level ended doesn't count), then
-; the load-out screen and the next level (next_level, zpolice.asm)
-LD_PROMPT_ROW   equ 23              ; "PRESS SPACE TO CONTINUE" (under the
-                                    ; reward lines, SA_ROW0..SA_ROW_MAX)
-level_complete_screen:
-        ld sp,stack_top
-        ld a,(level)                    ; the last level: the whole game
-        cp LEVEL_LAST
-        jp nc,game_complete_screen
-        call menu_clear
-        ld d,8
-        ld e,9
-        ld c,MENU_TITLE
-        ld hl,txt_level_done
-        call menu_print
-        call rearm_all                  ; every weapon's ammo full again
-        call hum_unload_all             ; (human.asm) those aboard: rescued
-        call salvage_award              ; the humans saved: salvage, unlocks
+; "PRESS SPACE TO CONTINUE", and wait until SPACE is pressed (newly: one held
+; down for firing as the screen came up doesn't count)
+LD_PROMPT_ROW   equ 23              ; (under the reward lines,
+                                    ; SA_ROW0..SA_ROW_MAX)
+space_prompt:
         ld de,LD_PROMPT_ROW<<8 | 4
         ld c,MENU_ATTR
         ld hl,txt_continue
@@ -104,13 +81,60 @@ level_complete_screen:
         ld hl,KB_SPACE
         call key_code_pressed
         jr z,.w
+        ret
+
+; The level's last wave is wiped out: LEVEL n COMPLETE, until SPACE is
+; pressed, then the load-out screen and the next level (next_level,
+; zpolice.asm)
+level_complete_screen:
+        ld sp,stack_top
+        ld a,(level)                    ; the last level: the whole game
+        cp LEVEL_LAST
+        jp nc,game_complete_screen
+        call menu_clear
+        ld a,(level)                    ; LEVEL n COMPLETE: its digits (a
+        ld b,'0'-1                      ; level below LEVEL_LAST: 1 or 2)
+.tens:  inc b
+        sub 10
+        jr nc,.tens
+        add a,'0'+10
+        ld c,a
+        ld hl,txt_ld_num
+        ld e,8                          ; (centred)
+        ld a,b
+        cp '0'
+        jr z,.units
+        ld (hl),a
+        inc hl
+        dec e
+.units: ld (hl),c
+        inc hl
+        push de
+        ex de,hl
+        ld hl,txt_ld_end
+        ld bc,TXT_LD_END
+        ldir
+        pop de
+        ld d,8
+        ld c,MENU_TITLE
+        ld hl,txt_level_done
+        call menu_print
+        call rearm_all                  ; every weapon's ammo full again
+        call hum_unload_all             ; (human.asm) those aboard: rescued
+        call salvage_award              ; the humans saved: salvage, unlocks
+        call space_prompt
         ld hl,level
         inc (hl)
         jp loadout_go                   ; (zpolice.asm) the load-out screen,
                                         ; then the next level
 
 txt_level_done:
-        db "LEVEL COMPLETE", 0
+        db "LEVEL "
+txt_ld_num:
+        ds 2+TXT_LD_END                 ; (filled in)
+txt_ld_end:
+        db " COMPLETE", 0
+TXT_LD_END      equ $-txt_ld_end
 txt_continue:
         db "PRESS SPACE TO CONTINUE", 0
         ASSERT LD_PROMPT_ROW > SA_ROW_MAX
@@ -492,7 +516,7 @@ txt_sa_lthrust: db "LATERAL THRUSTERS", 0
 txt_sa_rearm:   db "AMMUNITION REPLENISHED", 0
 
 ; The last level (LEVEL_LAST) complete: CONGRATULATIONS for GAME_DONE_FR
-; frames (10 seconds), then GAME OVER (10 seconds) and the main menu
+; frames (10 seconds), then GAME OVER and the main menu
 GAME_DONE_FR    equ 500             ; 10 s of 50 Hz frames
 game_complete_screen:
         call menu_clear

@@ -12,7 +12,7 @@ building or fixed colour uses: gentables.py puts them in every city's palette
 (and every level's own), so the figures look the same everywhere.
 
 A figure: sprites/NAME.json, one per figure in FIGURES (zombie, ghoul,
-ghost, banshee, human):
+ghost, banshee, human, lich):
 
     {"format": "Z-Police figure", "version": 1, "name": "zombie",
      "height": 26,
@@ -73,6 +73,9 @@ FIGURES = [
                    ("run_side", "running, side on, facing left (mirrored for right)"),
                    ("run_rear", "running, away from the camera"),
                    ("stand", "waiting, the VTOL far off: facing the camera, standing")]),
+    ("lich", 52, [("walk_front", "walking towards the camera"),
+                  ("walk_side", "walking, side on, facing left (mirrored for right)"),
+                  ("walk_rear", "walking away from the camera")]),
 ]
 FIGURE_NAMES = [f for f, _, _ in FIGURES]
 ANIMS = [(f, a) for f, _, anims in FIGURES for a, _ in anims]
@@ -313,7 +316,7 @@ def mirror(px):
 #   core:    the rest (a thin limb, with no core beside it, is core too).
 VISION_ROLES = 3                        # face, core, outline: + 0, 1, 2
 ROLE_FACE, ROLE_CORE, ROLE_OUTLINE = 0, 1, 2
-VISION_BASE = {"human": 1, "zombie": 4, "ghoul": 7, "ghost": 10, "banshee": 13}
+VISION_BASE = {"human": 1, "zombie": 4, "ghoul": 7, "ghost": 10, "banshee": 13, "lich": 16}
 assert max(VISION_BASE.values()) + VISION_ROLES <= COLOURS
 
 

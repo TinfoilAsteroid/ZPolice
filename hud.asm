@@ -75,8 +75,10 @@ ula_palette:
         nextreg $43,%00000000           ; edit ULA palette 1, auto-increment
         nextreg $40,C_YEL               ; ink 2
         nextreg $41,$FC                 ;   yellow
-        nextreg $40,C_BLUE              ; ink 5
-        nextreg $41,$4B                 ;   light blue
+        nextreg $40,C_GROOVE            ; ink 5
+        nextreg $41,$B6                 ;   light grey
+        nextreg $40,C_TRIM              ; ink 1
+        nextreg $41,$0C                 ;   dark green
         nextreg $40,3                   ; ink 3, ink 4
         nextreg $41,$E0                 ;   red
         nextreg $41,$1C                 ;   green
@@ -85,7 +87,7 @@ ula_palette:
         nextreg $41,$FF                 ;   white
         nextreg $40,16                  ; paper 0..4
         nextreg $41,$E3                 ;   transparent (= NextReg $14)
-        nextreg $41,$25                 ;   panel (dark slate)
+        nextreg $41,$6D                 ;   panel (grey)
         nextreg $41,$00                 ;   empty gauge (black, opaque)
         nextreg $41,$E0                 ;   red
         nextreg $41,$1C                 ;   green
@@ -110,7 +112,7 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         call dma_fill
         ld hl,ULA_ATTR+16*32            ; divider: top pixel row of the panel
         ld b,32
-.dv:    ld (hl),P_PANEL<<3 | C_OK
+.dv:    ld (hl),TRIM_ATTR
         inc hl
         djnz .dv
         ld hl,ULA_BMP+$1000             ; char row 16, pixel line 0
@@ -151,6 +153,12 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         ld de,ULA_ROW_INT+INT_COL       ; by draw_integrity)
         ld b,9
         call print_glyphs
+        call panel_trim                 ; (after the labels: it edges them)
+        ld hl,wd_shown                  ; the weapon slots: all to draw
+        ld b,4*WPN_SLOTS
+.ws:    ld (hl),$FF
+        inc hl
+        djnz .ws
         ld a,$FF
         ld (int_shown),a                ; (drawn next frame)
         call map_init
@@ -161,20 +169,179 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
     ENDIF
 
 ;------------------------------------------------------------------------------
-; Weapon slots (placeholders): an 8x16 box for each, 2 character cells on
-; rows WPN_ROW, WPN_ROW+1, at columns WPN_COL0, +2, ... in the order
-; wpn_order (as numbered on keys 1-5: 2 4 1 5 3).  A box is green if its
-; slot holds a weapon, red if it is empty; the selected slot has a white
-; outline.  An empty slot that was asked for flashes amber / red (WFLASH
-; frames each, 3 times, ending red).  Under an occupied slot, on row
-; WPN_ROW+2, the letter of its weapon (wpn_glyph): M, L, C or R.
-; Redrawn every frame.
+; The panel's trim, once a level (all in the ULA bitmap and attributes, so it
+; costs nothing a frame): a second rule under the divider and one along the
+; bottom; a surround for each gauge, its corners left out to round them; a
+; bracket round the weapon slots, and grooves between the panel's sections.
 ;------------------------------------------------------------------------------
-WPN_ATTR_ON     equ C_OK<<3 | 7         ; paper green, ink white (outline)
-WPN_ATTR_OFF    equ C_WARN<<3 | 7       ; paper red
-WPN_ATTR_FLASH  equ C_AMBER<<3 | 7      ; paper amber
+TRIM_ATTR       equ P_PANEL<<3 | C_TRIM ; the green of the divider
+GROOVE_ATTR     equ P_PANEL<<3 | C_GROOVE
+; bitmap address of character row R (in the bottom third), pixel line N
+ULA_B3          equ ULA_BMP+$1000
+        ASSERT MAP_COL == 24
+
+panel_trim:
+        ld hl,ULA_B3+$200               ; the rule: row 16, line 2
+        call .rule
+        ld hl,ULA_B3+7*32+$700          ; the bottom: row 23, line 7
+        call .rule
+        ld hl,ULA_ATTR+23*32            ; (in the same green; the percentage
+        ld b,MAP_COL                    ; colours its own: draw_integrity)
+.ba:    ld (hl),TRIM_ATTR
+        inc hl
+        djnz .ba
+        ld a,SPD_GCOL
+        call gauge_trim
+        ld a,ALT_GCOL
+        call gauge_trim
+        ld a,(boost_fitted)
+        or a
+        ld a,BST_GCOL
+        call nz,gauge_trim
+        ld hl,ULA_B3+$700+WPN_COL0      ; the weapon slots' bracket: its top,
+        call .top
+        ld hl,ULA_B3+(INT_ROW-16)*32+WPN_COL0   ; bottom (line 0 of INTEGRITY's
+        call .top                       ; row, its glyphs' blank line)
+        ld hl,ULA_ATTR+INT_ROW*32+WPN_COL0-1    ; (INTEGRITY: the same green)
+        ld b,2*WPN_SLOTS+1
+.it:    ld (hl),TRIM_ATTR
+        inc hl
+        djnz .it
+        ld a,WPN_COL0-1                 ; and sides
+        ld c,$01
+        ld b,WPN_BAR+2
+        ld e,TRIM_ATTR
+        call .side
+        ld a,WPN_COL0+2*WPN_SLOTS-1
+        ld c,$80
+        ld b,WPN_BAR+2
+        ld e,TRIM_ATTR
+        call .side
+        ld a,8                          ; the grooves
+        ld c,$18
+        ld b,7
+        ld e,GROOVE_ATTR
+        call .side
+        ld a,MAP_COL-2
+        ld c,$18
+        ld b,7
+        ld e,GROOVE_ATTR
+        call .side
+        ld a,MAP_COL-1                  ; the map's edge
+        ld c,$01
+        ld b,7
+        ld e,TRIM_ATTR
+        jr .side
+.rule:  ld b,MAP_COL
+.rl:    ld (hl),$FF
+        inc hl
+        djnz .rl
+        ret
+.top:   ld b,2*WPN_SLOTS-1
+        jr .rl
+.side:  ; column A, from row 17 down B rows: bits C on every line, ink E
+        ld d,a
+        push bc
+        ld hl,ULA_ATTR+17*32
+        add hl,a
+.sa:    ld (hl),e
+        ld a,32
+        add hl,a
+        djnz .sa
+        pop bc
+        ld a,d
+        ld hl,ULA_B3+32
+        add hl,a
+.sr:    push hl
+        ld d,8
+.sl:    ld a,(hl)
+        or c
+        ld (hl),a
+        inc h
+        dec d
+        jr nz,.sl
+        pop hl
+        ld a,32
+        add hl,a
+        djnz .sr
+        ret
+
+; A = a gauge's column: its surround, a pixel line each side of the cell
+gauge_trim:
+        ld c,a
+        ld hl,ULA_B3+$700               ; above it: row 16, line 7
+        add hl,a
+        ld (hl),$FF
+        ld hl,ULA_ROW_LBL               ; below it: the label's blank line
+        add hl,a
+        ld (hl),$FF
+        ld hl,ULA_ATTR+GAUGE_LROW*32    ; (its label the same green)
+        add hl,a
+        ld (hl),TRIM_ATTR
+        ld a,c
+        dec a
+        ld c,a                          ; C = the column on its left
+        ld d,0
+        ld b,GAUGE_H/8
+        ld hl,ULA_B3+32
+        ld a,c
+        add hl,a
+.row:   push bc
+        ld b,8
+        push hl
+.ln:    ld a,(hl)                       ; the left cell's last pixel,
+        or $01
+        ld (hl),a
+        inc l
+        inc l
+        ld a,(hl)                       ; the right cell's first
+        or $80
+        ld (hl),a
+        dec l
+        dec l
+        inc h
+        djnz .ln
+        pop hl
+        ld a,32
+        add hl,a
+        pop bc
+        djnz .row
+        ld hl,ULA_ATTR+17*32
+        ld a,c
+        add hl,a
+        ld b,GAUGE_H/8
+.at:    ld (hl),TRIM_ATTR
+        inc l
+        inc l
+        ld (hl),TRIM_ATTR
+        ld a,30
+        add hl,a
+        djnz .at
+        ret
+
+;------------------------------------------------------------------------------
+; Weapon slots: a column for each, at columns WPN_COL0, +2, ... in the order
+; wpn_order (as numbered on keys 1-5: 2 4 1 5 3).  From the top:
+;   * row WPN_NUM_ROW: its slot number, yellow if selected; none if unused;
+;   * rows WPN_ROW..: a bar 1 character wide and WPN_BAR high, its ammo one
+;     digit a row in black, hundreds at the top (infinite ammo: INF).  Green;
+;     red with no ammo left; black if unused.  An unused slot that was asked
+;     for flashes amber / black (WFLASH frames each, 3 times);
+;   * row WPN_LTR_ROW: the letter of its weapon (wpn_glyph), yellow if
+;     selected.
+; The selected slot also has a yellow line above and below the bar, in the
+; number's and the letter's cells (a cell has one ink: in the bar's they
+; would be black).  Checked every frame, redrawn only when it changes
+; (wd_shown).
+;------------------------------------------------------------------------------
+WPN_ATTR_ON     equ C_OK<<3             ; paper green, ink black
+WPN_ATTR_OUT    equ C_WARN<<3           ; paper red
+WPN_ATTR_OFF    equ P_EMPTY<<3          ; paper black
+WPN_ATTR_FLASH  equ C_AMBER<<3          ; paper amber
+WPN_NUM_ATTR    equ P_PANEL<<3 | 7
+WPN_SEL_ATTR    equ P_PANEL<<3 | C_YEL
 WPN_BMP         equ ULA_BMP + (WPN_ROW/8)*$800 + (WPN_ROW&7)*32 + WPN_COL0
-        ASSERT WPN_ROW/8 == (WPN_ROW+2)/8       ; the 3 rows in one third
+        ASSERT WPN_NUM_ROW/8 == WPN_LTR_ROW/8   ; the rows in one third
         ASSERT WPN_COL0 + 2*(WPN_SLOTS-1) < MAP_COL
 
 draw_wpn:
@@ -208,64 +375,174 @@ draw_wpn:
         add hl,a
         ld c,(hl)                       ; C = its slot (0 = the centre gun)
         ld a,c
+        ld (wd_slot),a
         add a,a
         ld hl,wpn_slots+WPN_TYPE
         add hl,a
         ld a,(hl)
         ld (wd_type),a
-        ld e,WPN_ATTR_ON                ; fitted: green
+        inc hl
+        ld a,(hl)
+        ld (wd_ammo),a
+        ld e,WPN_ATTR_ON                ; what it shows
+        ld a,(wd_type)
+        or a
+        jr z,.em
+        ld a,(wd_ammo)
         or a
         jr nz,.pc
-        ld e,WPN_ATTR_OFF               ; empty: red, or amber while flashing
+        ld e,WPN_ATTR_OUT               ; out of ammo
+        jr .pc
+.em:    ld e,WPN_ATTR_OFF               ; unused, amber while flashing
         ld a,(wd_flash)
         cp c
         jr nz,.pc
         ld e,WPN_ATTR_FLASH
-.pc:    ld a,(wd_col)                   ; the box's two cells
-        ld hl,ULA_ATTR + WPN_ROW*32 + WPN_COL0
+.pc:    ld a,e
+        ld (wd_attr),a
+        ld a,(wpn_sel)
+        sub c
+        ld (wd_sel),a                   ; 0: selected
+        ld a,b                          ; changed since it was drawn?
+        add a,a
+        add a,a
+        ld hl,wd_shown
         add hl,a
-        ld (hl),e
-        ld a,32
-        add hl,a
-        ld (hl),e
-        ld a,(wpn_sel)                  ; outline if selected, else clear
-        cp c
-        ld de,$FF81                     ; D: top / bottom line, E: sides
-        jr z,.bx
-        ld de,0
-.bx:    ld a,(wd_col)
-        ld hl,WPN_BMP
-        add hl,a
-        push hl
-        ld (hl),d                       ; upper cell: top line, then sides
-        ld b,7
-.b1:    inc h
-        ld (hl),e
-        djnz .b1
-        pop hl
-        ld a,32
-        add hl,a
-        push hl
-        ld b,7                          ; lower cell: sides, then bottom line
-.b2:    ld (hl),e
-        inc h
-        djnz .b2
-        ld (hl),d
-        pop hl
-        ld a,32                         ; the cell below: its weapon's letter
-        add hl,a
-        ex de,hl
-        ld a,(wd_type)
-        ld hl,wpn_glyph
-        add hl,a
-        ld a,(hl)
-        call print_glyph_at
+        ld de,wd_type
+        ld bc,4<<8
+.cmp:   ld a,(de)
+        cp (hl)
+        jr z,.same
+        ld (hl),a
+        ld c,1
+.same:  inc de
+        inc hl
+        djnz .cmp
+        ld a,c
+        or a
+        call nz,wpn_draw
         pop bc
         inc b
         ld a,b
         cp WPN_SLOTS
         jr nz,.lp
         ret
+        ASSERT wd_ammo == wd_type+1 && wd_attr == wd_type+2 && wd_sel == wd_type+3
+
+; Draw the weapon slot in wd_type .. wd_sel, column offset wd_col
+wpn_draw:
+        ld a,(wd_col)                   ; the bar's cells
+        ld hl,ULA_ATTR + WPN_ROW*32 + WPN_COL0
+        add hl,a
+        ld a,(wd_attr)
+        ld e,a
+        ld b,WPN_BAR
+.at:    ld (hl),e
+        ld a,32
+        add hl,a
+        djnz .at
+        ld a,(wd_col)                   ; its number and letter: yellow if
+        ld hl,ULA_ATTR + WPN_NUM_ROW*32 + WPN_COL0      ; selected
+        add hl,a
+        ld a,(wd_sel)
+        or a
+        ld a,WPN_NUM_ATTR
+        jr nz,.na
+        ld a,WPN_SEL_ATTR
+.na:    ld (hl),a
+        ld de,(WPN_LTR_ROW-WPN_NUM_ROW)*32
+        add hl,de
+        ld (hl),a
+        ld a,(wd_type)                  ; the number: none if unused
+        or a
+        ld a,GLYPH_SPACE
+        jr z,.ng
+        ld a,(wd_slot)
+        inc a                           ; (keys 1-5; digits are glyphs 0-9)
+.ng:    ld de,-32
+        call .cell
+        call wpn_digits                 ; the bar's digits
+        ld hl,wd_dig
+        ld de,0
+        ld b,WPN_BAR
+.dg:    push bc
+        push de
+        push hl
+        ld a,(hl)
+        call .cell
+        pop hl
+        pop de
+        pop bc
+        inc hl
+        ld a,32
+        add de,a
+        djnz .dg
+        ld a,(wd_type)                  ; its weapon's letter
+        ld hl,wpn_glyph
+        add hl,a
+        ld a,(hl)
+        ld de,WPN_BAR*32
+        call .cell
+        ld a,(wd_sel)                   ; selected: lines above and below
+        or a                            ; (the glyphs' blank lines)
+        ret nz
+        ld a,(wd_col)
+        ld hl,WPN_BMP-32+$700           ; the number's last line,
+        add hl,a
+        ld (hl),$FF
+        ld de,WPN_BAR*32+32-$700        ; the letter's first
+        add hl,de
+        ld (hl),$FF
+        ret
+; Glyph A in the cell DE from the top of this column's bar
+.cell:  ld hl,WPN_BMP
+        add hl,de
+        ex de,hl
+        ld hl,wd_col
+        ld l,(hl)
+        ld h,0
+        add hl,de
+        ex de,hl
+        jp print_glyph_at
+
+; wd_dig = the ammo's WPN_BAR glyphs, hundreds first: INF for infinite ammo,
+; spaces for an unused slot
+wpn_digits:
+        ld hl,wd_dig
+        ld a,(wd_type)
+        or a
+        jr z,.sp
+        ld a,(wd_ammo)
+        cp AMMO_INF
+        jr z,.inf
+        ld b,100
+        call .dig
+        ld b,10
+        call .dig
+        ld (hl),a
+        ret
+.dig:   ld (hl),0                       ; A = A mod B, (HL) = A / B
+.ds:    cp b
+        jr c,.dd
+        sub b
+        inc (hl)
+        jr .ds
+.dd:    inc hl
+        ret
+.sp:    ld a,GLYPH_SPACE
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        ret
+.inf:   ld (hl),GLYPH_I
+        inc hl
+        ld (hl),GLYPH_N
+        inc hl
+        ld (hl),GLYPH_F
+        ret
+        ASSERT WPN_BAR == 3
 
 ;------------------------------------------------------------------------------
 ; Integrity: the VTOL's hit points as a percentage of VTOL_HP, "nnn%" on row
@@ -506,8 +783,14 @@ int_txt:    db 0, 0, 0, GLYPH_PCT       ;   its glyphs: digits, %
 lbl_int:    db GLYPH_I, GLYPH_N, GLYPH_T, GLYPH_E, GLYPH_G, GLYPH_R, GLYPH_I
             db GLYPH_T, GLYPH_Y         ; INTEGRITY
 wd_flash:   db $FF                      ; draw_wpn: the slot flashing amber,
-wd_col:     db 0                        ;   the box's column offset,
-wd_type:    db 0                        ;   and its slot's weapon
+wd_col:     db 0                        ;   the column offset,
+wd_slot:    db 0                        ;   its slot,
+wd_type:    db 0                        ;   and what it shows: its weapon,
+wd_ammo:    db 0                        ;   ammo,
+wd_attr:    db 0                        ;   the bar's colours,
+wd_sel:     db 0                        ;   0: selected
+wd_dig:     ds WPN_BAR                  ; wpn_digits
+wd_shown:   ds 4*WPN_SLOTS              ; each column's, as drawn (ula_init: $FF)
 ; the boxes' slots, left to right (keys 2 4 1 5 3)
 wpn_order:  db 1, 3, 0, 4, 2
         ASSERT $ - wpn_order == WPN_SLOTS

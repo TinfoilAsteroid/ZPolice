@@ -38,11 +38,20 @@
 
         DEVICE ZXSPECTRUMNEXT
         SLDOPT COMMENT WPMEM, LOGPOINT, ASSERTION
+    IFDEF RELEASE
+        CSPECTMAP "release_tmp/zpolice.map"
+    ELSE
         CSPECTMAP zpolice.map
+    ENDIF
         OPT --zxnext=cspect --syntax=a --reversepop
 ;------------------------------------------------------------------------------
 ; Build options
 ;------------------------------------------------------------------------------
+; RELEASE: the build for players (-DRELEASE: build.bat release).  Turns off
+; everything for testing, whatever is set below: the DEBUG_ settings, DRAW_FPS
+; and DOTS_ALL, a START_LEVEL_SET, a START_SALVAGE.  It's assembled into
+; release_tmp/, so the debug build's files (and the tests') stay as they are.
+
 ; DRAW_LINES: outline building faces with EDGE_COL vectors.  Comment it out for solid-colour buildings only; the HUD
 ; is always drawn.  Can also be set from the command line: -DDRAW_LINES
         ;DEFINE DRAW_LINES
@@ -85,6 +94,18 @@
 ; 3D as before.  Comment it out to clip every face in 3D.
 ; Command line: -DCLIP_2D
         DEFINE CLIP_2D
+
+    IFDEF RELEASE
+      IFDEF DRAW_FPS
+        UNDEFINE DRAW_FPS
+      ENDIF
+      IFDEF DOTS_ALL
+        UNDEFINE DOTS_ALL
+      ENDIF
+      IFDEF START_LEVEL_SET
+        UNDEFINE START_LEVEL_SET
+      ENDIF
+    ENDIF
 
         INCLUDE "memory_bank_defs.asm"  ; MMU slots, registers, addresses, pages
         INCLUDE "gfx_ids.inc"           ; the figures' purposes (gengraphics.py)
@@ -212,7 +233,8 @@ WS_LINK_L       equ 1<<WPN_LINK_L   ;   the linked chain guns' own slots
 WS_LINK_R       equ 1<<WPN_LINK_R
 
 ; Machine gun rounds: NBULLETS records of BREC bytes in `bullets`
-NBULLETS        equ 24          ; rounds in flight (the chain gun needs most)
+NFIRE           equ 2           ; the last are a lich's fireballs'
+NBULLETS        equ 24+NFIRE    ; rounds in flight (the chain gun needs most)
 BREC            equ 32
 B_STATE         equ 0           ; 0 free, 1 in flight, 2 hit (shown, then freed),
                                 ; 3 laser beam; bit 7: fresh (fired this frame)
@@ -236,8 +258,10 @@ BK_AUTOCANNON   equ 3           ; an autocannon shell: drawn as a round, bursts
 BK_PROX         equ 4           ; a proximity shell: as autocannon, and bursts
                                 ; passing near a monster (PROX_R)
 BK_BOMB         equ 5           ; a bomb: dives, drawn as a rocket, bursts
+BK_FIREBALL     equ 6           ; a lich's fireball: lich_update, weapons.asm
 B_TGT           equ 27          ; a missile: the monster it tracks ($FF none);
-                                ; a bomb: its length along its path a frame
+                                ; a bomb: its length along its path a frame;
+                                ; a fireball: its frames left
 B_YAW           equ 28          ;   its heading, 8.8 (yaw units: 256 a turn)
 B_PIT           equ 30          ;   and climb, 8.8 signed (as pitch)
 NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
@@ -268,10 +292,10 @@ GUN_TILT_UP     equ 11
 GUN_TILT_DN     equ 32
 GUN_CTR_STEP    equ 2*GUN_TILT_STEP
 SIGHT_MARGIN    equ 6           ; the gunsight's arms stay in the view
-; Integrity panel (hud.asm draw_integrity): under the weapon slots,
+; Integrity panel (hud.asm draw_integrity): under the weapon bars,
 ; "INTEGRITY" on character row INT_ROW, the VTOL's hit points as a
 ; percentage below it (INT_ROW+1)
-INT_ROW         equ 21
+INT_ROW         equ 22
 INT_COL         equ 11              ; the label's column (under the slots)
 INT_PCT_COL     equ 12              ; "nnn%" from this column
 INT_WARN        equ 50              ; below this percentage: amber,
@@ -339,6 +363,22 @@ BOMB_STEEPEN    equ 5           ; frames between steps steeper
 BOMB_R          equ 2*TILE_UNITS    ; 2 tiles (40 m)
 BOMB_DMG        equ 30
 BOMB_PARTS      equ 30
+; A lich's fireballs (lich_update, weapons.asm): at FB_MS, up to FB_RANGE
+; (10 tiles), bursting for FB_DMG within FB_R (5 m) on each axis
+FB_MS           equ 200         ; m/s
+FB_STEP         equ FB_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 182 units/frame
+FB_RANGE        equ 10*TILE_UNITS   ; 200 m: its flight, and the lich's range
+FB_FRAMES       equ (FB_RANGE+FB_STEP/2)/FB_STEP    ; 14
+FB_R            equ 5*TILE_UNITS/TILE_M ; 5 m: 64 units
+FB_DMG          equ 10
+FB_PARTS        equ 15
+FB_DEV          equ 7           ; its spread: 7/256 rad = 1.57 degrees
+FB_HIT_R        equ 24          ; it hits the VTOL this near its path: 1.9 m
+        ASSERT FB_FRAMES <= NFIRE*LICH_RATE_MIN ; (a record free for each shot)
+LICH_HP_HI      equ 23          ; a lich's record: its hit points' high byte,
+LICH_WAIT       equ 24          ;   frames to its next shot,
+LICH_FRAMES     equ 25          ;   frames between shots
+LICH_MOUTH      equ 3*LICH_H/4  ; fireballs start this high: its head
 ; Missile lock (lock_update, weapons.asm): with the missile pod selected, a
 ; square reticule wanders near the view's centre (RET_WANDER_R) until a
 ; monster is seen within LOCK_RANGE
@@ -414,8 +454,8 @@ VTOL_HP         equ 50          ; the VTOL's hit points (ghosts attack it)
 ; At 0 hit points the VTOL is destroyed (vtol_dead): out of control, it
 ; spins DEAD_SPIN (8.8 yaw) a frame as it falls, faster each frame up to
 ; DEAD_FALL_MAX units, until it hits the ground (the road or roof under it).
-; DEAD_PAUSE frames later the game is over: the GAME OVER screen for 10
-; seconds, then the main menu.
+; DEAD_PAUSE frames later the game is over: the GAME OVER screen, then the
+; main menu.
 DEAD_SPIN       equ $0800           ; 8 yaw units a frame: a turn in 32
 DEAD_FALL_MAX   equ 8               ; units a frame (11 m/s at 14 fps)
 DEAD_PAUSE      equ 100             ; frames on the ground before GAME OVER
@@ -444,23 +484,37 @@ START_LEVEL     equ 1
     ENDIF
 ; The salvage a new game starts with (newGame, game_reset).  The rewards at
 ; or below it (salvage_tab, menu.asm) are never given: only totals passed
-; after it count.  0 for a release.
+; after it count.  Always 0 in a release.
+    IFDEF RELEASE
 START_SALVAGE   equ 0
+    ELSE
+START_SALVAGE   equ 0
+    ENDIF
 
 ; DEBUG_UNLOCK_ALL: a new game starts with every upgrade the salvage gives
 ; (game_reset): the booster module (its tank full), the vertical thrusters
-; and all three vision modes.  Weapons: DEBUG_LOADOUT.  Comment it out for a
-; release.  Command line: -DDEBUG_UNLOCK_ALL
+; and all three vision modes.  Weapons: DEBUG_LOADOUT.  Off in a release.
+; Command line: -DDEBUG_UNLOCK_ALL
+    IFNDEF RELEASE
         DEFINE DEBUG_UNLOCK_ALL
+    ENDIF
 
 ; Debug: key 0 kills every monster and rescues every human left, so the
 ; next wave starts (after the last, the level ends); key 9 the same, on to
-; the next city's first level.  0 for a release.
+; the next level.  Off in a release.
+    IFDEF RELEASE
+DEBUG_KILLALL   equ 0
+    ELSE
 DEBUG_KILLALL   equ 1
+    ENDIF
 
 ; Debug: a new game starts with every weapon unlocked and DEBUG_STOCK of each
-; in store, to try them on the load-out screen.  0 for a release.
+; in store, to try them on the load-out screen.  Off in a release.
+    IFDEF RELEASE
+DEBUG_LOADOUT   equ 0
+    ELSE
 DEBUG_LOADOUT   equ 1
+    ENDIF
 DEBUG_STOCK     equ 4
 
 ; Zombies against the base (zombie.asm)
@@ -474,7 +528,6 @@ NBARR           equ 30          ; barricades (terrace away from the base): at
 BARR_REC        equ 3           ;   most this many, each x, z, hit points
                                 ;   (barr_tab; TERRACE_HP each)
 PAD_HP          equ 200         ; and of the landing pad (destroyed: game over)
-GAME_OVER_FR    equ 500         ; game over screen: 10 s of 50 Hz frames
 
 BLD_SIZE        equ 256         ; buildings fill their whole grid cell;
                                 ; streets are the empty cells
@@ -490,6 +543,9 @@ HUD_WARN        equ 19
 DOT_COL         equ 23
 ROCKET_COL      equ EDGE_COL    ; rockets: white streak,
 TRAIL_COL       equ BULLET_COL  ; yellow trail
+FB_COL          equ FIRE_COL2   ; a lich's fireball, and its trail
+FB_TRAIL_COL    equ FIRE_COL6
+FB_TRAIL        equ 26          ; 2 m behind it
 BULLET_COL      equ 31
 LASER_COL       equ 35
 MAP_BG          equ 39
@@ -502,7 +558,7 @@ MAP_ZOMBIE_MID  equ 51          ; zombie blip shades (bright = MAP_ZOMBIE)
 MAP_ZOMBIE_DARK equ 55
 MAP_ZOMBIE_ATK  equ HUD_WARN    ; a zombie attacking the base: red
 ZOMBIE_COL      equ 27
-PANEL_L2        equ 91          ; the ULA panel colour, on Layer 2 (unused)
+PANEL_L2        equ 91          ; (unused: was the ULA panel colour)
 GAUGE_AMBER     equ 95          ; ground height gauge (Layer 2)
 GHOST_COL       equ 99          ; ghosts (white); their map blip's first shade
 MAP_GHOST_MID   equ 103         ; ghost map blip shades: light grey,
@@ -547,8 +603,10 @@ P_PANEL         equ 1           ; paper: panel background
 C_WARN          equ 3           ; ink/paper: red (reversing)
 C_OK            equ 4           ; ink/paper: green
 C_YEL           equ 2           ; ink: yellow (weapon slot flash)
-C_BLUE          equ 5           ; ink: light blue
+C_GROOVE        equ 5           ; ink: light grey (the panel's grooves)
+C_TRIM          equ 1           ; ink: dark green (the panel's lines, labels)
 C_AMBER         equ 6           ; ink/paper: amber (weapon slot flash)
+P_EMPTY         equ 2           ; paper: black (an empty gauge, an unused slot)
 ATTR_PANEL      equ P_PANEL<<3 | 7
 
 ; Gauges: vertical bars on Layer 2 behind transparent ULA cells, filled
@@ -563,10 +621,11 @@ SPD_GCOL        equ 1
 ALT_GCOL        equ 3
 BST_GCOL        equ 5               ; the booster's fuel ("B"), once fitted
 ; (The compass is a bar of hardware sprites: hud_sprites.asm)
-PAX_ROW         equ 17              ; the panel's top row (pixel row 136):
-WPN_ROW         equ PAX_ROW         ; the weapon slots: 8x16 boxes on character
-WPN_COL0        equ 11              ; rows 17-18 from this column, every 2nd,
-                                    ; their weapons' letters on row 19
+WPN_NUM_ROW     equ 17              ; the weapon slots, each a column from
+WPN_ROW         equ WPN_NUM_ROW+1   ; WPN_COL0, every 2nd: its slot number,
+WPN_BAR         equ 3               ; an 8x24 bar of its ammo, one digit a row,
+WPN_LTR_ROW     equ WPN_ROW+WPN_BAR ; then its weapon's letter
+WPN_COL0        equ 11
 WFLASH          equ 5               ; empty slot requested: flash frames
 
 ; City map on the right of the panel: 32x32 cells at 2x2 pixels = 64x64,
@@ -2056,7 +2115,11 @@ city_map:   ds GRID*GRID                ; each cell's code and marks
         DISPLAY "Spr bank 0 end:",/A,$
 
 ;------------------------------------------------------------------------------
+    IFDEF RELEASE
+        SAVENEX OPEN "release_tmp/zpolice.nex", boot, boot_stack
+    ELSE
         SAVENEX OPEN "zpolice.nex", boot, boot_stack
+    ENDIF
         SAVENEX CORE 3,0,0
         SAVENEX CFG 0
         SAVENEX AUTO

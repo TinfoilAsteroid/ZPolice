@@ -23,7 +23,7 @@ MAP_CHARS = citymap.MAP_CHARS
 GROUND_IDX = citymap.GROUND_IDX
 PAD_X, PAD_Z = citymap.PAD_X, citymap.PAD_Z
 VIEW_R = 8                              # the most draw distance (zpolice.asm)
-NZOMB = 30                              # zombies a wave at most (zombie.asm)
+NZOMB = 40                              # zombies a wave at most (zombie.asm)
 NSPEC = 8                               # specials at once at most
 LVF_CHG_MAX = 64                        # map changes at most (level_load.asm)
 
@@ -56,7 +56,7 @@ def field(line, k):
 LEVEL_KEYS = ["ZOMBIES", "WAVES", "FAST", "VIEW"]
 LEVEL_VERSION = 2                      # the level files' format (level_load.asm)
 LV_MAX_WAVES, LV_SPEC_SLOTS = 10, 5    # levels.asm
-SPEC_NAMES = ["GHOST", "BANSHEE", "GHOUL"]     # the special types, by id (SPEC_*)
+SPEC_NAMES = ["GHOST", "BANSHEE", "GHOUL", "LICH", "CLUSTERS"]     # the special types, by id (SPEC_*)
 SPEC_NONE = 255
 
 def level_record(lv, name, values, waves_specials):
@@ -153,8 +153,8 @@ def level_check(lv, d, cities):
         errs.append(f"CITY {d['cn']}: there are cities 1 to {len(cities)}")
     if len(d["name"]) > 8 or not d["name"].isascii():
         errs.append(f"NAME {d['name']!r}: at most 8 plain characters")
-    if not 1 <= zomb <= 30:
-        errs.append(f"ZOMBIES {zomb}: 1 to 30 a wave (NZOMB)")
+    if not 1 <= zomb <= NZOMB:
+        errs.append(f"ZOMBIES {zomb}: 1 to {NZOMB} a wave (NZOMB)")
     if not 1 <= waves <= LV_MAX_WAVES:
         errs.append(f"WAVES {waves}: 1 to {LV_MAX_WAVES}")
     if not 0 <= fast <= zomb:
@@ -166,8 +166,11 @@ def level_check(lv, d, cities):
             errs.append(f"WAVE {w}: at most {LV_SPEC_SLOTS} types")
         if any(n > 255 for _, n in sp):
             errs.append(f"WAVE {w}: a count over 255")
-        if sum(n for _, n in sp) > 8:
-            errs.append(f"WAVE {w}: {sum(n for _, n in sp)} specials; at most 8 at once (NSPEC)")
+        mons = sum(n for t, n in sp if SPEC_NAMES[t] != "CLUSTERS")     # (not a monster)
+        if mons > 8:
+            errs.append(f"WAVE {w}: {mons} specials; at most 8 at once (NSPEC)")
+        if any(SPEC_NAMES[t] == "CLUSTERS" and n > 8 for t, n in sp):
+            errs.append(f"WAVE {w}: at most 8 CLUSTERS")
     ch = d["changes"]
     if len(ch) > 64:
         errs.append(f"CHANGES {len(ch)}: at most 64 (LVF_CHG_MAX)")

@@ -65,11 +65,24 @@ TG_BASE         equ $C0             ; + a base tile's index (base_hp, 0..24)
 ; The ghoul (ZT_GHOUL, id SPEC_GHOUL, zombie.asm): a half-height zombie
 ; walking at five times the zombies' speed.  It is placed here (spec_wave)
 ; but moved, drawn and hit as a zombie.
+; The lich (ZT_LICH, id SPEC_LICH): a city's boss, in the last wave of its
+; last level (the level files).  Placed here (lich_init); walks as a zombie
+; at 4 times the speed, drawn at LICH_H; shoots fireballs at the VTOL
+; (lich_update, weapons.asm).  Each city's is harder: LICH_HP + LICH_HP_STEP
+; hit points a city before it, and a shot every LICH_RATE frames,
+; LICH_RATE_STEP fewer a city before it, at least LICH_RATE_MIN.  Its
+; record: +18 and +23 (LICH_HP_HI) its hit points, 16 bits; +24 (LICH_WAIT)
+; frames to its next shot; +25 (LICH_FRAMES) frames between.
 ; (Which waves have which is the level files' business: gentables.py.)
 BANSHEE_HP      equ 8
 BANSHEE_DMG     equ 5
 BANSHEE_R       equ TILE_UNITS/2
 BASE_TILES      equ (2*TERRACE_R+1)*(2*TERRACE_R+1)
+LICH_HP         equ 50              ; the first city's
+LICH_HP_STEP    equ 25              ; more a city
+LICH_RATE       equ 60              ; the first city's frames between shots
+LICH_RATE_STEP  equ 10              ; fewer a city
+LICH_RATE_MIN   equ 10
 
 ;------------------------------------------------------------------------------
 ; A level's start: every special record inactive, then wave 1's specials
@@ -243,9 +256,10 @@ spec_wave:
         ret
 
 ; Special type (SPEC_*, the level files) -> record type (ZT_*)
-spec_types: db ZT_GHOST, ZT_BANSHEE, ZT_GHOUL
+spec_types: db ZT_GHOST, ZT_BANSHEE, ZT_GHOUL, ZT_LICH
         ASSERT $ - spec_types == SPEC_IDS
         ASSERT SPEC_GHOST == 0 && SPEC_BANSHEE == 1 && SPEC_GHOUL == 2
+        ASSERT SPEC_LICH == 3
 
 ; sp_left monsters of record type sp_type into free special records (as
 ; many as there's room for)
@@ -268,9 +282,14 @@ spec_place:
         ld hl,sp_left
         dec (hl)
         ld a,(sp_type)
+        cp ZT_LICH
+        jr z,.li
         cp ZT_GHOUL
         jr z,.gh
         call ghost_init
+        pop bc
+        jr .nx
+.li:    call lich_init
         pop bc
         jr .nx
 .gh:    call ghoul_init
@@ -287,6 +306,40 @@ ghoul_init:
         call zplace
         ld (ix+15),ZT_GHOUL
         ld (ix+18),GHOUL_HP
+        ld a,(sp_idx)
+        and 7
+        inc a
+        ld (ix+11),a
+        jp zblip                        ; (map.asm)
+
+; A lich in record IX (sp_idx): placed as a zombie, then made a lich, the
+; harder the later the city: its hit points and frames between shots
+lich_init:
+        call zplace
+        ld (ix+15),ZT_LICH
+        ld a,(level)                    ; B = the cities before this one
+        dec a
+        ld b,-1
+.city:  inc b
+        sub CITY_LEVELS
+        jr nc,.city
+        ld d,b                          ; its hit points
+        ld e,LICH_HP_STEP
+        mul d,e
+        ld hl,LICH_HP
+        add hl,de
+        ld (ix+18),l
+        ld (ix+LICH_HP_HI),h
+        ld d,b                          ; its rate of fire
+        ld e,LICH_RATE_STEP
+        mul d,e
+        ld a,LICH_RATE-LICH_RATE_MIN
+        sub e
+        jr nc,.r
+        xor a
+.r:     add a,LICH_RATE_MIN
+        ld (ix+LICH_FRAMES),a
+        ld (ix+LICH_WAIT),a
         ld a,(sp_idx)
         and 7
         inc a

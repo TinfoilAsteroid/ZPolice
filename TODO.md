@@ -13,16 +13,8 @@
 
 ## Before a release
 
-- Set `DEBUG_KILLALL equ 0` in `zpolice.asm`: it takes out the debug keys
-  (0: kill all, 9: next city, 8: change the centre gun). See README
-  "Controls".
-- Set `DEBUG_LOADOUT equ 0` in `zpolice.asm`: a new game would otherwise
-  start with 4 of every weapon in store.
-- Comment out `DEFINE DEBUG_UNLOCK_ALL` in `zpolice.asm`: a new game would
-  otherwise start with the booster, the vertical thrusters and all three
-  vision modes.
-- Check `START_SALVAGE` in `zpolice.asm` is 0 (it is now; raise it only to
-  test the salvage rewards).
+- `build.bat release` turns off the debug settings and makes `release/`: see
+  README "Building and running".
 
 ## Suggested features, enhancements and optimisations (2026-10-30, to review)
 
@@ -66,15 +58,12 @@ Items marked "(also below)" repeat an open point further down this file.
 
 - Ghosts respawning during a level, not only at the start (also below).
 - New monster types, or a boss every 10 levels.
-- At certain waves zombies spawn two clusters, each cluster will be half the wave of zombies only
 - Add super zombie, big and bulky as wide has 20 hit points.
-- We need some monsters that shoot projectiles, not sure what type yet
 - At the final city we want something like an entrance to hell where the zombies come from
   this will be represented by a large road section as a circle, a boss monster will spawn in the road and attempt to destroy the landing pad
-- At the end of each city will be a boss monster/wave
 - Barricade gameplay: rebuild or place barricades, or repair them at the
   pad, using salvage.
-- For the weapon slots, add an ammo count, when the slot is exhausted it flashes 000
+- When a weapon slot's ammo runs out, flash its 000 (it shows red now)
 - Salvage points can be used to repair barriers. Before moving to VTOL load out page
   salvage points can be used at 1 point to generate a pool of 25 hit points.On the repair screen a mini map will be displayed and the damage status listed for each barrier and terrace as a simple list.
   When the player navigates down the list the barrier or terrace will highlight red.
@@ -109,13 +98,6 @@ Items marked "(also below)" repeat an open point further down this file.
   slower).
 - Spread zombie path decisions over more frames when waves are large.
 - Faster loading with a single combined city-and-level file.
-
-### Testing and release
-
-- A release build switch that turns off `DEBUG_KILLALL` and the other test
-  settings.
-- Packaging: a distribution folder for the .nex file and ZPDATA, plus a
-  short manual.
 
 Completed items are in DONE.md.
 

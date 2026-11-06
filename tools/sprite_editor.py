@@ -2,7 +2,7 @@
 and their 32 colours, sprites/palette.json (tools/spritefile.py has the
 format).
 
-    python tools/sprite_editor.py [zombie|ghoul|ghost|banshee|human]
+    python tools/sprite_editor.py [zombie|ghoul|ghost|banshee|human|lich]
 
 On the left: the figure, its purposes (what the game draws it doing: a
 zombie walking towards the camera, side on or away; a human waving or
@@ -379,7 +379,7 @@ class Editor:
     def on_mouse(self, ev):
         if self.cur_lod() is None:
             return
-        t = str(ev.type)
+        t = ev.type.name                # (str() of it is the number on Python 3.11 on)
         btn_right = ev.num == 3 or (ev.state & 0x400)
         colour = self.right if btn_right else self.left
         at = self.cell(ev)

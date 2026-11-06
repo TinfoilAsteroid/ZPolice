@@ -92,7 +92,8 @@ update_weapons:
         call lock_update                ; the missile lock
         call gun_fire
         call laser_update
-.move:  ld ix,bullets
+.move:  call lich_update                 ; a lich's fireballs
+        ld ix,bullets
         ld b,NBULLETS
 .lp:    push bc
         ld a,(ix+B_STATE)
@@ -274,6 +275,13 @@ chain_round:
         ld hl,BULLET_STEP
         call spawn_round
         ld (ix+B_DMG),CHAIN_DMG
+        ld a,CHAIN_DEV
+        ; fall through
+
+; Round IX's direction turned by a random angle of -A..+A steps (1/256 rad)
+; sideways and up/down (a chain gun's CHAIN_DEV, a fireball's FB_DEV)
+round_spread:
+        ld (rs_dev),a
         call zrand                      ; (zombie page)
         push hl
         ld a,l
@@ -927,13 +935,19 @@ dmul:
         ld h,a
         ret
 
-; A = random byte -> A = -CHAIN_DEV..+CHAIN_DEV, evenly spread
+; A = random byte -> A = -rs_dev..+rs_dev, evenly spread
 dev_n:
         ld d,a
-        ld e,2*CHAIN_DEV+1
+        ld a,(rs_dev)
+        ld e,a
+        add a,a
+        inc a
+        push de
+        ld e,a
         mul d,e
         ld a,d
-        sub CHAIN_DEV
+        pop de
+        sub e
         ret
 
 ; HL = HL + A (signed)
@@ -967,7 +981,7 @@ take_slot_ammo:
 ; IX = a free round, carry clear; carry set if all are in flight
 free_round:
         ld ix,bullets
-        ld b,NBULLETS
+        ld b,NBULLETS-NFIRE             ; (the last are the fireballs')
         ld de,BREC
 .f:     ld a,(ix+B_STATE)
         or a
@@ -1160,6 +1174,308 @@ tilt_rows:  db 0, 3, 6, 9, 13, 16, 19, 22, 25, 29, 32, 35, 39, 42, 46, 49
         ASSERT GUN_TILT_UP <= GUN_TILT_DN
 
 ;------------------------------------------------------------------------------
+; A lich's fireballs, every frame (not with the VTOL a wreck).  A lich with
+; its reload done (LICH_WAIT 0) and the VTOL within FB_RANGE fires at where
+; the VTOL will be: from its velocity (its move last frame, sideways and up
+; or down too) and the flight time at FB_MS, worked out twice over.  The
+; aim is then turned by up to FB_DEV each way (round_spread).  A
+; fireball is a round (BK_FIREBALL, in its own records: the player's guns
+; can't use them up) that passes through monsters and stops at a building,
+; the ground, the VTOL (within FB_HIT_R: fb_step) or after FB_FRAMES frames
+; (FB_RANGE).  Wherever it stops it bursts (rocket_blast): FB_DMG within
+; FB_R to the VTOL, humans and base tiles, not to monsters.
+;------------------------------------------------------------------------------
+lich_update:
+        ld hl,(cam_x+1)                 ; the VTOL's velocity
+        ld de,(lf_px)
+        ld (lf_px),hl
+        or a
+        sbc hl,de
+        ld (lf_vx),hl
+        ld hl,(cam_y)
+        ld de,(lf_py)
+        ld (lf_py),hl
+        or a
+        sbc hl,de
+        ld (lf_vy),hl
+        ld hl,(cam_z+1)
+        ld de,(lf_pz)
+        ld (lf_pz),hl
+        or a
+        sbc hl,de
+        ld (lf_vz),hl
+        ld a,(vtol_dead)
+        or a
+        ret nz
+        ld iy,zombies+NZOMB*ZREC
+        ld b,NSPEC
+.lp:    push bc
+        bit 0,(iy+10)
+        jr z,.nx
+        ld a,(iy+15)
+        cp ZT_LICH
+        jr nz,.nx
+        ld a,(iy+LICH_WAIT)
+        or a
+        jr z,.rdy
+        dec (iy+LICH_WAIT)
+        jr .nx
+.rdy:   push iy
+        call lich_fire
+        pop iy
+.nx:    ld de,ZREC
+        add iy,de
+        pop bc
+        djnz .lp
+        ret
+
+; Lich IY, reloaded: a fireball at the VTOL, if it's in range and a record
+; is free (else it stays ready)
+lich_fire:
+        ld l,(iy+0)                     ; from its head
+        ld h,(iy+1)
+        ld (lf_x),hl
+        ld l,(iy+2)
+        ld h,(iy+3)
+        ld (lf_z),hl
+        ld hl,(cam_x+1)                 ; at the VTOL now
+        ld (lf_ax),hl
+        ld hl,(cam_y)
+        ld (lf_ay),hl
+        ld hl,(cam_z+1)
+        ld (lf_az),hl
+        call lf_dist
+        ld de,FB_RANGE+1
+        or a
+        sbc hl,de
+        ret nc                          ; out of range
+        add hl,de
+        ld b,2                          ; where it'll be: the flight there,
+.it:    push bc                         ; then the flight to that place
+        call lf_lead
+        call lf_dist
+        pop bc
+        djnz .it
+        ld ix,bullets+(NBULLETS-NFIRE)*BREC
+        ld b,NFIRE
+        ld de,BREC
+.f:     ld a,(ix+B_STATE)
+        or a
+        jr z,.got
+        add ix,de
+        djnz .f
+        ret
+.got:   ld a,(iy+LICH_FRAMES)           ; the next, so many frames on
+        dec a
+        ld (iy+LICH_WAIT),a
+        ld hl,FB_STEP
+        call spawn_round
+        ld (ix+B_KIND),BK_FIREBALL
+        ld (ix+B_TGT),FB_FRAMES         ; frames left
+        ld hl,(lf_x)
+        ld (ix+B_X),l
+        ld (ix+B_X+1),h
+        ld (ix+B_PX),l
+        ld (ix+B_PX+1),h
+        ld hl,LICH_MOUTH
+        ld (ix+B_Y),l
+        ld (ix+B_Y+1),h
+        ld (ix+B_PY),l
+        ld (ix+B_PY+1),h
+        ld hl,(lf_z)
+        ld (ix+B_Z),l
+        ld (ix+B_Z+1),h
+        ld (ix+B_PZ),l
+        ld (ix+B_PZ+1),h
+        ld hl,(lf_dx)                   ; its heading and climb
+        ld de,(lf_dz)
+        call atan2
+        ld (ix+B_YAW+1),a
+        ld hl,(lf_dy)
+        ld de,(lf_dh)
+        call atan2
+        ld (ix+B_PIT+1),a
+        ld hl,FB_STEP
+        call rnd_dir
+        ld a,FB_DEV
+        call round_spread
+        ld a,SFX_ROCKET                 ; (a woosh)
+        ld (sfx_req),a
+        ret
+
+; HL = the distance from the lich to the aim -> lf_ax, ay, az = where the
+; VTOL will be after a fireball's flight that far
+lf_lead:
+        ld a,h                          ; (no further: the time fits a byte)
+        cp FB_D_MAX>>8
+        jr c,.d
+        ld hl,FB_D_MAX-1
+.d:     add hl,hl                       ; frames, 4.4 fixed: d * 16 / FB_STEP
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,FB_STEP
+        call udiv16                     ; (human.asm)
+        ld a,l
+        ld (lf_t),a
+        ld hl,(lf_vx)
+        ld de,(cam_x+1)
+        call .ax
+        ld (lf_ax),hl
+        ld hl,(lf_vy)
+        ld de,(cam_y)
+        call .ax
+        ld (lf_ay),hl
+        ld hl,(lf_vz)
+        ld de,(cam_z+1)
+        call .ax
+        ld (lf_az),hl
+        ret
+.ax:    push de                         ; HL = DE + velocity HL * lf_t / 16
+        ld a,h
+        push af
+        call abs_hl
+        ld d,l
+        ld a,(lf_t)
+        ld e,a
+        mul d,e
+        ex de,hl
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        pop af
+        rla
+        call c,neg_hl
+        pop de
+        add hl,de
+        ret
+FB_D_MAX        equ $B00            ; 2816 units: * 16 / FB_STEP fits a byte
+        ASSERT FB_RANGE < FB_D_MAX && (FB_D_MAX*16)/FB_STEP < 256 && (FB_D_MAX & 255) == 0
+
+; lf_dx, dy, dz = from the lich's head to the aim, lf_dh its horizontal
+; distance -> HL = its distance
+lf_dist:
+        ld hl,(lf_ax)
+        ld de,(lf_x)
+        or a
+        sbc hl,de
+        ld (lf_dx),hl
+        ld hl,(lf_az)
+        ld de,(lf_z)
+        or a
+        sbc hl,de
+        ld (lf_dz),hl
+        ld hl,(lf_ay)
+        ld de,LICH_MOUTH
+        or a
+        sbc hl,de
+        ld (lf_dy),hl
+        ld hl,(lf_dx)
+        ld de,(lf_dz)
+        call lf_hyp
+        ld (lf_dh),hl
+        ld de,(lf_dy)
+        ; fall through
+; HL, DE (signed) -> HL ~ their length: max + 3/8 min
+lf_hyp:
+        call abs_hl
+        ex de,hl
+        call abs_hl
+        or a
+        sbc hl,de
+        add hl,de
+        jr nc,.mx
+        ex de,hl                        ; HL = max, DE = min
+.mx:    push hl
+        ex de,hl
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,de
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        pop de
+        add hl,de
+        ret
+
+; Fireball IX, its path this frame set up (bullet_step): its last frame, or
+; the VTOL on the path within FB_HIT_R, ends the path there (b_send), as
+; reaching the ground does (b_gnd): a burst
+fb_step:
+        dec (ix+B_TGT)
+        jr nz,.v
+        ld a,1
+        ld (b_gnd),a
+.v:     ld a,(vtol_dead)
+        or a
+        ret nz
+        ld hl,(cam_x+1)
+        ld de,(b_x0)
+        or a
+        sbc hl,de
+        ld (b_rx),hl
+        ld hl,(cam_z+1)
+        ld de,(b_z0)
+        or a
+        sbc hl,de
+        ld (b_rz),hl
+        ld hl,(b_rx)                    ; along = rx sinY + rz cosY
+        ld de,(b_sin)
+        call fmul
+        push hl
+        ld hl,(b_rz)
+        ld de,(b_cos)
+        call fmul
+        pop de
+        add hl,de
+        bit 7,h
+        ret nz                          ; behind it
+        ld (b_al),hl
+        ld de,(b_send)
+        or a
+        sbc hl,de
+        ret nc                          ; beyond this frame's path
+        ld hl,(b_rz)                    ; across = rx cosY - rz sinY
+        ld de,(b_sin)
+        call fmul
+        push hl
+        ld hl,(b_rx)
+        ld de,(b_cos)
+        call fmul
+        pop de
+        or a
+        sbc hl,de
+        call abs_hl
+        ld de,FB_HIT_R+1
+        or a
+        sbc hl,de
+        ret nc
+        ld hl,(b_al)                    ; and at its height?
+        call b_y_at
+        ld de,(cam_y)
+        or a
+        sbc hl,de
+        call abs_hl
+        ld de,FB_HIT_R+1
+        or a
+        sbc hl,de
+        ret nc
+        ld hl,(b_al)
+        ld (b_send),hl
+        ld a,1
+        ld (b_gnd),a
+        ret
+
+;------------------------------------------------------------------------------
 ; Keys 1-5: select the weapon slot SPACE fires (an empty one isn't selected:
 ; the HUD flashes it instead)
 ;------------------------------------------------------------------------------
@@ -1225,24 +1541,14 @@ debug_gun_cycle:
 ; banshees, none left fading) and counts every human still in the city or
 ; aboard as rescued.  zombie_update then finds the wave wiped out: the next
 ; wave, or after the last the level complete.
-; Key 9 does the same and ends the level, on to the next city's first level
-; (level 2 -> 6): level becomes this city's last (level_complete_screen
-; moves it on one, or after the last city the game is complete) and the
-; wave the level's last.
+; Key 9 does the same and ends the level, on to the next one: the wave
+; becomes the level's last (level_complete_screen moves level on one, or
+; after the last level the game is complete).
 ;------------------------------------------------------------------------------
 debug_killall:
         ld hl,KB_9
         call key_code_pressed
         jr z,.k0
-        ld a,(level)                    ; (level-1) mod CITY_LEVELS - CITY_LEVELS
-        dec a
-.m:     sub CITY_LEVELS
-        jr nc,.m
-        neg                             ; CITY_LEVELS-1 - (level-1) mod
-        dec a                           ; CITY_LEVELS: levels left in the city
-        ld hl,level
-        add a,(hl)
-        ld (hl),a                       ; the city's last level
         ld a,(level_cur+LV_WAVES)
         ld (wave_number),a              ; its last wave
         jr .all
@@ -1653,6 +1959,12 @@ bullet_step:
 .pr:    ld (b_pr),a
         xor a
         ld (b_gnd),a
+        ld (b_fire),a
+        ld a,(ix+B_KIND)                ; a fireball passes through monsters
+        cp BK_FIREBALL
+        jr nz,.nofb
+        ld (b_fire),a
+.nofb:
         ; does it reach the ground this frame?  s = y0 / -slope
         ld hl,(b_slope)
         bit 7,h
@@ -1673,6 +1985,9 @@ bullet_step:
         ld a,1
         ld (b_gnd),a
 .nognd:
+        ld a,(b_fire)                   ; a fireball's end, or the VTOL?
+        or a
+        call nz,fb_step
         ; grid walk set-up.  The distance between cell boundaries depends only
         ; on the direction: worked out (two divides) on the round's first step.
         ld a,(ix+B_TDX)
@@ -1921,6 +2236,9 @@ cell_hit:
 ; burst measures) the path passes through
 ; before b_lim.  The records are searched, highest index first.
 cell_zombies:
+        ld a,(b_fire)
+        or a                            ; (carry clear)
+        ret nz                          ; a fireball: none
         ld hl,$FFFF
         ld (b_shit),hl
         push iy
@@ -1971,7 +2289,7 @@ cell_zombies:
         ld de,(b_lim)
         or a
         sbc hl,de
-        jr nc,.zn                       ; beyond this frame's path
+        jp nc,.zn                       ; beyond this frame's path
         ; across = rx cosY - rz sinY, within the half width?
         ld hl,(b_rz)
         ld de,(b_sin)
@@ -1987,7 +2305,11 @@ cell_zombies:
         ld a,(b_pr)                     ; (a proximity shell: within b_pr
         or a                            ; of it instead)
         jr nz,.wd
+        ld a,(iy+15)                    ; (a lich: twice as wide)
+        cp ZT_LICH
         ld a,ZHIT_R
+        jr nz,.wd
+        ld a,2*ZHIT_R
 .wd:    inc a
         ld e,a
         ld d,0
@@ -2006,8 +2328,11 @@ cell_zombies:
         bit 7,h
         jr nz,.zn
         ld de,ZHIT_H+1
-        ld a,(iy+15)                    ; a ghoul: half as tall
-        cp ZT_GHOUL
+        ld a,(iy+15)                    ; a ghoul: half as tall,
+        cp ZT_LICH                      ; a lich twice
+        jr nz,.zg
+        ld de,LICH_H+1
+.zg:    cp ZT_GHOUL
         jr nz,.zh
         ld de,ZHIT_H/2+1
 .zh:    ld a,(b_pr)                     ; (a proximity shell: to b_pr above
@@ -2062,11 +2387,24 @@ zdamage:
         jr nc,.hurt                     ; cuts the last)
         ld a,SFX_SPLAT
         ld (sfx3_req),a
-.hurt:  ld a,(iy+18)
+.hurt:  ld a,(iy+15)
+        cp ZT_LICH
+        jr z,.lich
+        ld a,(iy+18)
         sub c
         jr z,.kill
         jr c,.kill
         ld (iy+18),a
+        ret
+.lich:  ld a,(iy+18)                    ; a lich: 16-bit hit points
+        sub c
+        ld (iy+18),a
+        ld a,(iy+LICH_HP_HI)
+        sbc a,0
+        ld (iy+LICH_HP_HI),a
+        jr c,.kill
+        or (iy+18)
+        jr z,.kill
         ret
 .kill:  ld (iy+18),0
         ld a,b                          ; no longer attacking anything
@@ -2092,8 +2430,8 @@ zdamage:
 ;------------------------------------------------------------------------------
 ; Rocket, missile, bomb or shell IX has stopped (at B_X, B_Y, B_Z): its
 ; damage (rb_dmg: BLAST_DMG, MISSILE_DMG, BOMB_DMG, AUTOCANNON_DMG, ...) to
-; every zombie, human and base tile (a bomb's: the VTOL too, rb_vtol)
-; within its reach (rb_r: BLAST_R, MISSILE_R, BOMB_R, AUTOCANNON_R, ...) on
+; every zombie, human and base tile (a bomb's: the VTOL too, rb_vtol; a
+; fireball's: the VTOL, not the monsters) within its reach (rb_r: BLAST_R, MISSILE_R, BOMB_R, AUTOCANNON_R, ...) on
 ; each axis, and its orange particles.  Plain integer box tests: anything
 ; further than rb_r on any one axis is skipped.
 ;------------------------------------------------------------------------------
@@ -2123,6 +2461,12 @@ rocket_blast:
         ld e,SFX_BOOM_MISSILE
         cp BK_BOMB
         jr z,.k
+        ld hl,FB_R                      ; a lich's fireball
+        ld b,FB_DMG
+        ld c,FB_PARTS
+        ld e,SFX_BOOM_ROCKET
+        cp BK_FIREBALL
+        jr z,.k
         ld hl,PROX_R                    ; a proximity shell
         ld b,PROX_DMG
         ld c,PROX_PARTS
@@ -2147,7 +2491,12 @@ rocket_blast:
         ld a,(ix+B_KIND)                ; a bomb's hits the VTOL too
         cp BK_BOMB
         call z,rb_vtol
-        ; zombies and special monsters (their feet's height, +21)
+        ld a,(ix+B_KIND)                ; a fireball's too, not the monsters
+        cp BK_FIREBALL
+        jr nz,.mons
+        call rb_vtol
+        jp .hums
+.mons:  ; zombies and special monsters (their feet's height, +21)
         push iy
         ld iy,zombies
         ld b,NMON
@@ -2186,7 +2535,7 @@ rocket_blast:
         inc c
         djnz .zl
         pop iy
-        ; humans still waiting (x, z, y of their feet)
+.hums:  ; humans still waiting (x, z, y of their feet)
         push ix
         xor a
         ld (rb_hum),a
@@ -2460,6 +2809,7 @@ sr_cos:     dw 0
 cg_d:       dw 0                        ; chain_round
 cg_s:       dw 0
 rs_off:     dw 0                        ; round_side
+rs_dev:     db 0                        ; round_spread: its steps either way
 lk_fired:   db 0                        ; gun_fire: 1 once a linked gun fired
 b_x0:       dw 0                        ; start of this frame's path
 b_y0:       dw 0
@@ -2493,6 +2843,23 @@ b_lim:      dw 0                        ; cell_zombies: hits only before this s
 b_mapc:     db 0                        ; cell_hit: the building cell's map byte
 b_bhit:     dw 0                        ;   and where the path hits it
 b_pr:       db 0                        ; bullet_step: monster hit box margin
+b_fire:     db 0                        ;   not 0: a fireball
+lf_px:      dw 0                        ; lich_update: the VTOL last frame,
+lf_py:      dw 0
+lf_pz:      dw 0
+lf_vx:      dw 0                        ;   its velocity (units a frame)
+lf_vy:      dw 0
+lf_vz:      dw 0
+lf_x:       dw 0                        ; lich_fire: from,
+lf_z:       dw 0
+lf_ax:      dw 0                        ;   the aim,
+lf_ay:      dw 0
+lf_az:      dw 0
+lf_dx:      dw 0                        ;   the way there,
+lf_dy:      dw 0
+lf_dz:      dw 0
+lf_dh:      dw 0                        ;   its horizontal distance,
+lf_t:       db 0                        ;   and the flight (frames, 4.4)
 sh_kind:    db 0                        ; gun_fire: the shell's kind
 rb_r:       dw 0                        ; rocket_blast: its reach on each axis,
 rb_dmg:     db 0                        ;   damage

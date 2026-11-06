@@ -1,0 +1,255 @@
+Z-POLICE
+========
+Manual
+
+A 3D flight game for the ZX Spectrum Next.
+
+The dead are walking the streets. Fly your VTOL over the city, rescue the
+survivors and bring them home, and stop the monsters reaching your landing
+pad. There are 10 cities and 50 levels between you and safety.
+
+
+RUNNING THE GAME
+----------------
+
+On a Spectrum Next: copy this whole folder to the SD card, and open
+zpolice.nex from the browser. The ZPDATA folder has to stay beside it.
+
+In the CSpect emulator: run it from inside this folder, with the ZPDATA folder
+beside zpolice.nex.
+
+
+MAIN MENU
+---------
+
+1  New game
+2  Continue the saved game
+9  Redefine keys
+
+
+THE CONTROLS
+------------
+
+Flying
+
+  Q  speed up                 A  slow down / reverse
+  O  turn left                P  turn right
+  W  climb                    S  descend
+  E  nose up                  D  nose down
+  Z  air brake
+
+  Tap O or P for a fine correction; hold them for a full turn. The nose levels
+  itself when you let go of E or D.
+
+Weapons
+
+  SPACE  fire the selected weapon (hold)
+  1-5    select a weapon slot
+  R / F  tilt the centre gun up / down
+  V      recentre the centre gun
+
+Upgrades, once you've earned them
+
+  X      booster on / off
+  N      next vision mode
+  K / L  strafe left / right (hold)
+
+Other
+
+  BREAK  pause. Then S saves and quits, and X quits without saving.
+
+Joysticks: Kempston and Mega Drive pads work, set up in the Next's own
+joystick settings. Every control can be given any key or joystick input on
+the redefine keys screen.
+
+
+HOW TO PLAY
+-----------
+
+Each level is one or more waves of monsters. Wipe out the last wave and the
+level is complete.
+
+Your two jobs are:
+
+  Rescue the humans. Land near one, and it will run to you and climb in.
+
+  Protect the base. The monsters want your landing pad, in the middle of the
+  city, and they'll break through the terrace round it to reach it.
+
+The game is over if the landing pad is destroyed, or if your VTOL is.
+
+Rescuing humans
+
+  * You're landed when you're stopped and resting on the road, a roof or the
+    pad. Descend until you touch down, and any speed is braked away.
+  * Humans within 20 metres run to you, if they're at the same height: a human
+    on a roof can't reach you on the road, nor one on the road reach you on a
+    roof.
+  * You can carry 5 at a time.
+  * Land on the pad and they get off, one a second. Each one is saved. Anyone
+    still aboard when the level ends counts too.
+  * Humans on the road run from monsters. Humans on roofs can't.
+  * You can't fire while you're landed.
+
+The landing pad
+
+Land on the pad to repair the VTOL, reload the pylons and refuel the booster.
+It takes time, so you're on the ground while the monsters close in. Landing
+anywhere else does none of this.
+
+Between levels
+
+After each level you're told how many humans you saved. Your ammunition is
+replenished, and then you can change your weapons on the load-out screen.
+
+
+THE SCREEN
+----------
+
+  Top of the screen     The compass. The white pointer marks your heading.
+  Left of the screen    A row of icons, one for each human.
+  Middle                The view, with the gunsight.
+  Bottom                The instrument panel.
+
+The human icons
+
+  Empty square          waiting in the city
+  Seated person         aboard the VTOL
+  Green person          rescued
+  Crossed-out person    dead
+
+The instrument panel, from left to right
+
+  S          Speed. Red when reversing, amber while boosting.
+  A          Altitude. The left half is your height (green). The right half
+             is the height of what's below you (amber). The gap between them
+             is your clearance.
+  B          Booster fuel, once the booster is fitted.
+  Weapons    The five slots, in the order 2 4 1 5 3: see below.
+  INTEGRITY  The VTOL's condition. Green, then amber, then red.
+  Map        The whole city.
+
+Each weapon slot shows its number, its ammunition reading down (INF means
+infinite) and its weapon's letter. The bar is green, or red when it's out of
+ammunition. The selected slot is marked in yellow. An unused slot is black.
+
+The city map
+
+  White             the landing pad
+  Flashing          you
+  Flashing blue     a human
+  Green             a zombie or ghoul
+  White, grey       a ghost
+  Yellow            a banshee
+  Flashing red      a lich
+  Red               a monster attacking
+
+
+THE MONSTERS
+------------
+
+Zombies    Walk the streets towards the pad, and batter anything in the way.
+           Some are faster than others. On later levels there are more of
+           them, and they head for the pad more directly.
+Ghouls     Half the height of a zombie, and five times as fast.
+Ghosts     Fly over buildings at any height, and hunt humans and the VTOL
+           when they can see them. They can't hurt the base. Fading away, a
+           ghost is already dead.
+Banshees   Faster, deadlier ghosts, which also attack the base.
+Liches     A city's boss, in the last wave of its last level (every 5th
+           level). Twice a zombie's height and very tough, with fireballs
+           that reach 200 metres. Each city's is harder than the last.
+
+A building between you and a ghost or banshee hides you from it.
+
+
+WEAPONS
+-------
+
+The centre slot, key 1, always holds a centre gun, which never runs out. Its
+sight moves as you tilt it (R, F), 15 degrees up and 45 degrees down.
+
+  Letter  Weapon            Notes
+  M       Machine gun       Steady and hard-hitting. You start with this.
+  L       Pulse laser       A beam, in short bursts.
+  C       Chain gun         Very fast, weaker rounds, with some spread.
+
+The pylons, keys 2 to 5, always fire straight ahead, and their ammunition is
+limited.
+
+  Letter  Weapon            Load  Notes
+  R       Rocket pod        12    A blast that hits everything near it.
+  S       Missile pod       4     Slower than a rocket, with a bigger reach.
+  A       Autocannon        50    Slow-firing bursting shells.
+  P       Proximity         50    Shells that burst when they pass a monster.
+  B       Bomb              1     Glides down ahead of you. The largest blast
+                                  of all, and it can hit you too.
+
+Linked chain guns: a pair, the L for slot 4 only and the R for slot 5 only.
+200 rounds each. With both fitted, selecting either one fires them together,
+each with its own crosshair. One runs dry and the other fires on alone.
+
+
+THE LOAD-OUT SCREEN
+-------------------
+
+The store is on the left, and your five slots on the right.
+
+  1-5    select a slot
+  Q / A  move up and down the store. Green means the weapon fits that slot.
+  SPACE  fit the weapon (whatever was there goes back in the store)
+  U      unload the slot
+  0      start the level
+
+Slot 1 has to have a weapon in it before you can start.
+
+
+SALVAGE
+-------
+
+Each human saved earns 1 salvage point at the end of the level. Your total
+carries on from level to level, and reaching these totals earns the rewards.
+Weapons go into the store. Everything else is fitted at once.
+
+   10  Pulse laser                         60  Rocket pod
+   15  Full repair                         65  Night vision - monochrome
+   20  Chain gun                           70  Proximity cannon, full repair
+   25  Night vision - green                75  Proximity cannon
+   30  Rocket pod                          80  Rocket pod
+   35  Vertical thrusters                  85  Thermal vision
+   40  Bomb                                90  Lateral thrusters
+   45  Booster module                     100  Rocket pod, full repair
+   50  Linked chain gun L                 105  Autocannon, full repair
+   55  Linked chain gun R, full repair    110  Autocannon, full repair
+
+  115  Missile pod, full repair           130  Missile pod, full repair
+  120  Autocannon, full repair            135  Missile pod, full repair
+  125  Autocannon, full repair            140  Missile pod, full repair
+
+From 145 on, every 5 points is a full repair.
+
+Upgrades
+
+  Vertical thrusters  Climb to 30 metres instead of 15.
+  Booster module      X doubles your top speed, burning fuel, from at least
+                      half speed. Q, A and Z do nothing while it's on. Press X
+                      again to go back to your old speed.
+  Lateral thrusters   K and L slide you sideways while held.
+  Vision modes        N steps through the ones you have, then back to normal.
+                      Thermal shows monsters and humans in hot colours against
+                      cold buildings.
+
+
+FLYING SAFELY
+-------------
+
+Flying into a building stops you dead and damages the VTOL: the faster you
+were going, the worse it is. A bump at low speed does no harm.
+
+
+SAVING
+------
+
+Pause with BREAK, then press S to save and quit. There's one save game, and
+saving again replaces it. Continue on the main menu brings it back, at the
+start of the wave you were on.

@@ -21,7 +21,8 @@
 ;   +12,+13  cell (x, z) of its blip on the street map
 ;   +14    1 = blip plotted
 ;   +15    type: 0 = zombie, 1 = fast zombie (walks at twice the speed),
-;          ZT_GHOUL (a special: 5x, half height), ZT_GHOST, ZT_BANSHEE
+;          ZT_GHOUL (a special: 5x, half height), ZT_LICH (a special: 4x,
+;          twice the height), ZT_GHOST, ZT_BANSHEE
 ;   +16    mode: 0 = walking, 1 = going for a base tile, 2 = attacking it
 ;   +17    frames to its next hit on the tile
 ;   +18    hit points left (ZHP, ZHP_FAST; weapons.asm zdamage)
@@ -77,15 +78,19 @@
 ; forward and left.  One byte per row, bit 7 = leftmost pixel.
 ;==============================================================================
 
-NZOMB           equ 30          ; zombie records: the most in a wave
+NZOMB           equ 40          ; zombie records: the most in a wave
 NSPEC           equ 8           ; most special monsters (5 ghosts, banshees)
 NMON            equ NZOMB+NSPEC ; records: zombies, then special monsters
 ZREC            equ 34          ; bytes per record
 ZT_FAST         equ 1           ; +15: fast zombie
 ZT_GHOUL        equ 2           ; +15: a ghoul: a special monster that walks
                                 ; as a zombie (zmove), half height, 5x speed
-ZT_GHOST        equ 3           ; +15: a ghost (specials.asm); types from
-ZT_BANSHEE      equ 4           ; here on fly (specials.asm moves them)
+ZT_LICH         equ 3           ; +15: a lich, a city's boss: a special
+                                ; monster that walks as a zombie (zmove),
+                                ; twice the height, 4x speed; it shoots
+                                ; fireballs (lich_update, weapons.asm)
+ZT_GHOST        equ 4           ; +15: a ghost (specials.asm); types from
+ZT_BANSHEE      equ 5           ; here on fly (specials.asm moves them)
 ZHP             equ 5           ; hit points: a zombie (level 1)
 ZHP_FAST        equ 4           ; and a fast zombie
 GHOUL_HP        equ ZHP         ; and a ghoul
@@ -93,9 +98,14 @@ ZSPEED_INIT     equ 10          ; starting zspeed: 0.63 units (4.9 cm) per
                                 ; frame, ~0.7 m/s at 14 fps
 ZSTEPS_INIT     equ 10          ; starting zsteps: decide every 10 frames
 ZMARGIN         equ 16          ; keep at least this far from walls: 1.25 m
+ZC_TRIES        equ 16          ; zcluster: places to try near the parent
+ZC_R            equ 2*TILE_UNITS ;  within 2 tiles of it on x and z
+        ASSERT 383+128 <= ZC_R          ; (zc_axis)
 ZWAIT           equ 100         ; frames to stand still when stuck
 ZOMBIE_H        equ 26          ; height: 2 m (the same as the hit box, ZHIT_H)
 GHOUL_H         equ ZOMBIE_H/2  ; a ghoul's height: 1 m
+LICH_H          equ 2*ZOMBIE_H  ; a lich's height: 4 m
+        ASSERT LICH_H == FIG_LICH_H     ; (gfx_ids.inc)
         ASSERT ZSPEED_INIT*5+15 < 256   ; a ghoul's step (zcalc_step) fits
 
 
@@ -134,9 +144,13 @@ zombie_init:
 ; of them fast, at random street positions; the other zombie records stay
 ; inactive.  zombie_update calls it again when a wave is wiped out.  (The
 ; records' cell marks, +19 / +20, are left to zflags: a zombie killed this
-; frame may still have one.)
+; frame may still have one.)  A wave with clusters (a SPEC_CLUSTER entry in
+; its level data, the count its clusters): the first few zombies, the
+; parents, are placed at random, and the others in turn near each (zcluster).
 ;------------------------------------------------------------------------------
 zombie_wave:
+        call zw_clusters
+        ld (zi_clus),a
         ld a,(level_cur+LV_FAST)
         ld (zi_fast),a
         ld a,(level_cur+LV_ZOMBIES)
@@ -157,6 +171,9 @@ zombie_wave:
 .one:   dec a
         ld (zi_left),a
         call zplace
+        ld a,(zi_clus)                  ; near its parent?
+        or a
+        call nz,zcluster
         ld a,NZOMB                      ; not attacking
         sub b
         ld hl,zatk_flags
@@ -183,6 +200,111 @@ zombie_wave:
         dec b
         jp nz,.lp
         jp zflags
+
+; A = this wave's clusters (level_cur, LV_WAVE_DATA: wave_number's record),
+; 0 for none
+zw_clusters:
+        ld a,(wave_number)
+        dec a
+        cp LV_MAX_WAVES
+        jr nc,.no                       ; (no data for this wave)
+        ld e,a
+        ld d,LV_WAVE_REC
+        mul d,e
+        ld hl,level_cur+LV_WAVE_DATA
+        add hl,de
+        ld b,LV_SPEC_SLOTS
+.lp:    ld a,(hl)
+        cp SPEC_CLUSTER
+        jr z,.got
+        inc hl
+        djnz .lp
+.no:    xor a
+        ret
+.got:   ld a,LV_SPECIAL-LV_SPECIAL_ID
+        add hl,a
+        ld a,(hl)                       ; how many
+        ret
+
+; Zombie IX of a wave with zi_clus clusters, B = NZOMB - its index, just
+; placed at random: the first zi_clus are the parents, and stay there.  Any
+; other, of parent (index mod zi_clus), goes on a street within ZC_R on x and
+; z of it: up to ZC_TRIES random places, then the parent's own cell.
+; Preserves BC.
+zcluster:
+        push bc
+        ld a,(zi_clus)
+        ld c,a
+        ld a,NZOMB
+        sub b
+        cp c
+        jr c,.x                         ; a parent
+.m:     sub c
+        jr nc,.m
+        add a,c
+        ld e,a
+        ld d,ZREC
+        mul d,e
+        push iy
+        ld iy,zombies
+        add iy,de                       ; IY = its parent
+        ld b,ZC_TRIES
+.try:   push bc
+        call zrand
+        push hl
+        ld a,l
+        ld l,(iy+0)
+        ld h,(iy+1)
+        call zc_axis
+        ld (ix+0),l
+        ld (ix+1),h
+        pop hl
+        ld a,h
+        ld l,(iy+2)
+        ld h,(iy+3)
+        call zc_axis
+        ld (ix+2),l
+        ld (ix+3),h
+        ld a,(ix+1)
+        cp GRID
+        jr nc,.no                       ; off the map
+        ld a,(ix+3)
+        cp GRID
+        jr nc,.no
+        call zmap_ptr
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.ok                        ; a street
+.no:    pop bc
+        djnz .try
+        ld a,(iy+1)                     ; (no street found)
+        ld (ix+1),a
+        ld a,(iy+3)
+        ld (ix+3),a
+        push bc
+.ok:    pop bc
+        pop iy
+.x:     pop bc
+        ret
+
+; HL = the parent's x or z, A = a random byte -> HL = up to ZC_R from it, kept
+; 64..191 inside its cell (as zplace, away from the walls: moved by half a
+; cell if not, hence the 1.5 cells before that)
+zc_axis:
+        ld d,a
+        ld e,3
+        mul d,e                         ; 0..765
+        add hl,de
+        ld de,-382
+        add hl,de                       ; -382..383
+        ld a,l
+        cp 64
+        jr c,.mv
+        cp 192
+        ret c
+.mv:    xor $80
+        ld l,a
+        ret
 
 ; Record IX: a zombie (type 0, ZHP) at a random street position, walking a
 ; random heading, active; no blip yet (the caller sets the type, then
@@ -282,9 +404,10 @@ zombie_update:
         ld (zlook),hl
         add hl,de                       ; fast zombies walk twice as far
         ld (zlook_fast),hl              ; between checks
+        add hl,de                       ; a lich four times
+        add hl,de
+        ld (zlook_lich),hl
         add hl,de                       ; ghouls five times
-        add hl,de
-        add hl,de
         ld (zlook_ghoul),hl
         ld ix,zombies                   ; the zombies, and ghouls in the
         ld b,NMON                       ; special records
@@ -377,6 +500,9 @@ zmove:
         jr c,.lk
         ld hl,(zlook_fast)
         jr z,.lk
+        cp ZT_LICH
+        ld hl,(zlook_lich)
+        jr z,.lk
         ld hl,(zlook_ghoul)
 .lk:    call ztest
         jr nz,.blocked
@@ -426,7 +552,8 @@ zmove:
         ret
 
 ; This frame's distance for zombie IX (zspeed, twice for a fast zombie,
-; five times for a ghoul), 4.4 fixed with the fraction kept -> zstep.
+; four times for a lich, five for a ghoul), 4.4 fixed with the fraction
+; kept -> zstep.
 ; Keeps B.
 zcalc_step:
         ld a,(ix+15)
@@ -435,9 +562,16 @@ zcalc_step:
         jr c,.reg
         ld c,a
         jr z,.fast
+        ld a,(ix+15)
+        cp ZT_LICH
+        ld a,c
+        jr z,.lich
         add a,a                         ; a ghoul: five times the speed
         add a,a
         add a,c
+        jr .reg
+.lich:  add a,a                         ; a lich: four times
+        add a,a
         jr .reg
 .fast:  add a,a                         ; fast zombie: twice the speed
 .reg:   add a,(ix+6)
@@ -1063,6 +1197,8 @@ zombie_draw:
         xor a
         ld (spr_col),a                  ; (its own colours)
         ld a,(ix+15)
+        cp ZT_LICH
+        jr z,.lich
         cp ZT_GHOUL
         jp nz,fig_draw
         ld hl,(zh_y)                    ; a ghoul: half the height (its size,
@@ -1076,7 +1212,7 @@ zombie_draw:
         rr l
         ld (zh_z),hl
         ld hl,GHOUL_H
-        ld (fig_h),hl
+.size:  ld (fig_h),hl
         call fig_draw
         ld hl,ZOMBIE_H                  ; back to full height
         ld (fig_h),hl
@@ -1085,6 +1221,16 @@ zombie_draw:
         pop hl
         ld (zh_y),hl
         ret
+.lich:  ld hl,(zh_y)                    ; a lich: twice the height
+        push hl
+        add hl,hl
+        ld (zh_y),hl
+        ld hl,(zh_z)
+        push hl
+        add hl,hl
+        ld (zh_z),hl
+        ld hl,LICH_H
+        jr .size
 .ghost: ld l,(ix+21)                    ; a ghost: at its height, its sheet
         ld h,(ix+22)
         ld (fig_y),hl
@@ -1264,7 +1410,7 @@ fig_size:
         jp (hl)
 
 ; Zombie frame: walking, facing from its heading relative to the view (a
-; ghoul's own figure)
+; ghoul's and a lich's own figures)
 zfig_sel:
         ld a,(ix+4)                     ; facing relative to the view:
         rrca                            ;   ((heading*64 - yaw + 32) >> 6) & 3
@@ -1286,8 +1432,10 @@ zfig_sel:
         ld a,(ix+15)
         cp ZT_GHOUL
         ld a,ANIM_ZOMBIE_WALK_FRONT
-        jr nz,.z
+        jr c,.z
         ld a,ANIM_GHOUL_WALK_FRONT
+        jr z,.z
+        ld a,ANIM_LICH_WALK_FRONT
 .z:     ld b,a
         ld a,c
         and 3
@@ -1301,8 +1449,8 @@ zfig_sel:
         cp ZT_GHOUL
         ld a,(zanim)
         jr z,.still                     ; every frame for a ghoul,
-        srl a                           ; every 2 frames for
-        bit 0,(ix+15)                   ; a fast zombie (legs keep pace)
+        srl a                           ; every 2 frames for a fast
+        bit 0,(ix+15)                   ; zombie or a lich (legs keep pace)
         jr nz,.still
         srl a                           ; every 4 for a zombie
 .still: add a,(ix+5)
@@ -1310,6 +1458,8 @@ zfig_sel:
         ret
         ASSERT ANIM_ZOMBIE_WALK_SIDE == ANIM_ZOMBIE_WALK_FRONT+1 && ANIM_ZOMBIE_WALK_REAR == ANIM_ZOMBIE_WALK_FRONT+2
         ASSERT ANIM_GHOUL_WALK_SIDE == ANIM_GHOUL_WALK_FRONT+1 && ANIM_GHOUL_WALK_REAR == ANIM_GHOUL_WALK_FRONT+2
+        ASSERT ANIM_LICH_WALK_SIDE == ANIM_LICH_WALK_FRONT+1 && ANIM_LICH_WALK_REAR == ANIM_LICH_WALK_FRONT+2
+        ASSERT (ZT_LICH & 1) && (ZT_FAST & 1) && !(ZT_GHOUL & 1)
 
 ;------------------------------------------------------------------------------
 ; Zombie page data
@@ -1341,9 +1491,11 @@ zbits:      db 1, 2, 4, 8               ; heading -> bit
 zdir_step:  db 0, 1,  1, 0,  0, -1,  -1, 0  ; heading -> (cell dx, dz)
 base_hp:    ds (2*TERRACE_R+1)*(2*TERRACE_R+1)  ; hit points, pad and terrace
 zlook_fast: dw 0                        ; (fast zombies: twice the walk)
+zlook_lich: dw 0                        ; (a lich: four times)
 zlook_ghoul: dw 0                       ; (ghouls: five times)
 zi_fast:    db 0                        ; zombie_wave: fast zombies still to make
 zi_left:    db 0                        ;   and zombies still to place
+zi_clus:    db 0                        ;   the wave's clusters (0: none)
 zombies:    ds NMON*ZREC
 zseed:      dw 1
 zanim:      db 0

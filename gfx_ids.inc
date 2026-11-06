@@ -2,8 +2,8 @@
 ; The figures' graphics (tools/spritefile.py has the format): the purposes
 ; the game asks for, in ZPDATA/SPRITES.ZPG's order
 SPR_PAL0        equ 192     ; Layer 2 entry of figure colour 0
-GFX_ANIMS       equ 13
-GFX_ENTRIES     equ 26     ; the directory: the purposes, then their vision set
+GFX_ANIMS       equ 16
+GFX_ENTRIES     equ 32     ; the directory: the purposes, then their vision set
 GFX_PAGES_MAX   equ 4
 GFX_DIR         equ $C000
 GFX_VERSION     equ 2
@@ -21,8 +21,12 @@ ANIM_HUMAN_RUN_FRONT            equ 9
 ANIM_HUMAN_RUN_SIDE             equ 10
 ANIM_HUMAN_RUN_REAR             equ 11
 ANIM_HUMAN_STAND                equ 12
+ANIM_LICH_WALK_FRONT            equ 13
+ANIM_LICH_WALK_SIDE             equ 14
+ANIM_LICH_WALK_REAR             equ 15
 FIG_ZOMBIE_H                    equ 26      ; its height (world units)
 FIG_GHOUL_H                     equ 13      ; its height (world units)
 FIG_GHOST_H                     equ 26      ; its height (world units)
 FIG_BANSHEE_H                   equ 26      ; its height (world units)
 FIG_HUMAN_H                     equ 26      ; its height (world units)
+FIG_LICH_H                      equ 52      ; its height (world units)

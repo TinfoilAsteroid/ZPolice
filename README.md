@@ -20,7 +20,25 @@ build.bat          # gengraphics.py, gentables.py -> the generated tables and ZP
 build.bat run      # ...and launch CSpect (sound off: CSpect's -sound)
 build.bat runsound # ...and launch CSpect with sound on
 build.bat notest   # ...without the regression tests (also: build.bat run notest)
+build.bat release  # ...then the release build, in release/ (also: build.bat release run)
 ```
+
+**Release build:** `build.bat release` builds and tests the debug build as
+usual, then assembles again with `-DRELEASE`, which turns off everything for
+testing, whatever `zpolice.asm` has set: `DEBUG_KILLALL`, `DEBUG_LOADOUT`,
+`DEBUG_UNLOCK_ALL`, `DRAW_FPS`, `DOTS_ALL`, `START_LEVEL_SET` and
+`START_SALVAGE`. It makes:
+
+* `release/`, runnable as it stands (`tools/make_release.py`, made afresh each
+  time): `zpolice.nex`, a `ZPDATA` folder with only the files the game reads,
+  and `MANUAL.txt`, the player's manual (`docs/MANUAL.txt`). Copy the folder
+  to an SD card, and open `zpolice.nex`.
+* `release_tmp/`: the release's `.sym`, `.map` and listing, for debugging it.
+  The debug build's `zpolice.nex` and `zpolice.sym` stay as they are.
+
+`tests/release_check.py` then starts the game in `release/` on the emulator
+and checks a new game has no extras and keys 0, 9 and 8 do nothing. If it
+fails, `release/` is removed. `notest` skips the regression tests, not this.
 
 A failing test stops the build before CSpect is launched (see "Regression
 tests").
@@ -239,9 +257,10 @@ X works in a wreck too.
   start.
 
 **Game over:** when the landing pad is destroyed, the main loop goes to
-`game_over_screen` (`menu.asm`). It shows GAME OVER for `GAME_OVER_FR` (500)
-video frames, 10 seconds, and then returns to the main menu. The menu
-times frames from the raster line. It reads NextRegs `$1E`, `$1F`, `$1E`
+`game_over_screen` (`menu.asm`). It shows GAME OVER and PRESS SPACE TO
+CONTINUE until SPACE is pressed (`space_prompt`, as on the LEVEL COMPLETE
+screen; a SPACE already held doesn't count), then returns to the main menu.
+The menu times frames from the raster line. It reads NextRegs `$1E`, `$1F`, `$1E`
 and retries if the high byte changed, because a read straddling line 256
 would otherwise look like line 0 and end a frame early.
 
@@ -442,7 +461,7 @@ Interrupts are on from the main menu onwards, in IM 2 (`interrupts.asm`),
 | E   | nose up         | D   | nose down       |
 | SPACE | fire the selected weapon (hold) | 1–5 | select weapon slot: 1 = centre, 2–5 = wing pylons |
 | R   | tilt the centre gun up | F   | tilt the centre gun down |
-| V   | recentre the centre gun | 0 / 9 | debug: kill all / next city (see below) |
+| V   | recentre the centre gun | 0 / 9 | debug: next wave / next level (see below) |
 | 8   | debug: change the centre gun (see below) | N | next vision mode (once one is fitted: see below) |
 | BREAK | pause / resume | X | boost on / off (once the booster is fitted: see below) |
 | K   | strafe left (once the lateral thrusters are fitted: see below) | L | strafe right |
@@ -465,12 +484,10 @@ in flight wipes out the wave at once:
   next wave, with its specials. After the last wave, the level is complete
   (salvage, then the load-out screen).
 
-**Key 9** does the same, but ends the level and moves on to the first
-level of the next city (`CITY_LEVELS`, 5 levels each): level 2 goes to 6,
-5 to 6, 6 to 11. It sets `level` to the current city's last level and
-`wave_number` to the level's last wave, so the level complete screen
-follows at once and moves `level` on by one as usual. From the last city
-(levels 46–50) it goes to the game complete screen.
+**Key 9** does the same, but ends the level and moves on to the next one,
+whatever wave it was on. It sets `wave_number` to the level's last wave, so
+the level complete screen follows at once and moves `level` on by one as
+usual. On the last level (50) it goes to the game complete screen.
 
 **Key 8** changes the gun in the centre slot (slot 1): machine gun, then
 laser, then chain gun, then the machine gun again. Anything else there
@@ -480,14 +497,14 @@ centre slot is selected, so SPACE fires it at once (`debug_gun_cycle`).
 The keys are fixed (`KB_0`, `KB_9`, `KB_8`, read with `key_code_pressed`,
 in `debug_killall` and `debug_gun_cycle`, weapons.asm). They aren't on the
 redefine keys screen, so don't define 0, 8 or 9 as a control while they are
-on. Set `DEBUG_KILLALL equ 0` for a release: the code and the keys go.
+on. `DEBUG_KILLALL` is off in a release build: the code and the keys go.
 
 **Debug load-out (`DEBUG_LOADOUT` in `zpolice.asm`):** a new game starts with
 every weapon unlocked and `DEBUG_STOCK` (4) of each in store, so they can all
 be fitted on the load-out screen before level 1, the bomb too. The machine
 gun is still fitted in slot 1 as
-well. Set `DEBUG_LOADOUT equ 0` for a release, and a new game starts with
-the machine gun only.
+well. It's off in a release build, where a new game starts with the machine
+gun only.
 
 **Input (`input.asm`): keyboard and joysticks.** Every control is
 redefinable. The game asks about *actions* (`K_FIRE`, `K_LEFT`, …). Each
@@ -1180,28 +1197,30 @@ Weapons do damage in hit points:
     (100) and the pad `PAD_HP` (200), each taking 20 from a blast and 1
     from a zombie's blow (`base_damage`).
 
-### Special monsters: the ghost, the banshee and the ghoul (`specials.asm`)
+### Special monsters: the ghost, the banshee, the ghoul and the lich (`specials.asm`)
 Special monsters use the zombie records after the zombies' own: records
 `NZOMB`–`NMON`−1, up to `NSPEC` (8) of them. So they share the zombies'
 drawing, cell marks, map blips, weapon hits and `zdamage`. The record's
-type (+15) says which monster it is: `ZT_GHOUL` (2), `ZT_GHOST` (3) or
-`ZT_BANSHEE` (4). Types below `ZT_GHOST` walk as zombies; from it up they fly.
+type (+15) says which monster it is: `ZT_GHOUL` (2), `ZT_LICH` (3),
+`ZT_GHOST` (4) or `ZT_BANSHEE` (5). Types below `ZT_GHOST` walk as zombies;
+from it up they fly.
 * **How many, and when:** from the level file, wave by wave. Each wave's
   data (`LV_WAVE_DATA`, `LV_WAVE_REC` 10 bytes, for up to `LV_MAX_WAVES`
   10 waves) holds up to 5 special types (`LV_SPECIAL_ID`: `SPEC_GHOST` 0,
-  `SPEC_BANSHEE` 1, `SPEC_GHOUL` 2; `SPEC_NONE` 255 for none) and how many
+  `SPEC_BANSHEE` 1, `SPEC_GHOUL` 2, `SPEC_LICH` 3; `SPEC_NONE` 255 for none) and how many
   of each (`LV_SPECIAL`). The level's start is wave 1, like any other:
   `spec_init` makes every special record inactive and calls `spec_wave`,
   which `spec_update` also calls when a new wave starts (`zwave_new`). It
   places each type's count into free special records (`spec_place`; at
   most `NSPEC`, 8, at once), mapping the type to the record's (`spec_types`:
-  `ZT_GHOST`, `ZT_BANSHEE`, `ZT_GHOUL`). All of them count as part of the
+  `ZT_GHOST`, `ZT_BANSHEE`, `ZT_GHOUL`, `ZT_LICH`). All of them count as part of the
   wave: it isn't wiped out until they are dead too.
 * **The generated levels** (gentables.py) keep the old built-in rules: in
   wave 1, ghosts from level 5 (1, rising to 5 by level 13); a banshee on
   every even wave (2 from level 11, 3 from 31); ghouls on every odd wave
-  from level 21 (2 from 30, 3 from 40). Edit a level's file to change
-  them.
+  from level 21 (2 from 30, 3 from 40); a lich, first on the line so it
+  always gets a record, in the last wave of each city's last level
+  (levels 5, 10 ... 50). Edit a level's file to change them.
 * **Each frame:** `spec_update` moves them, after `zombie_update`, from
   its own game logic page (`PAGE_SPECIAL`). `g_params` sets the monster's
   speed, attack reach, damage and whether it goes for the base, so both
@@ -1287,6 +1306,53 @@ ghost (roaming, sight, chasing, attacking, fading out), except:
   2 on 30–39, 3 from 40, into free special records (`ghoul_init`, placing
   it with `zplace`, zombie.asm).
 
+**The lich** (`ZT_LICH`): a city's boss, a skeleton in a crown, twice a
+zombie's height. One comes in the last wave of each city's last level,
+as one of that wave's specials.
+* **Each city's is harder**, worked out from the level number (`lich_init`),
+  so nothing extra is saved:
+
+  | City | Hit points | Frames between shots |
+  |------|-----------|----------------------|
+  | 1 | 50 | 60 |
+  | 2 | 75 | 50 |
+  | 3 | 100 | 40 |
+  | 4 | 125 | 30 |
+  | 5 | 150 | 20 |
+  | 6 | 175 | 10 |
+  | 7–10 | 200–275 | 10 |
+
+  That is `LICH_HP` + `LICH_HP_STEP` a city, and `LICH_RATE` less
+  `LICH_RATE_STEP` a city, at least `LICH_RATE_MIN`. Its hit points are 16
+  bits: +18 and +23 (`LICH_HP_HI`).
+* **Movement:** it walks the streets with `zmove`, like a zombie, at 4 times
+  a zombie's speed (`zcalc_step`, `zlook_lich`), and hits base tiles in its
+  way as a zombie does.
+* **Map blip:** flashing red and off (`lshades`), every decision check;
+  solid red while it attacks a base tile, as a zombie's.
+* **Hits:** its box is twice a zombie's, wide and tall. Killed, it bursts
+  like a zombie.
+* **Fireballs (`lich_update`, weapons.asm):** while the VTOL is within
+  `FB_RANGE` (10 tiles, 200 m; a wreck isn't shot at), it fires at the
+  rate above. There's no line-of-sight check: with a building in the way
+  the shot bursts on it.
+  * **Aim:** at where the VTOL will be. Its velocity is how far it moved
+    last frame (so strafing and climbing count), and the flight time is
+    the distance at `FB_MS` (200 m/s, `FB_STEP` 182 units a frame), worked
+    out twice over (`lf_lead`). The aim is then turned by up to `FB_DEV`
+    (7 steps of 1/256 rad, 1.57°, the nearest to 1.5°) each way
+    (`round_spread`, as the chain gun's). Measured from 1000 units at a
+    crossing 20 units a frame: −1.8° to +1.1°.
+  * **Flight:** a fireball is a round (`BK_FIREBALL`), drawn as a ball of
+    fire 5 pixels across with a short trail (`draw_fireball`). Its 2
+    records (`NFIRE`) are the last of `bullets`, so the player's guns can't
+    use them up. It passes through monsters (`cell_zombies`) and stops at a
+    building, the ground, the VTOL (within `FB_HIT_R`, 24 units of its
+    path: `fb_step`) or after `FB_FRAMES` (14) frames, 200 m.
+  * **Burst:** wherever it stops (`rocket_blast`), `FB_DMG` (10) within
+    `FB_R` (5 m) on each axis to the VTOL, humans and base tiles (landing
+    pad, terrace, barricades), and none to monsters.
+
 ### The VTOL destroyed
 At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
 `vtol_damage`) the VTOL is destroyed (`vtol_dead`):
@@ -1300,7 +1366,7 @@ At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
   From the 15 m ceiling it falls in about 2 seconds.
 * **Game over:** once on the ground (`dead_down`) it lies there for
   `DEAD_PAUSE` (100) frames. Then the game is over: the GAME OVER screen
-  for 10 seconds, then the main menu.
+  until SPACE is pressed, then the main menu.
 * **Where:** `vtol_wreck` in `player.asm`. `newGame` resets it all.
 
 ### Instrument panel (ULA / Layer 1)
@@ -1308,7 +1374,7 @@ The panel in rows 128–191 is drawn on the ULA, which is above Layer 2
 (priority S-U-L). Layer 2 shows through only where the ULA cells are made
 transparent: the city map and the gauges.
 
-* **Fixed contents:** set up once by `ula_init`. That's a dark slate paper,
+* **Fixed contents:** set up once by `ula_init`. That's a grey paper,
   a green divider on the top pixel row, and the gauge labels "S" and "A".
 * **Gauges:** two vertical bars at the left, `GAUGE_H` (48) pixels tall
   (pixel rows 136–183, character rows 17–22), filled from the bottom and
@@ -1348,7 +1414,7 @@ transparent: the city map and the gauges.
   * The menu screens hide them all (`menu_clear`).
   * Disembarking at the pad marks the first human aboard as rescued.
 * **Integrity (`draw_integrity`, hud.asm):** under the weapon slots,
-  "INTEGRITY" on character row 21 (`INT_ROW`, from column 11) and the
+  "INTEGRITY" on character row 22 (`INT_ROW`, from column 11) and the
   VTOL's hit points as a percentage below it, "nnn%" from column 12.
   * `VTOL_HP` is 50, so the percentage is `vtol_hp` × 2: one `add a,a`
     (an `ASSERT` checks `VTOL_HP` is still 50).
@@ -1356,22 +1422,46 @@ transparent: the city map and the gauges.
     (`INT_DANGER`), as the cells' ink.
   * Redrawn only when it changes (`int_shown`); `ula_init` prints the
     label at each level's start. The HUD font gained I, E, Y and %.
-* **Weapon slots (placeholders):** five 8×16-pixel boxes, each two ULA
-  character cells on rows 17–18 (`WPN_ROW`), at columns 11, 13, 15, 17
-  and 19 (from `WPN_COL0`). Left to right they show the slots keys 2, 4, 1,
-  5 and 3 select (`wpn_order`: the centre gun in the middle).
-  * A box's paper is green if its slot holds a weapon and red if it's
-    empty (ULA papers 4 and 3, `C_OK`, `C_WARN`).
-  * Under an occupied slot, on row 19, is its weapon's letter
-    (`wpn_glyph`): M machine gun, L laser, C chain gun (the linked chain
-    guns too), R rocket pod.
-  * The selected slot's box has a white outline (ink 7 in the bitmap).
-  * Asking for an empty slot (a new press of its key) doesn't select it.
-    The current slot is kept, and the asked-for box flashes amber and red,
-    `WFLASH` (5) frames each, 3 times, ending red (`C_AMBER`, paper 6).
-  * `draw_wpn` redraws the five boxes and letters every frame.
+* **Weapon slots (`draw_wpn`):** five columns, at character columns 11, 13,
+  15, 17 and 19 (from `WPN_COL0`). Left to right they show the slots keys
+  2, 4, 1, 5 and 3 select (`wpn_order`: the centre gun in the middle). From
+  the top:
+  * **Row 17 (`WPN_NUM_ROW`):** the slot's number, yellow if it's selected.
+    An unused slot has no number.
+  * **Rows 18–20 (`WPN_ROW`, `WPN_BAR`):** a bar one character wide with the
+    ammo down it in black, one digit a row, hundreds at the top (`wpn_digits`).
+    Infinite ammo shows INF. Green with ammo (`C_OK`), red with none left
+    (`C_WARN`), black and blank if unused (`P_EMPTY`).
+  * **Row 21 (`WPN_LTR_ROW`):** its weapon's letter (`wpn_glyph`): M machine
+    gun, L laser, C chain gun (the linked chain guns too), R rocket pod.
+  * The selected slot's number and letter are yellow, with a yellow line
+    above and below its bar, in their cells (the bar's ink is black).
+  * Asking for an unused slot (a new press of its key) doesn't select it.
+    The current slot is kept, and the asked-for bar flashes amber and black,
+    `WFLASH` (5) frames each, 3 times (`C_AMBER`, paper 6).
+  * `draw_wpn` checks every column each frame and redraws one only when what
+    it shows has changed (`wd_shown`; `ula_init` clears it). The cost is less
+    than the old boxes' redraw of all five each frame.
   * The flash state (`wflash_slot`, `wflash_t`) is resident, since the
     weapons page sets it and the HUD page shows it.
+* **Panel trim (`panel_trim`, hud.asm):** drawn into the ULA once a level, so
+  it costs nothing a frame. A second rule under the green divider and one
+  along the bottom; a surround for each gauge, its corners left out to round
+  them (`gauge_trim`; the booster's once it's fitted); a bracket round the
+  weapon slots; light grey grooves between the sections; a line down the
+  map's edge.
+* **Viewport frame (hardware sprites, `frame_spr`, `hud_sprites.asm`):** 12
+  sprites (`FRM_SPR0`, after the compass's) give the view curved corners and
+  edges without drawing on Layer 2. Each corner is a 16×16 pattern, an arc 2
+  pixels thick with the area outside it opaque: black at the top (the
+  border), the panel's colour at the bottom. The edges are patterns with one
+  row or column of each colour stretched by sprite scale: two sprites at ×8
+  across the top, two at ×4 down each side, overlapping to make the lengths.
+  The panel's bottom corners are rounded too. The patterns are made by
+  the HUD sprite editor (`FRM_*`, in `sprites/hud.json`). Being sprites they keep their
+  colours in the vision modes. They are set once (`frm_on`) and stay in the
+  shadow table, so they only add their 60 bytes to `spr_update`;
+  `spr_hide_all` clears `frm_on` for the menus, so they are set again after.
 * **Compass (hardware sprites, `hud_sprites.asm`):** a bar across the top
   of the screen, in the top border at sprite row 8, centred on the heading.
   * **Scale:** 2 pixels per yaw unit, across the full 320-pixel width of
@@ -1384,7 +1474,7 @@ transparent: the city map and the gauges.
     heading.
   * **Images:** the letters are the menu font's, doubled. They and the dots
     and pointer are patterns `CSPR_*` in sprite bank 0, after the human
-    status ones (`gentables.py`).
+    status ones (`sprites/hud.json`).
   * **Drawing:** each frame `compass_spr` places each mark within ±80 yaw
     units at x = 160 + 2 × (mark − yaw). `hud_sprites` does this with the
     human column, after the flip. Turning right moves the marks left.
@@ -1490,7 +1580,7 @@ rather than in the sprite code's page.
   `sprite_data.asm` that starts with `SPRB_LOADER`.
 
 **Human status sprites:** bank 0 holds four 16 × 16 patterns
-(`tables_hspr.inc`, from `gentables.py`), loaded as patterns 0–3. They're based on
+(`tables_hspr.inc`, from `sprites/hud.json`), loaded as patterns 0–3. They're based on
 the HUD's passenger markers, for showing what has become of each human:
 
 | Pattern | Name | Means | Picture |
@@ -1535,6 +1625,12 @@ NextReg select alone, so this still works):
 | `sprites/` | the figures' sources: `palette.json` (their 32 colours) and one file per figure (`zombie`, `ghoul`, `ghost`, `banshee`, `human`.json). Edit with `tools/sprite_editor.py` |
 | `tools/spritefile.py` | the figure files' format, checks, scaling and packing (shared by the editor and `gengraphics.py`) |
 | `tools/sprite_editor.py` | the figure editor (tkinter) |
+| `sprites/hud.json` | the HUD's hardware sprites: the human status icons, compass marks and viewport frame. Edit with `tools/hud_sprite_editor.py` |
+| `docs/MANUAL.txt` | the player's manual, copied into `release/`: keep it in step with the controls, weapons and `salvage_tab` |
+| `tools/make_release.py` | makes the `release/` folder (`build.bat release`) |
+| `tests/release_check.py` | checks the game in `release/` (`build.bat release`) |
+| `tools/hudsprites.py` | the HUD sprite file's format, checks and pixel operations (shared by the editor, `gentables.py` and the tests) |
+| `tools/hud_sprite_editor.py` | the HUD sprite editor (tkinter) |
 | `menu.asm` | main menu page (`PAGE_MENU`, page 8, game logic at `$C000`): menu screen, per-frame random seed stirring, starts `newGame` |
 | `input.asm` | input engine (`PAGE_INPUT`, page 12, core function at `$E000`): scans the 8 ZX half-rows, the 2 Next extended-key registers and the joysticks (ports `$1F`, `$37`, NextReg `$B2`) each frame; redefinable action keys and joystick inputs, the pause control |
 | `sprites.asm` | hardware sprites, Layer 3 (`PAGE_SPRITES`, page 13, core function at `$E000`): set-up, pattern and palette loading, a shadow attribute table and its per-frame upload, positions on the 320 × 256 sprite screen |
@@ -1558,7 +1654,7 @@ NextReg select alone, so this still works):
 | `htabs.asm` | generated: `hztab` (horizon row per pitch) and `htab` (building height per map code), resident |
 | `city_map.asm` | generated: the constants every city shares: the base and perimeter wall (`PAD_*`, `TERRACE_*`, `BASE_YAW`, `WALL_FAMILY`). The maps themselves are in the city files |
 | `l2_pallets.asm` | generated: checks on the fixed Layer 2 colour slots. The palettes themselves are in the city files |
-| `gentables.py` | generates `sin_tables.asm`, `htabs.asm`, `city_map.asm` and `l2_pallets.asm` (above), the data files in `ZPDATA/` (cities and levels), `tables_city.inc` (reciprocals, log2, used corners) and `tables_hspr.inc` (the human status hardware sprite patterns) |
+| `gentables.py` | generates `sin_tables.asm`, `htabs.asm`, `city_map.asm` and `l2_pallets.asm` (above), the data files in `ZPDATA/` (cities and levels), `tables_city.inc` (reciprocals, log2, used corners) and `tables_hspr.inc` (the HUD's hardware sprite patterns, from `sprites/hud.json`) |
 | `layer2_cls.asm` | zxnDMA equates, the fill command block and `dma_fill` (resident, in the main page): used by `clear_screen`, the occlusion buffer's reset (`occ_begin`), `menu_clear` and `ula_init` |
 | `tools/nexsim.py` | small headless Z80N emulator used for testing: dumps every flipped frame to PNG and counts T-states per routine |
 | `build.bat` | build script: the generators, sjasmplus, then the regression tests |
@@ -1717,9 +1813,36 @@ the frame rate. At 14 fps:
 | Machine gun round (`BULLET_STEP`) | 457 | 35.7 | 500 |
 | Human running to the VTOL (`HUMAN_RUN`) | 9 | 0.70 | ≈ 10 |
 
+## HUD sprites and their editor
+
+The HUD's hardware sprites (Layer 3: the human status icons, the compass marks
+and the viewport frame) are 16 × 16 patterns in `sprites/hud.json`, a pixel a
+byte, RRRGGGBB, `$E3` transparent. `gentables.py` (`build.bat`) makes
+`tables_hspr.inc` from the file, and stops if it fails the checks
+(`tools/hudsprites.py`). A pattern's number is its place in the file, and its
+name is its `equ`.
+
+* **The editor** (`python tools/hud_sprite_editor.py [NAME]`): the sprites by
+  name and as a sheet, the pixels enlarged, the 256 colours, and previews: at
+  the game's size and twice it, over black, the panel or sky, and as the game
+  uses it (the human icons together, the compass bar, the frame's corners and
+  stretched edges).
+  * Left and right buttons paint their colours; Ctrl+click picks one up.
+  * Tools: pencil, fill, line, box. Mirror, flip, rotate, replace a colour,
+    clear; the arrow keys shift the sprite, wrapping round.
+  * Ctrl+Z and Ctrl+Y undo and redo, Ctrl+C and Ctrl+V copy a sprite over
+    another, Ctrl+S saves. Run `build.bat` after saving.
+* **The game's own sprites** have to stay, first and in order (`REQUIRED`), so
+  they can be redrawn but not deleted.
+* **Adding one:** Sprite, Add. It goes after the others (31 fit in the bank)
+  and has an `equ`, so code can use it by name.
+* **The frame's colours** are the pixels of `FRM_*` now. Outside the curve
+  `FRM_CRN_P` is the panel's colour, `$6D` in `ula_palette` (`hud.asm`), so
+  change the two together.
+
 ## Figures and the sprite editor
 
-The humans and monsters (zombies, ghouls, ghosts, banshees) are drawn from
+The humans and monsters (zombies, ghouls, ghosts, banshees, liches) are drawn from
 graphics made with the sprite editor, in their own colours, at sizes that
 suit their distance.
 
@@ -1733,7 +1856,7 @@ suit their distance.
   * Each has its height in world units (the zombie's 26: 2 m; the ghoul's
     13), and one animation per **purpose** the game draws it for.
   * The purposes are fixed by the game (`spritefile.FIGURES`, numbered
-    `ANIM_*` in `gfx_ids.inc`): zombie and ghoul `walk_front`, `walk_side`,
+    `ANIM_*` in `gfx_ids.inc`): zombie, ghoul and lich `walk_front`, `walk_side`,
     `walk_rear`; ghost and banshee `float`; human `wave`, `run_front`,
     `run_side`, `run_rear`, `stand`. A side view faces left: the game mirrors it for
     a figure facing right.
@@ -1768,7 +1891,9 @@ suit their distance.
     frames; per frame its levels, farthest first: `min_z`, size, page,
     address), then the pixels, a row at a time: its first drawn pixel's
     column, a count, and each pixel's palette entry (0: transparent).
-  * The starting figures take 2 pages (10K).
+  * The starting figures take 4 pages (30K of the 32K): the lich, at 16 × 32
+    in 5 levels of detail and 2 frames a purpose, is 9K of it, so a bigger
+    figure needs fewer frames or levels somewhere.
 * **In the game:**
   * **Loading:** at start-up `gfx_load` (`level_load.asm`) reads the file
     into pages 35 on (`PAGE_GFX0`), each through slot 4, and checks it
@@ -2039,9 +2164,22 @@ pad in the centre, and the perimeter wall.
   colour instead, which is tinted with the city.
 
 ### Waves and level progress
-* **Zombies a wave:** the level record's `LV_ZOMBIES`, at most 30
+* **Zombies a wave:** the level record's `LV_ZOMBIES`, at most 40
   (`NZOMB`, the zombie records). Over each city's 5 levels it's 10, 15, 20,
-  25, 30, then the cycle repeats in the next city.
+  25, 30, then the cycle repeats in the next city (levels 2 and 4 are set
+  to 40 by hand, with clusters, as a trial).
+* **Clusters:** `CLUSTERS n` on a level file's `WAVE` line (or the Clusters
+  column in the map editor; stored as `SPEC_CLUSTER`, 4, among the wave's
+  special types, but no monster) spawns that wave's zombies in n clusters,
+  up to 8. The first n are the parents, placed at random as usual. Each of
+  the others in turn belongs to the next parent, so the clusters are even:
+  `zcluster` (zombie.asm) tries up to `ZC_TRIES` (16) random places within
+  2 tiles of it on x and z (`ZC_R`), for one on a street on the map,
+  then falls back on the parent's own cell. It only affects where they
+  start: they walk as usual after that.
+  * **Which waves:** every 3rd level (3, 6 ... 48), the middle wave has 4
+    clusters: wave (`LV_WAVES` + 1) / 2, the earlier of the two middle ones
+    when the waves are even, and the only one on a one-wave level.
 * **Waves:** `LV_WAVES` is 1 on the first city's levels, plus one more for
   each city after: 2 on levels 6–10, up to 10 on levels 46–50.
   `LV_FAST` of a wave's zombies are fast. (`gentables.py` writes these
@@ -2054,7 +2192,7 @@ pad in the centre, and the perimeter wall.
   * After the last wave, it sets `level_done`.
   * The level's ghosts are placed with the first wave, so it lasts until
     they are killed. Banshees spawned with an even wave belong to it.
-* **Level complete:** `main_loop` shows LEVEL COMPLETE
+* **Level complete:** `main_loop` shows LEVEL n COMPLETE (the level's number)
   (`level_complete_screen`, menu.asm), with PRESS SPACE TO CONTINUE on the
   bottom row, until SPACE is pressed: a new press, so SPACE held down for
   firing as the level ended doesn't skip it. Then the load-out screen
@@ -2136,7 +2274,7 @@ pad in the centre, and the perimeter wall.
 * **The last level:** after level 50 (`LEVEL_LAST`, from `gentables.py`)
   comes no LEVEL COMPLETE. Instead `game_complete_screen` shows
   CONGRATULATIONS ("ALL 50 LEVELS COMPLETE", "THE CITIES ARE SAFE") for
-  10 seconds, then GAME OVER for 10 seconds, then the main menu.
+  10 seconds, then GAME OVER until SPACE is pressed, then the main menu.
 
 ## City map bytes
 
@@ -2684,7 +2822,7 @@ by playing doesn't change the results.
 
 | File | What it checks |
 |------|----------------|
-| `test_data.py` | every city map, level and level palette passes `tools/check_maps.py`; every figure and the figure colours pass the sprite editor's checks; `ZPDATA/SPRITES.ZPG` is up to date with `sprites/` |
+| `test_data.py` | every city map, level and level palette passes `tools/check_maps.py`; every figure and the figure colours pass the sprite editor's checks; `ZPDATA/SPRITES.ZPG` is up to date with `sprites/`; `sprites/hud.json` passes its checks and matches `tables_hspr.inc`, and the HUD sprite editor's pixel operations work |
 | `test_render.py` | ten fixed views of level 1 (high, low, pitched up and down) are drawn byte for byte as the reference `tests/ref/render.ref`; prints each view's frame time against the reference's (reported, not a failure) |
 | `test_interrupts.py` | 30 frames of flight drawn the same with no interrupts, with the 50 Hz interrupt, and under stress (an interrupt every ~2,000 T-states, and in the window before `push_end`'s DI with SP in Layer 2) |
 | `test_figures.py` | `SPRITES.ZPG` is loaded into the graphics pages; a waiting human waves, and a running one is drawn from the front, the side (mirrored or not) or behind by the way it runs; without the file the game runs and draws no figures |
@@ -2693,6 +2831,11 @@ by playing doesn't change the results.
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
+| `test_lich.py` | a lich only in the last wave of a city's last level, 50 hit points and 60 frames a shot in city 1, 75 and 50 in city 2, 275 and 10 in city 10; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |
+| `test_debug_keys.py` | debug key 0 moves on a wave, and on the last wave completes the level; key 9 completes the level from any wave, the level number unchanged until the level complete screen moves it on one |
+| `test_clusters.py` | levels 2 and 4 have 40 zombies, the rest of them within 2 tiles of their 4 parents, on streets; the parents are spread out; on level 1 the zombies aren't clustered; every 3rd level has 4 clusters on its middle wave and no other, and on level 12 only wave 2 spawns clustered |
+| `test_hud.py` | a weapon slot in use shows its number, ammo down its bar (INF, 012, 137, 000 in red) and letter; an unused one none of them; the selected one's number and letter are yellow, with lines above and below; the digits' ink is black; the frame's sprites are shown, the top edge stretched |
+| `test_gameover.py` | GAME OVER stays up, with its prompt, past the old 10 seconds; a SPACE already held doesn't end it; a new press goes to the main menu |
 | `test_landing.py` | landed, Q and A can't speed it up or reverse it; a speed it sets down with is braked to 0, with a shake; Q from reverse stops at 0; in the air Q speeds up as before; strafing moves 2.5 units sideways a frame while held in the air and none while landed, and K undoes L; no strafe without the lateral thrusters |
 | `test_vision.py` | each level's vision palettes load; N steps through the modes the VTOL has (all three, or thermal only), each one's palette swapped in, and does nothing with none; in a vision mode a human is drawn from the vision set |
 | `test_humans.py` | a waiting human stands while the VTOL is far off and waves when it's near; on the road it flees a monster along the road, taking the open way when one is blocked; on a roof it never flees |
