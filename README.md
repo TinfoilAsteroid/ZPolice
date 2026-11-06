@@ -10,6 +10,8 @@ building in its own shaded colour, with true hidden line removal, on Layer 2 at
 
 ![boulevard](docs/boulevard.png) ![turning](docs/turning.png) ![overhead](docs/overhead.png)
 
+See [AI-DISCLOSURE.md](AI-DISCLOSURE.md): the code is AI-generated, with hand tuning.
+
 ## Building and running
 
 Requirements: sjasmplus 1.20+ (built with Z80N support) and Python 3. To run
