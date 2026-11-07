@@ -23,7 +23,17 @@ build.bat run      # ...and launch CSpect (sound off: CSpect's -sound)
 build.bat runsound # ...and launch CSpect with sound on
 build.bat notest   # ...without the regression tests (also: build.bat run notest)
 build.bat release  # ...then the release build, in release/ (also: build.bat release run)
+build.bat hardware # ...for a real Next, with DMA+ (also: build.bat release hardware)
 ```
+
+**Hardware build:** `build.bat hardware` assembles with `-DREAL_HARDWARE`, which
+lets the DMA routines use DMA+ (the zxnDDMA, the blitter in core 3.03.00). So
+far that's `dma_fill` (`layer2_cls.asm`), in fill mode. CSpect has no DMA+, so
+this build isn't launched there, and the `.nex` asks for core 3.03.00. Without
+the option the game uses only the plain zxnDMA. The tests run on whichever was
+built: `tools/nexsim.py` models DMA+ fill mode and stops on any other DMA+
+command. The hardware's own primer is `docs/zxnDDMA/zxnddma.gde` in the Next
+distribution.
 
 **Release build:** `build.bat release` builds and tests the debug build as
 usual, then assembles again with `-DRELEASE`, which turns off everything for
@@ -163,7 +173,7 @@ views are pixel-identical. Frames per second, off → on:
 | City centre, fixed views | 12.33 / 12.69 / 12.18 | 18.28 / 17.48 / 15.88 |
 | Facing the wall (little to hide) | 30.60 | 27.43 |
 
-**`SKY_IS_WALL`:** the ceiling (`MAX_Y`, 1.5; 3.0 with the vertical
+**`SKY_IS_WALL`:** the ceiling (`MAX_Y`, 1.4; 3.0 with the vertical
 thrusters, `MAX_Y_THRUST`) is far below the perimeter wall (7.0), so the
 wall rises above the horizon in every direction.
 * The sky fill uses the wall's colour (`WALL_FAMILY`, base shade), and
@@ -676,17 +686,27 @@ vision green at 25, night vision monochrome at 65, thermal at 85.
     (level mode): its four palettes side by side, each with Copy normal,
     Convert to green / grey / thermal and Generated. gentables also writes
     the generated ones to `levels/generated/`, for reference.
-* **Figures:** in a vision mode they are drawn from their vision set
-  (`spr_lod`: the directory's entries `GFX_ANIMS` on), made by
-  gengraphics.py from the normal figures (`spritefile.vision_pixels`): each
-  pixel is its figure's face (the top quarter), core, or outline (an edge
-  next to the core), each one palette entry the vision palettes colour.
+* **Figures:** the same graphics in every mode: the mode's palette
+  recolours them. Each of the 31 figure colours (entries 192–223) has its
+  own colour in each vision mode, in `sprites/palette.json` (`"vision"`),
+  set in the sprite editor (its Colours shown buttons). So:
+  * Two figures meant to look different in a mode use colours of their
+    own (File > Check in the editor lists shared ones). Only the zombie and
+    the fast zombie share colours (their bodies).
+  * An outline that shows in a mode is drawn in the art: a second colour,
+    the same in normal view. The ghost has two whites, its body and its
+    outline: in thermal the body is red and the outline white. The banshee,
+    the human and the lich have an outline colour too.
+  * Mode switches are a palette swap, and a blitter (DMA+) can draw the
+    figures in any mode as they are.
 
   | Figure | Night vision green | Monochrome | Thermal |
   |--------|--------------------|------------|---------|
-  | human | bright green | white | white face, yellow core, orange outline |
-  | zombie, ghoul | mid green | mid grey | orange face, red body |
+  | human | bright green, a brighter face | white | white face, yellow body, orange outline |
+  | zombie, ghoul | mid green, a brighter head | mid grey, a lighter head | orange head, red body |
+  | fast zombie | as the zombie, its head brighter still | its head white | yellow head, red body |
   | ghost, banshee | black | black | red body, white outline |
+  | lich | green | grey | white crown, magenta, red outline |
 
   A ghost fading out keeps its normal fade colours (shared with the map).
 
@@ -773,8 +793,7 @@ Inspired by *Defender*: humans wait around the city to be picked up.
   (`HUMANS_INIT`, 5) are placed at random at start-up, never on the
   perimeter wall.
   * They stand on a road, or on a roof no taller than `HUMAN_ROOF_MAX` =
-    `MAX_Y` − 1.0 height unit. With the ceiling at 1.5 height units
-    (15 m), that's 0.5 (5 m), so only level-1 roofs (4.7 m).
+    0.5 height units (5 m), so only level-1 roofs (4.7 m).
   * They move only to run to a landed VTOL (below) or from a monster.
   * **Waving:** a waiting human stands facing you (`ANIM_HUMAN_STAND`)
     while the VTOL is far off, and waves (`ANIM_HUMAN_WAVE`, a new frame
@@ -957,6 +976,26 @@ A round that hits is moved to the impact point, drawn there once, then
 freed. A zombie that is hit loses the round's damage (see *Damage*
 below); when its hit points run out it is killed: its map blip is removed
 and its record made inactive.
+
+**Aim assist (`aim_assist`, weapons.asm):** the view has 256 headings, 1.4°
+apart, so a far monster can lie between two of them. So each shot from the
+centre slot (machine gun, chain gun, laser) turns to the middle of the nearest
+monster within `AIM_DEV` (8/256 rad, 1.8°: the one constant to tune) of its
+path each way, by at most that. Only monsters drawn last frame count (bit 1 of
+record +31), so one behind a building doesn't pull the shot, and only those
+drawn within `AIM_COLS` of the centre column are measured. It's worked out
+once a frame (`aim_probe`, before the guns, for a round that never flies) and
+each round applies it (`aim_apply`). The view doesn't move, but the centre
+crosshair does, to where the rounds go (`sight_ax`, `sight_ay`: up to
+`AIM_DEV`/2 pixels each way), even before you fire. A chain gun's spread goes
+on top. The
+linked chain guns and the pylons aren't assisted. A stationary zombie, shots
+across one heading step (`tests/test_aim.py` has the behaviour):
+
+| Range | 20 m | 40 m | 60 m | 80 m |
+|-------|------|------|------|------|
+| Hit, without | 100% | 45% | 27% | 27% |
+| Hit, with | 100% | 100% | 100% | 82% |
 
 **Tracers:** `draw_bullets` in the city page draws, for each round, a line
 along the path it covered this frame: from where it started (`B_PX..`) to
@@ -1159,8 +1198,8 @@ letter B. A salvage reward at 40.
   1.4° steps: 9.8°), keeps its speed, and every `BOMB_STEEPEN` (5) frames
   dives one step steeper (`bomb_steer`: the low byte of `B_PIT` counts the
   frames; its direction afresh, `rnd_dir`), to 79°, until it hits a
-  building, a monster or the ground (`B_KIND` = `BK_BOMB`). From 15 m,
-  hovering, it lands about 710 units ahead 39 frames later, at about 18°.
+  building, a monster or the ground (`B_KIND` = `BK_BOMB`). From the
+  ceiling, hovering, it lands about 670 units ahead 36 frames later, at about 18°.
 * **Drawing:** the rocket's white streak (`draw_rocket`) without its
   yellow trail, 2 pixels wide.
 * **Heights:** a round's height (`b_y_at`) rounds each frame's drop to the
@@ -1170,7 +1209,7 @@ letter B. A salvage reward at 40.
   (2 tiles, 512 units) on each of the x, y and z axes: monsters, humans,
   the terrace, barricades and the landing pad, and the VTOL (`rb_vtol`).
   The missile's boom, and `BOMB_PARTS` (30) orange particles.
-* **Danger:** hovering at 15 m, the bomb lands beyond the blast's reach.
+* **Danger:** hovering at the ceiling, the bomb lands beyond the blast's reach.
   Flying on after it, the VTOL closes the gap, so it can be inside the
   blast and take 30. Low down (40 units up), the bomb lands about 180 units
   ahead, well within reach.
@@ -1192,7 +1231,9 @@ Weapons do damage in hit points:
 * **Rounds:** each round carries its damage in `B_DMG`. `zdamage` takes
   it off the zombie and kills the zombie at 0.
 * **Hit points:** zombies keep theirs at +18 of their record. On level 1
-  a zombie has `ZHP` (5) and a fast zombie `ZHP_FAST` (4).
+  a zombie has `ZHP` (5) and a fast zombie `ZHP_FAST` (4). A fast zombie is
+  drawn as its own figure, `fast_zombie` (`zfig_sel`): to start with, the
+  zombie with a bright green head.
   * The machine gun kills a zombie in 2 rounds and a fast zombie in 1.
   * The chain gun takes 3 rounds, and the laser 5 beam frames.
   * Humans have `HUMAN_HP` (10). The terrace tiles have `TERRACE_HP`
@@ -1365,7 +1406,7 @@ At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
   32 frames) and falls, a unit a frame faster each frame up to
   `DEAD_FALL_MAX` (8 units, 11 m/s), until it hits the ground under it.
   That's the road, or the highest roof under its footprint (`floor_y`).
-  From the 15 m ceiling it falls in about 2 seconds.
+  From the 14 m ceiling it falls in about 2 seconds.
 * **Game over:** once on the ground (`dead_down`) it lies there for
   `DEAD_PAUSE` (100) frames. Then the game is over: the GAME OVER screen
   until SPACE is pressed, then the main menu.
@@ -1387,8 +1428,8 @@ transparent: the city map and the gauges.
   * **A** shares character column 3 (`ALT_GCOL`). The left 4 pixels are the
     altitude (green), and the right 4 the height of the city tile under the
     craft (amber, `GAUGE_AMBER`), read via `cam_cell_ptr` and `bld_height`.
-    Both are 1 pixel per 4 world units, so the 15 m ceiling (`MAX_Y` 192)
-    fills the bar. With the vertical thrusters fitted (`vthrust_fitted`)
+    Both are 1 pixel per 4 world units, so the 14 m ceiling (`MAX_Y` 179)
+    nearly fills the bar, 44 pixels of 48. With the vertical thrusters fitted (`vthrust_fitted`)
     both are 1 per 8, so their 30 m ceiling (`MAX_Y_THRUST` 384) fills it. The ground under the craft is always lower than the
     craft, so it never overflows.
   * **Why Layer 2:** the two halves of A need green, amber and black in one
@@ -1624,7 +1665,7 @@ NextReg select alone, so this still works):
 | `hud.asm` | HUD page (`PAGE_HUD`, runs at `$E000`): all ULA (Layer 1) code, font and labels |
 | `zombie.asm` | zombie page (`PAGE_ZOMBIE`, stays mapped at `$2000`): zombie records, seeding, walking, the zombie marks in `city_map` (`zflags`), and projecting the figures (`fig_draw`; `spr_lod` and `spr_draw` in `city2.asm` draw them) |
 | `gengraphics.py` | builds the figures' graphics: `sprites/*.json` (the sprite editor's files) into `ZPDATA/SPRITES.ZPG`, and `gfx_ids.inc` (the `ANIM_*` purposes). Run by `build.bat` before `gentables.py` |
-| `sprites/` | the figures' sources: `palette.json` (their 32 colours) and one file per figure (`zombie`, `ghoul`, `ghost`, `banshee`, `human`.json). Edit with `tools/sprite_editor.py` |
+| `sprites/` | the figures' sources: `palette.json` (their 32 colours) and one file per figure (`zombie`, `fast_zombie`, `ghoul`, `ghost`, `banshee`, `human`, `lich`.json). Edit with `tools/sprite_editor.py` |
 | `tools/spritefile.py` | the figure files' format, checks, scaling and packing (shared by the editor and `gengraphics.py`) |
 | `tools/sprite_editor.py` | the figure editor (tkinter) |
 | `sprites/hud.json` | the HUD's hardware sprites: the human status icons, compass marks and viewport frame. Edit with `tools/hud_sprite_editor.py` |
@@ -1795,12 +1836,12 @@ units.
 | Draw distance (`VIEW_R` 8 tiles) | 2048 | 160 m |
 | Building height per level (15 levels) | 60 | 4.7 m |
 | Tallest building / perimeter wall (7.0 height units) | 896 | 70 m |
-| Flight floor / ceiling (`MIN_Y` / `MAX_Y`, 1.5 height units) | 8 / 192 | 0.6 m / 15 m |
+| Flight floor / ceiling (`MIN_Y` / `MAX_Y`, 1.4 height units) | 8 / 179 | 0.6 m / 14 m |
 | Ceiling with the vertical thrusters (`MAX_Y_THRUST`, 3.0 height units) | 384 | 30 m |
 | VTOL, length × width (`VTOL_HL`, `VTOL_HW` are halves) | 128 × 38 | 10 m × 3 m |
 | Clearance above a roof (`COLL_H`) | 12 | 0.94 m |
 | Zombie height (`ZOMBIE_H`) | 26 | 2 m |
-| Zombie hit box (`ZHIT_R` either side, `ZHIT_H`) | 6 × 26 | 0.5 m × 2 m |
+| Zombie hit box (`ZHIT_R` either side, `ZHIT_H`) | 3 × 26 | 0.25 m × 2 m |
 | Rescue range (`RESCUE_R`, 2.0 tiles) | 512 | 40 m |
 
 Speeds are applied once per rendered frame, so in real time they scale with
@@ -1868,34 +1909,49 @@ suit their distance.
     first from 0). Left blank, `min_z` is worked out from the figure's
     height: the distance at which its projected height is the level's
     (`128 × height / level height`).
-  * The game draws the level whose `min_z` is the largest not past the
-    figure's distance, at its own size (no scaling), its bottom centre on
-    the figure's feet.
+  * The game draws a figure at its true projected height, a row at a time
+    from 3 to 32 rows (`GFX_MIN_H`, `GFX_MAX_H`): `gengraphics.py` makes each
+    size from a level. A size uses the level whose `min_z` is the largest not
+    past that size's distance, as drawn if it's that size already, otherwise
+    scaled in proportion. Its bottom centre is on the figure's feet.
 * **The editor** (`python tools/sprite_editor.py [figure]`): the figure, its
-  purposes, the purpose's frames and the frame's levels on the left; the
-  level's pixels, enlarged, in the middle; the colours, the tools and a
-  preview (game size and twice it, playing the frames) on the right.
+  purposes, the purpose's frames and every size the game draws the frame at
+  on the left; the size's pixels, enlarged, in the middle; the colours, the
+  tools and a preview (game size and twice it, playing the frames) on the
+  right.
+  * **Sizes:** one to every row from 3 to 32 (`GFX_MIN_H`, `GFX_MAX_H`),
+    tallest first, each with its width and the distance it's drawn at, and
+    any size drawn taller (not drawn by the game: a source for the smaller
+    ones). A size is *drawn* (a level in the file, blue in the list) or
+    generated ("from 16": made from that drawn size, and shown as the build
+    makes it). Painting on a generated size, or any edit to it, makes it
+    drawn, starting from what was generated; Size > Back to generated
+    forgets it. A drawn size changes the generated sizes it is the next
+    larger drawn one for.
   * Paint with the left and right buttons (two colours), Ctrl+click picks
     a colour up, and the tools are Pencil, Fill and Line. Undo is Ctrl+Z.
-  * Edit: mirror, flip, shift, clear, copy the previous frame's level, and
+  * Edit: mirror, flip, shift, clear, copy the previous frame's size, and
     edit a colour (or double-click its swatch). The view menu has an onion
     skin, the previous frame faintly under this one.
-  * Frame: add, duplicate, delete, move. Level: add, make the next from
-    this one (scaled down, each pixel the most common colour it covers),
-    remake every frame's smaller levels from its largest, resize (keeping
-    the feet), set `min_z`, delete. Levels stay in size order.
+  * Frame: add, duplicate, delete, move. Size: draw this size by hand, back
+    to generated (this size, or every size but the largest in every frame
+    of the purpose), add a drawn size (blank, any width and height), resize
+    a drawn one (keeping the feet: it moves to its new height), set a drawn
+    one's `min_z`. Up to 40 drawn sizes a frame (`MAX_LODS`).
   * Save (Ctrl+S) checks the figure and writes it and the colours.
 * **Build:** `gengraphics.py` (run by `build.bat`, first) checks the files
   and packs them into `ZPDATA/SPRITES.ZPG`.
   * A figure without a file is made from the original stick figures, in
     colour, at 4 levels (16, 12, 8 and 4 rows high).
-  * Up to 4 pages of 8K (`GFX_PAGES_MAX`): the directory (per purpose its
-    frames; per frame its levels, farthest first: `min_z`, size, page,
-    address), then the pixels, a row at a time: its first drawn pixel's
-    column, a count, and each pixel's palette entry (0: transparent).
-  * The starting figures take 4 pages (30K of the 32K): the lich, at 16 × 32
-    in 5 levels of detail and 2 frames a purpose, is 9K of it, so a bigger
-    figure needs fewer frames or levels somewhere.
+  * Up to 61 pages of 8K (`GFX_PAGES_MAX`, to page 95: all a 1 MB Next has):
+    the directory (per purpose its frames; per frame the page and address of
+    its table), then per frame a table with each height's width, page and
+    address, and the pixels, a row at a time: its first drawn pixel's column,
+    a count, and each pixel's palette entry (0: transparent).
+  * The figures take 30 pages (240K) of the 61. Each walking figure (3
+    purposes, 4 frames) is about 6 pages. The file grows with the cube of
+    `GFX_MAX_H`. A size scaled up from the art looks blocky until it's
+    drawn larger.
 * **In the game:**
   * **Loading:** at start-up `gfx_load` (`level_load.asm`) reads the file
     into pages 35 on (`PAGE_GFX0`), each through slot 4, and checks it
@@ -1906,8 +1962,9 @@ suit their distance.
     * `fig_draw` (zombie page) projects the figure. The figure's chooser
       (`zfig_sel`, `gfig_sel`, `hum_sel`) sets its purpose, frame and
       mirroring.
-    * `spr_lod` (`city2.asm`) picks the level for its distance, and
-      `spr_draw` draws it.
+    * `spr_lod` (`city2.asm`) finds the size for the figure's projected
+      height (`zhr`) in the frame's table, and `spr_draw` draws it. Past
+      `GFX_MAX_H` the figure stays that size, at its feet.
     * A row wholly on screen goes through a quick loop, patched for
       mirroring and for drawing all in one colour (`spr_col`: a fading
       ghost). A row across a screen edge is clipped per pixel; rows off
@@ -2745,8 +2802,10 @@ plane can ever be in view, which the culling relies on.
 
 **Heights:** these are in height units, where 1.0 = 128 world units =
 10 m. Buildings reach 7.0 (`BLD_MAX_H` = 896): `htab` scales the 15
-height levels linearly up to it. The craft's ceiling is 1.5 (`MAX_Y` =
-192), so the tallest towers can't be overflown. `gentables.py` emits an
+height levels linearly up to it. The craft's ceiling is 1.4 (`MAX_Y` =
+179), just under a level 3 roof's clearance, so level 3 and up can't be
+overflown without the vertical thrusters. (At 192 the craft came to rest on a
+level 3 roof and couldn't climb off.) So the tallest towers can't be overflown. `gentables.py` emits an
 `ASSERT` that its `BLD_MAX_H` matches `zpolice.asm`.
 
 The city layout and heights come from `gentables.py` (seeded random). Every
@@ -2832,6 +2891,7 @@ by playing doesn't change the results.
 | `test_save.py` | CONTINUE without a save game stays on the menu; S on the pause screen saves, and CONTINUE brings back the level, weapons, stock, hit points, salvage and booster |
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
+| `test_aim.py` | a centre slot shot just off a zombie, either side, turns to it (at most `AIM_DEV`) and hits, and the centre crosshair moves to show where before it's fired; machine gun, chain gun (with its spread) and laser; not one outside the cone, far above the path or not drawn, nor a linked gun's; the zombie is drawn at its projected height, up to the largest, in proportion |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 50 hit points and 60 frames a shot in city 1, 75 and 50 in city 2, 275 and 10 in city 10; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |
 | `test_debug_keys.py` | debug key 0 moves on a wave, and on the last wave completes the level; key 9 completes the level from any wave, the level number unchanged until the level complete screen moves it on one |
@@ -2839,7 +2899,7 @@ by playing doesn't change the results.
 | `test_hud.py` | a weapon slot in use shows its number, ammo down its bar (INF, 012, 137, 000 in red) and letter; an unused one none of them; the selected one's number and letter are yellow, with lines above and below; the digits' ink is black; the frame's sprites are shown, the top edge stretched |
 | `test_gameover.py` | GAME OVER stays up, with its prompt, past the old 10 seconds; a SPACE already held doesn't end it; a new press goes to the main menu |
 | `test_landing.py` | landed, Q and A can't speed it up or reverse it; a speed it sets down with is braked to 0, with a shake; Q from reverse stops at 0; in the air Q speeds up as before; strafing moves 2.5 units sideways a frame while held in the air and none while landed, and K undoes L; no strafe without the lateral thrusters |
-| `test_vision.py` | each level's vision palettes load; N steps through the modes the VTOL has (all three, or thermal only), each one's palette swapped in, and does nothing with none; in a vision mode a human is drawn from the vision set |
+| `test_vision.py` | each level's vision palettes load; N steps through the modes the VTOL has (all three, or thermal only), each one's palette swapped in, and does nothing with none; in every mode a human is drawn from the same graphics, each of its colours' palette entries that mode's colour from `sprites/palette.json` |
 | `test_humans.py` | a waiting human stands while the VTOL is far off and waves when it's near; on the road it flees a monster along the road, taking the open way when one is blocked; on a roof it never flees |
 
 **When the picture is meant to change** (the renderer, the figures, level

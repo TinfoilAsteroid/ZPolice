@@ -693,17 +693,23 @@ bul_clip:
 
 ;==============================================================================
 ; Gunsight in the Layer 2 viewport: the crosshairs in sight_mask (gun_aim,
-; weapons.asm), on row sight_y (the centre gun's tilt): the centre one, and
-; the linked chain guns' LINK_SIGHT_DX to its left and right
+; weapons.asm): the centre one at (sight_ax, sight_ay), where the aim assist
+; turns its rounds (aim_probe; on row sight_y, the centre gun's tilt, without
+; it), and the linked chain guns' LINK_SIGHT_DX either side of the view's
+; centre on row sight_y
 ;==============================================================================
 draw_gunsight:
         ld a,HUD_COL
         ld (line_col),a
+        ld a,(sight_ay)
+        ld (gs_row),a
         ld a,(sight_mask)
         rra
         push af
-        ld a,128
+        ld a,(sight_ax)
         call c,gs_cross
+        ld a,(sight_y)
+        ld (gs_row),a
         pop af
         rra
         push af
@@ -716,10 +722,10 @@ draw_gunsight:
         ; fall through
         ASSERT SM_CENTRE == 1 && SM_LINK_L == 2 && SM_LINK_R == 4
 
-; A = x: a crosshair centred at (x, sight_y), its arms 3..6 pixels out
+; A = x: a crosshair centred at (x, gs_row), its arms 3..6 pixels out
 gs_cross:
         ld (sight_x),a
-        ld a,(sight_y)
+        ld a,(gs_row)
         ld h,a
         ld d,a
         ld a,(sight_x)
@@ -728,7 +734,7 @@ gs_cross:
         add a,3
         ld e,a
         call draw_line
-        ld a,(sight_y)
+        ld a,(gs_row)
         ld h,a
         ld d,a
         ld a,(sight_x)
@@ -737,7 +743,7 @@ gs_cross:
         add a,3
         ld e,a
         call draw_line
-        ld a,(sight_y)
+        ld a,(gs_row)
         sub 6
         ld h,a
         add a,3
@@ -746,7 +752,7 @@ gs_cross:
         ld l,a
         ld e,a
         call draw_line
-        ld a,(sight_y)
+        ld a,(gs_row)
         add a,3
         ld h,a
         add a,3
@@ -1510,27 +1516,24 @@ occ_cut:
 ; size, then spr_draw.
 ;==============================================================================
         ASSERT GFX_ENTRIES*4 <= 256     ; (the purpose table in one 256 bytes)
-        ASSERT GFX_ENTRIES == 2*GFX_ANIMS   ; (the purposes, their vision set)
+        ASSERT GFX_ENTRIES == GFX_ANIMS ; (no vision set: the palettes recolour)
         ASSERT low GFX_DIR == 0
+        ASSERT GFX_MIN_H == 3           ; (fig_size draws from 3 rows)
+        ASSERT PAGE_GFX0+GFX_PAGES_MAX <= 96    ; (a 1 MB Next has 96 pages)
 
-; The level of detail for the figure's distance: fig_anim's frame fig_frame
-; (wrapped round its frames) at the level whose min_z is the largest not
-; past Z (zt+4; the levels are listed farthest first, the last's min_z 0).
-; In a vision mode (vision_mode not 0) from the vision set: the directory's
-; entries GFX_ANIMS on.  Sets zw, zh, spr_pg and spr_ptr.  Carry set if
-; there are no graphics.
+; The figure's size: fig_anim's frame fig_frame (wrapped round its frames) at
+; its projected height zhr (at least GFX_MIN_H, fig_size), one level to every
+; row up to the frame's largest (in every vision mode: its palette recolours
+; them).  Sets zw, zh, spr_pg and spr_ptr, and leaves the frame's page in
+; slot 6.  Carry set if there are no graphics.
 spr_lod:
         ld a,(gfx_ok)
         or a
         scf
         ret z
         nextreg LOGIC_MMU,PAGE_GFX0     ; the directory
-        ld a,(vision_mode)
-        or a
         ld a,(fig_anim)
-        jr z,.set
-        add a,GFX_ANIMS                 ; the vision set's
-.set:   add a,a
+        add a,a
         add a,a
         ld l,a
         ld h,high GFX_DIR
@@ -1545,33 +1548,34 @@ spr_lod:
         jr c,.fr
         sub c
         jr .md
-.fr:    add a,a
+.fr:    ld l,a                          ; 3 bytes each: page, address
+        add a,a
+        add a,l
         ex de,hl
         add hl,a
+        ld a,(hl)
+        inc hl
         ld e,(hl)
         inc hl
         ld d,(hl)
-        ex de,hl                        ; HL -> the frame's levels
-        ld b,(hl)
-        inc hl
-        ld de,(zt+4)                    ; Z
-.lv:    ld a,e
-        sub (hl)
-        inc hl
-        ld a,d
-        sbc a,(hl)                      ; Z - min_z: carry if nearer
-        inc hl
-        jr nc,.got
-        ld a,5
-        add hl,a
-        djnz .lv
-        ld de,-5                        ; (none: the last, the nearest)
-        add hl,de
-.got:   ld a,(hl)
-        ld (zw),a
-        inc hl
+        add a,PAGE_GFX0
+        nextreg LOGIC_MMU,a             ; the frame's table of levels
+        ex de,hl
+        ld a,(zhr)                      ; the level, the largest if past it
+        sub GFX_MIN_H
+        cp (hl)
+        jr c,.lv
         ld a,(hl)
+        dec a
+.lv:    inc hl
+        ld e,a
+        add a,GFX_MIN_H
         ld (zh),a
+        ld d,4
+        mul d,e
+        add hl,de                       ; width, page, address
+        ld a,(hl)
+        ld (zw),a
         inc hl
         ld a,(hl)
         add a,PAGE_GFX0

@@ -134,7 +134,7 @@ ghost_init:
         ld (ix+2),a
         call zrand
         ld a,l
-        and 127                         ; height 0..127 (MAX_Y 192)
+        and 127                         ; height 0..127 (under MAX_Y)
         ld (ix+21),a
         ld (ix+22),0
         xor a

@@ -168,8 +168,8 @@ PAGE_KEYDEF             equ 33          ; keydef.asm: the redefine keys
                                         ; screen (slot 6)
 PAGE_CITY2              equ 34          ; city2.asm: more Layer 2 drawing
                                         ; (slot 4, with the city page)
-PAGE_GFX0               equ 35          ; the figures' graphics (pages 35 to
-                                        ; 35+GFX_PAGES_MAX-1), loaded from
+PAGE_GFX0               equ 35          ; the figures' graphics (from page 35,
+                                        ; GFX_PAGES_MAX at most), loaded from
                                         ; ZPDATA/SPRITES.ZPG at start-up; each
                                         ; mapped at $C000 (slot 6) to draw
 PAGE_LEVEL              equ 30          ; level_load.asm: level and city

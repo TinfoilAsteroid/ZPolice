@@ -22,8 +22,8 @@ Each vision palette is generated from the level's normal one (vision()):
   * the fixed colours of the HUD, the city map, the gunsight and the
     reticule, tracers, the laser and particles: kept (KEEP), so they read
     the same in every mode;
-  * the figures' entries (SPR_PAL0..): their vision set's role colours
-    (FIGURE_COLOURS; the roles: tools/spritefile.py, vision_pixels).
+  * the figures' entries (SPR_PAL0..): each figure colour's own colour for
+    the mode (sprites/palette.json's "vision", edited in the sprite editor).
 
 Editable: levels/LEVELnn_NVG.json, _NVM.json, _THM.json (the format of
 levels/LEVELnn_PAL.json: tools/levelpal.py), if there is one, is used in
@@ -56,29 +56,9 @@ KEEP = {15, 19,                         # HUD_COL, HUD_WARN (gunsight)
         131, 135, 139, 143, 147, 151, 155, 159, 163, 167}   # fire particles
 GROUND_IDX = 7                          # GROUND_COL: the roads
 
-# The roads, and each figure's role colours (face, core, outline), by mode
+# The roads, by mode
 ROAD = {"NVG": (0, 1, 0), "NVM": (2, 2, 2), "THM": (0, 0, 1)}
-FIGURE_COLOURS = {
-    "NVG": {"human": [(4, 7, 4), (2, 7, 2), (2, 7, 2)],     # bright green
-            "zombie": [(0, 5, 0), (0, 4, 0), (0, 4, 0)],    # mid green
-            "ghoul": [(0, 5, 0), (0, 4, 0), (0, 4, 0)],
-            "ghost": [(0, 0, 0), (0, 0, 0), (0, 0, 0)],     # black
-            "banshee": [(0, 0, 0), (0, 0, 0), (0, 0, 0)],
-            "lich": [(4, 7, 4), (0, 5, 0), (0, 3, 0)]},     # a bright head
-    "NVM": {"human": [(7, 7, 7), (7, 7, 7), (6, 6, 6)],     # white
-            "zombie": [(5, 5, 5), (4, 4, 4), (4, 4, 4)],    # mid grey
-            "ghoul": [(5, 5, 5), (4, 4, 4), (4, 4, 4)],
-            "ghost": [(0, 0, 0), (0, 0, 0), (0, 0, 0)],     # black
-            "banshee": [(0, 0, 0), (0, 0, 0), (0, 0, 0)],
-            "lich": [(7, 7, 7), (5, 5, 5), (3, 3, 3)]},     # a white head
-    "THM": {"human": [(7, 7, 7), (7, 7, 0), (7, 4, 0)],     # white face, yellow
-                                                            #   core, orange outline
-            "zombie": [(7, 4, 0), (6, 0, 0), (6, 0, 0)],    # orange face, red body
-            "ghoul": [(7, 4, 0), (6, 0, 0), (6, 0, 0)],
-            "ghost": [(6, 0, 0), (6, 0, 0), (7, 7, 7)],     # red body, white outline
-            "banshee": [(6, 0, 0), (6, 0, 0), (7, 7, 7)],
-            "lich": [(7, 7, 7), (6, 0, 6), (7, 0, 0)]},     # white head, hot magenta
-}
+FIGURES = sf.load_vision()            # the figure colours' own, by mode
 
 
 def path_for(level_dir, lv, mode):
@@ -119,12 +99,9 @@ def vision(normal, mode):
         elif i == GROUND_IDX:
             out.append(ROAD[mode])
         elif sf.SPR_PAL0 <= i < sf.SPR_PAL0 + sf.COLOURS:
-            out.append((0, 0, 0))       # (the roles, below)
+            out.append(tuple(FIGURES[mode][i - sf.SPR_PAL0]) if i > sf.SPR_PAL0 else (0, 0, 0))
         else:
             out.append(shade(c, mode, roof=(i % 4 == SHADE_ROOF)))
-    for fig, base in sf.VISION_BASE.items():
-        for role, col in enumerate(FIGURE_COLOURS[mode][fig]):
-            out[sf.SPR_PAL0 + base + role] = col
     assert not any(map(levelpal.is_transparent, out))
     return out
 

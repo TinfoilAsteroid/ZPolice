@@ -8,6 +8,10 @@ rem            build release   -> then a release build in release\: no debug
 rem                               keys, load-out or upgrades (the tests run on
 rem                               the debug build first; release_check on it).
 rem                               With run or runsound it launches that one
+rem            build hardware  -> for a real Next: -DREAL_HARDWARE, so DMA+ is
+rem                               used and core 3.03.00 needed.  CSpect has no
+rem                               DMA+, so run and runsound are ignored.  Also:
+rem                               build release hardware
 setlocal
 cd /d "%~dp0"
 set SJASM=C:\CSpect\sjasmplus.exe
@@ -16,16 +20,23 @@ set CSPECT=C:\CSpect\CSpect.exe
 set TESTS=1
 set RELEASE=0
 set RUN=
+set DEFS=
 for %%a in (%*) do (
     if /i "%%a"=="notest" set TESTS=0
     if /i "%%a"=="release" set RELEASE=1
+    if /i "%%a"=="hardware" set DEFS=-DREAL_HARDWARE
     if /i "%%a"=="run" set RUN=run
     if /i "%%a"=="runsound" set RUN=runsound
 )
 
+if not "%DEFS%"=="" if not "%RUN%"=="" (
+    echo A hardware build uses DMA+, which CSpect doesn't have: not launching it
+    set RUN=
+)
+
 python gengraphics.py || exit /b 1
 python gentables.py || exit /b 1
-"%SJASM%" --zxnext --nologo --sym=zpolice.sym  --msg=all --color=auto --lst=zpolice.txt zpolice.asm || exit /b 1
+"%SJASM%" --zxnext --nologo %DEFS% --sym=zpolice.sym  --msg=all --color=auto --lst=zpolice.txt zpolice.asm || exit /b 1
 
 if "%TESTS%"=="1" python tests\run_tests.py || exit /b 1
 
@@ -36,7 +47,7 @@ exit /b 0
 
 :release
 if not exist release_tmp mkdir release_tmp
-"%SJASM%" --zxnext --nologo -DRELEASE --sym=release_tmp\zpolice.sym --msg=all --color=auto --lst=release_tmp\zpolice.txt zpolice.asm || exit /b 1
+"%SJASM%" --zxnext --nologo -DRELEASE %DEFS% --sym=release_tmp\zpolice.sym --msg=all --color=auto --lst=release_tmp\zpolice.txt zpolice.asm || exit /b 1
 python tools\make_release.py || exit /b 1
 python tests\release_check.py
 if errorlevel 1 (

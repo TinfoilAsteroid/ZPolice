@@ -71,6 +71,34 @@ def test_speed_keys_in_the_air():
         sd.close()
 
 
+def test_no_landing_at_the_ceiling():
+    """No roof's resting height (COLL_H + 1 above it) is a ceiling: there the
+    climb can't lift the VTOL off again.  And it stays in the air at the
+    ceiling next to a roof it can't clear."""
+    sd, cpu = game()
+    try:
+        rest = [cpu.rd16(sym["htab"] + 2 * k) + sym["COLL_H"] + 1 for k in range(16)]
+        for top in ("MAX_Y", "MAX_Y_THRUST"):
+            zp.check(sym[top] not in rest, f"{top} {sym[top]} is a roof's resting height")
+        cm = sym["city_map"]
+        cell = lambda x, z: cpu.rd(cm + z * 64 + x) & 31
+        high = [(x, z) for z in range(2, 62) for x in range(2, 62)
+                if cell(x, z) == 3 and cell(x, z - 1) == 0 and cell(x, z - 2) == 0]
+        zp.check(high, "no level 3 building beside a road")
+        x, z = high[0]
+        zp.set_camera(cpu, (x << 16) | 0x8000, ((z - 1) << 16) | 0x8000, sym["MAX_Y"], speed=10)
+        zp.frames(cpu, 25)
+        z1 = cpu.rd16(sym["cam_z"] + 1)
+        zp.check(z1 >> 8 < z, "flew onto a roof it can't clear")
+        zp.check(speed(cpu) == 0, f"not stopped by the building: speed {speed(cpu)}")
+        hold(cpu, "A", 3)               # (landed, A wouldn't reverse)
+        zp.check(speed(cpu) < 0, f"stuck at the ceiling: speed {speed(cpu)}")
+        y = cpu.rd16(sym["cam_y"])
+        zp.check(y == sym["MAX_Y"], f"height {y} at the ceiling")
+    finally:
+        sd.close()
+
+
 def pos(cpu):
     return cpu.rd16(sym["cam_x"] + 1) * 256 + cpu.rd(sym["cam_x"]), \
         cpu.rd16(sym["cam_z"] + 1) * 256 + cpu.rd(sym["cam_z"])

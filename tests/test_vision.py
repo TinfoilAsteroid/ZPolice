@@ -1,13 +1,19 @@
 """The vision modes: each level's palettes (ZPDATA/LEVELnn.ZPV) are loaded;
 the vision control (K_VISION, N) steps through the modes the VTOL has,
 swapping each one's palette in, then back to normal; with none it does
-nothing; and in a vision mode the figures are drawn from their vision set.
+nothing; and in a vision mode the figures are drawn from the same graphics,
+recoloured by the mode's palette: each figure colour's own vision colour
+(sprites/palette.json's "vision").
 """
 import os
+import sys
 
 import zptest as zp
 from zptest import sym
 from test_figures import find_human
+
+sys.path.insert(0, os.path.join(zp.ROOT, "tools"))
+import spritefile as sf  # noqa: E402
 
 L2_PAL = 1                                  # nexsim: Layer 2's first palette
 VIS_ALL = sym["VIS_NV_GREEN"] | sym["VIS_NV_MONO"] | sym["VIS_THERMAL"]
@@ -97,18 +103,30 @@ def drawn_entries(cpu, x, z, y):
     return set(got)
 
 
-def test_figures_vision_set():
+def nine_bit(c):
+    r, g, b = c
+    return (r << 6) | (g << 3) | b
+
+
+def test_figures_by_palette():
+    """The same graphics in every mode; each figure colour's palette entry
+    its own colour for the mode, in the palette the game swaps in."""
     sd, cpu = game(VIS_ALL)
     try:
         x, z, y = find_human(cpu)
         normal = drawn_entries(cpu, x, z, y)
         zp.check(normal, "no human drawn")
-        press_n(cpu)                            # night vision, green
-        vision = drawn_entries(cpu, x, z, y)
-        base = sym["SPR_PAL0"] + 1              # the human's roles (VISION_BASE)
-        zp.check(vision and vision <= {base, base + 1, base + 2},
-                 f"in a vision mode the human's entries are {sorted(vision)}, not its roles {base}..{base + 2}")
-        zp.note(f"normal {sorted(normal)}, vision {sorted(vision)}")
+        vis = sf.load_vision()
+        for mode, name in ((1, "NVG"), (2, "NVM"), (3, "THM")):
+            press_n(cpu)
+            zp.check(cpu.rd(sym["vision_mode"]) == mode, f"not in mode {mode}")
+            drawn = drawn_entries(cpu, x, z, y)
+            zp.check(drawn == normal, f"{name}: drawn with entries {sorted(drawn)}, not {sorted(normal)}")
+            pal = shown(cpu)
+            for e in drawn:
+                want = nine_bit(vis[name][e - sym["SPR_PAL0"]])
+                zp.check(pal[e] == want, f"{name}: entry {e} is {pal[e]:03o}, not its vision colour {want:03o}")
+        zp.note(f"human entries {sorted(normal)} in every mode")
     finally:
         sd.close()
 

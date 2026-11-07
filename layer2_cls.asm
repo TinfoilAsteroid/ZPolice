@@ -30,16 +30,29 @@ DMA_WRITE_REGISTER_COMMAND   equ $bb
 DMA_BURST                    equ $cd
 DMA_CONTINUOUS               equ $ad
 ZXN_DMA_PORT                 equ $6b
+; DMA+ (zxnDDMA, core 3.03.00, port $6B only; REAL_HARDWARE builds)
+DDMA_MODE                    equ $df    ; then the flags: each sets them all
+DDMA_FILL_VALUE              equ $f7    ; then the value
+DDMA_FLAG_FILL               equ %00001000
 
 l2_cls_byte	            DB 0
 ; ">DMA Command BLOCK"
 
-l2_fill                 DB DMA_DISABLE,  DMA_RESET, DMA_RESET_PORT_A_TIMING, DMA_RESET_PORT_B_TIMING ,DMA_WRO_BLOCK_PORTA_A2B_XFR
+l2_fill                 DB DMA_DISABLE,  DMA_RESET, DMA_RESET_PORT_A_TIMING, DMA_RESET_PORT_B_TIMING
+    IFDEF REAL_HARDWARE
+                        DB DDMA_FILL_VALUE      ; DMA+ fill: no reads, so twice
+l2_fill_value           DB 0                    ; as fast as a fixed source
+                        DB DDMA_MODE, DDMA_FLAG_FILL
+    ENDIF
+                        DB DMA_WRO_BLOCK_PORTA_A2B_XFR
 l2_fill_astrt           DW l2_cls_byte
 l2_fill_length          DB $00,$C0
                         DB DMA_WR1_P1FIXED_MEMORY ,DMA_WR2_P2INC_MEMORY ,DMA_WR4_CONT_MODE 
 l2_fill_bstrt           DB $00,$00
                         DB DMA_STOP_AT_END, DMA_LOAD, DMA_FORCE_READY, DMA_ENABLE
+    IFDEF REAL_HARDWARE
+                        DB DDMA_MODE, 0         ; the mode off again: fill_spans
+    ENDIF                                       ; and occ_dma are plain copies
 l2_fill_cmd_len	        EQU $ - l2_fill
 
 
@@ -51,6 +64,9 @@ l2_fill_cmd_len	        EQU $ - l2_fill
 ; after a fill of its own.
 dma_fill:
         ld (l2_cls_byte),a
+    IFDEF REAL_HARDWARE
+        ld (l2_fill_value),a
+    ENDIF
         ld (l2_fill_bstrt),hl
         ld (l2_fill_length),bc
         ld hl,l2_fill

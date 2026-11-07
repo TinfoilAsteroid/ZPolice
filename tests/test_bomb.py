@@ -60,7 +60,7 @@ def angle(a, b):
     return math.degrees(math.atan2(a[1] - b[1], math.hypot(b[0] - a[0], b[2] - a[2])))
 
 
-def test_glide_from_15m():
+def test_glide_from_the_ceiling():
     path, cam, hp0, hp1 = drop(sym["MAX_Y"])
     x1, y1, z1 = path[-1]
     n = sym["BOMB_STEEPEN"]

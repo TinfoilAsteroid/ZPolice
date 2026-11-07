@@ -71,5 +71,26 @@ def test_without_file():
         zp.frames(cpu, 3)
 
 
+def test_zombie_figures():
+    """A zombie is drawn as the zombie, a fast zombie as its own figure."""
+    from test_aim import game, stage
+    for kind, want in ((0, "ANIM_ZOMBIE_WALK_FRONT"), (sym["ZT_FAST"], "ANIM_FAST_ZOMBIE_WALK_FRONT")):
+        sd, cpu = game()
+        with sd:
+            r = stage(cpu, 1, 0)
+            cpu.wr(r + 15, kind)
+            seen = []
+            flips = []
+            cpu.on_flip = lambda b: flips.append(1)
+            while len(flips) < 2:
+                if cpu.pc == sym["spr_draw"] and cpu.mmu[4] == sym["PAGE_CITY2"]:
+                    seen.append(cpu.rd(sym["fig_anim"]))
+                cpu.step()
+            cpu.on_flip = None
+            lo = sym[want]
+            zp.check(seen and all(lo <= a <= lo + 2 for a in seen),
+                     f"type {kind}: drawn as {sorted(set(seen))}, not {want} (+0..2)")
+
+
 if __name__ == "__main__":
     zp.main(globals())

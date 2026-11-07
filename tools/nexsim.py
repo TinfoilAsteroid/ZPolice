@@ -38,6 +38,7 @@ KEYROWS = {  # half-row address byte -> keys bits 0..4
 
 # Estimated zxnDMA cost per byte for a memory->memory transfer (CPU halted).
 DMA_T_PER_BYTE = int(os.environ.get("DMA_T", "2"))
+DDMA_FILL = 0x08                                        # DMA+ mode ($DF) flag
 
 
 # Video timing at 28MHz, 50Hz: 312 lines of 1792 T (raster from T-states).
@@ -79,7 +80,8 @@ class Cpu:
         self.ay_chip, self.ay_pan, self.ay_reg = 3, 3, 0
         self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
-                    "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
+                    "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0,
+                    "ddma": 0, "fill": 0}
 
     # --- memory -------------------------------------------------------------
     def page(self, n):
@@ -179,7 +181,9 @@ class Cpu:
             return self.nextreg.get(self.nr_sel, 0)
         return 0xFF
 
-    # --- zxnDMA (enough for memory->memory transfers) ------------------------
+    # --- zxnDMA (enough for memory->memory transfers), and of DMA+ (zxnDDMA)
+    # only what the game uses, fill mode.  Any other DMA+ command stops the
+    # run: a transfer it doesn't model must not pass as a plain copy.
     def dma_write(self, v):
         d = self.dma
         if d["pending"]:
@@ -211,6 +215,14 @@ class Cpu:
                     p.append((2, "mask"))
                 elif v == 0x87:
                     self.dma_run()
+                elif v == 0xC3:
+                    d["ddma"] = d["fill"] = 0
+                elif v == 0xDF:
+                    p.append((2, "ddma"))
+                elif v == 0xF7:
+                    p.append((2, "fill"))
+                elif v in (0xD7, 0xDB, 0xE3, 0xE7, 0xEB, 0xEF, 0xF3):
+                    raise NotImplementedError(f"DMA+ command {v:02X}")
             # WR3 / WR5 ignored
         d["pending"] = p
 
@@ -220,6 +232,14 @@ class Cpu:
         src, dst = (d["a"], d["b"]) if d["a2b"] else (d["b"], d["a"])
         sm, dm = (d["amode"], d["bmode"]) if d["a2b"] else (d["bmode"], d["amode"])
         step = {0: -1, 1: 1, 2: 0, 3: 0}
+        if d["ddma"] & ~DDMA_FILL:
+            raise NotImplementedError(f"DMA+ mode {d['ddma']:02X}")
+        if d["ddma"]:                                   # fill: no reads
+            for _ in range(n):
+                self.wr(dst, d["fill"])
+                dst = (dst + step[dm]) & 0xFFFF
+            self.t += n * DMA_T_PER_BYTE // 2
+            return
         for _ in range(n):
             self.wr(dst, self.rd(src))
             src = (src + step[sm]) & 0xFFFF

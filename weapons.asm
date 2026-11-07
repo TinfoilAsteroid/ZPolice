@@ -90,6 +90,7 @@ update_weapons:
 .fire:  xor a
         ld (svc_on),a                   ; (service starts afresh next landing)
         call lock_update                ; the missile lock
+        call aim_probe                  ; the aim assist, and the sight
         call gun_fire
         call laser_update
 .move:  call lich_update                 ; a lich's fireballs
@@ -158,6 +159,7 @@ gun_fire:
         ld (gun_wait),a
         ld hl,BULLET_STEP
         call spawn_round
+        call aim_apply
         ld (ix+B_DMG),GUN_DMG
         ld a,SFX_MG                     ; its sound (the interrupt plays it)
         ld (sfx_req),a
@@ -274,6 +276,9 @@ gun_fire:
 chain_round:
         ld hl,BULLET_STEP
         call spawn_round
+        ld a,(wpn_sel)                  ; (linked guns: wings, straight ahead)
+        cp WPN_CENTRE
+        call z,aim_apply
         ld (ix+B_DMG),CHAIN_DMG
         ld a,CHAIN_DEV
         ; fall through
@@ -285,9 +290,22 @@ round_spread:
         call zrand                      ; (zombie page)
         push hl
         ld a,l
-        call dev_n                      ; sideways: rotate (sin, cos) by d/256
+        call dev_n                      ; sideways
+        call round_turn
+        pop hl                          ; up/down: slope (tan) +/- d/256
+        ld a,h
+        call dev_n
+        ld l,(ix+B_SLOPE)
+        ld h,(ix+B_SLOPE+1)
+        call add_sa
+        ld (ix+B_SLOPE),l
+        ld (ix+B_SLOPE+1),h
+        ret
+
+; Round IX's heading turned A steps (1/256 rad; + right): rotate (sin, cos)
+round_turn:
         or a
-        jr z,.v
+        ret z
         ld h,a
         ld l,0
         ld (cg_d),hl                    ; d * 256
@@ -312,14 +330,261 @@ round_spread:
         add hl,de
         ld (ix+B_SIN),l
         ld (ix+B_SIN+1),h
-.v:     pop hl                          ; up/down: slope (tan) +/- d/256
-        ld a,h
-        call dev_n
+        ret
+
+;------------------------------------------------------------------------------
+; Aim assist, for a centre slot round IX just spawned, pointing where the gun
+; does: the nearest monster drawn last frame (a monster behind a building
+; isn't: bit 1 of +31) with its middle within AIM_DEV steps of the path, or
+; its box on the path already.  The round turns to its middle, at most
+; AIM_DEV steps sideways and AIM_DEV up or down: aa_d and aa_ds, kept for the
+; frame's shots (aim_apply) and the sight.  Only the round: the view doesn't
+; move.  A chain gun's spread goes on top.
+;------------------------------------------------------------------------------
+
+; Once a frame, before the guns fire (lock_update has put the drawn marks in
+; bit 1): with a gun in the centre slot, the assist for a round from the
+; muzzle (aa_probe, not one in flight), and the centre crosshair moved to
+; where its rounds go: sight_ax, sight_ay.  gun_aim put them on the gun's
+; line, and nothing turns it unless this runs.
+aim_probe:
+        xor a
+        ld (aa_d),a
+        ld (aa_ds),a
+        ld a,(wpn_sel)
+        cp WPN_CENTRE
+        ret nz
+        call sel_slot
+        ld a,(hl)
+        or a
+        ret z                           ; (an empty slot)
+        ld ix,aa_probe
+        ld hl,BULLET_STEP
+        call spawn_round
+        call aim_assist
+        ld a,(aa_d)                     ; across: 128 * d/256 pixels
+        sra a
+        add a,128
+        ld (sight_ax),a
+        ld a,(aa_ds)                    ; up: the slope's change, likewise
+        sra a
+        neg
+        ld c,a
+        ld a,(sight_y)
+        add a,c
+        cp SIGHT_MARGIN
+        jr nc,.lo
+        ld a,SIGHT_MARGIN
+.lo:    cp VIEW_H-SIGHT_MARGIN
+        jr c,.hi
+        ld a,VIEW_H-SIGHT_MARGIN-1
+.hi:    ld (sight_ay),a
+        ret
+        ASSERT AIM_DEV/2 < SIGHT_MARGIN ; (sight_y is within the view)
+
+; Round IX (a centre slot round just spawned): the frame's turn (aim_probe)
+aim_apply:
+        ld a,(aa_d)
+        call round_turn
+        ld a,(aa_ds)
         ld l,(ix+B_SLOPE)
         ld h,(ix+B_SLOPE+1)
         call add_sa
         ld (ix+B_SLOPE),l
         ld (ix+B_SLOPE+1),h
+        ret
+
+aim_assist:
+        push iy
+        ld hl,$FFFF
+        ld (aa_al),hl
+        ld iy,zombies
+        ld a,NMON
+.lp:    ld (aa_n),a
+        bit 1,(iy+31)
+        jr z,.nx
+        ld a,(iy+32)                    ; (most are nowhere near the sight)
+        sub 128
+        jp p,.c
+        neg
+.c:     cp AIM_COLS
+        jr nc,.nx
+        call lk_alive
+        call nc,aa_try
+.nx:    ld de,ZREC
+        add iy,de
+        ld a,(aa_n)
+        dec a
+        jr nz,.lp
+        pop iy
+        ld hl,(aa_al)
+        ld a,h
+        and l
+        inc a
+        ret z                           ; none
+        ld hl,(aa_ac)                   ; sideways: |across| * 256 / along,
+        call abs_hl                     ; rounded, at most AIM_DEV
+        ld h,l
+        ld l,0
+        ld de,(aa_al)
+        push de
+        srl d
+        rr e
+        add hl,de
+        pop de
+        call udiv16                     ; (human.asm)
+        ld a,h
+        or a
+        jr nz,.max
+        ld a,l
+        cp AIM_DEV+1
+        jr c,.d
+.max:   ld a,AIM_DEV
+.d:     ld hl,aa_ac+1
+        bit 7,(hl)
+        jr z,.t
+        neg
+.t:     ld (aa_d),a
+        ld hl,(aa_dy)                   ; the slope to its middle
+        ld a,h
+        push af
+        call abs_hl
+        ld a,h                          ; A:HL = |dy| << 8
+        ld h,l
+        ld l,0
+        ld de,(aa_al)
+        call udiv24
+        pop af
+        rla
+        call c,neg_hl
+        ld e,(ix+B_SLOPE)
+        ld d,(ix+B_SLOPE+1)
+        or a
+        sbc hl,de                       ; the change, at most AIM_DEV each way
+        ld bc,AIM_DEV
+        add hl,bc                       ; (0 .. 2*AIM_DEV)
+        bit 7,h
+        jr z,.c1
+        ld hl,0
+.c1:    ld a,h
+        or a
+        jr nz,.c2
+        ld a,l
+        cp 2*AIM_DEV+1
+        jr c,.c3
+.c2:    ld hl,2*AIM_DEV
+.c3:    or a
+        sbc hl,bc
+        ld a,l
+        ld (aa_ds),a
+        jp aim_apply
+
+; Monster IY, in play: the one to aim at, so far?  Ahead of round IX, nearer
+; than the last, within AIM_DEV (or its box) of the path each way
+aa_try:
+        ld l,(iy+0)                     ; relative position
+        ld h,(iy+1)
+        ld e,(ix+B_X)
+        ld d,(ix+B_X+1)
+        or a
+        sbc hl,de
+        ld (aa_rx),hl
+        ld l,(iy+2)
+        ld h,(iy+3)
+        ld e,(ix+B_Z)
+        ld d,(ix+B_Z+1)
+        or a
+        sbc hl,de
+        ld (aa_rz),hl
+        ld hl,(aa_rx)                   ; along = rx sin + rz cos
+        ld e,(ix+B_SIN)
+        ld d,(ix+B_SIN+1)
+        call fmul
+        push hl
+        ld hl,(aa_rz)
+        ld e,(ix+B_COS)
+        ld d,(ix+B_COS+1)
+        call fmul
+        pop de
+        add hl,de
+        bit 7,h
+        ret nz                          ; behind
+        ld de,NEAR
+        or a
+        sbc hl,de
+        ret c                           ; (too close to matter)
+        add hl,de
+        ld de,(aa_al)
+        or a
+        sbc hl,de
+        ret nc                          ; not nearer
+        add hl,de
+        ld (aa_tl),hl
+        ld de,AIM_DEV                   ; the room each way: along * AIM_DEV
+        call fmul                       ; / 256
+        ld (aa_lim),hl
+        ld hl,(aa_rx)                   ; across = rx cos - rz sin
+        ld e,(ix+B_COS)
+        ld d,(ix+B_COS+1)
+        call fmul
+        push hl
+        ld hl,(aa_rz)
+        ld e,(ix+B_SIN)
+        ld d,(ix+B_SIN+1)
+        call fmul
+        ex de,hl
+        pop hl
+        or a
+        sbc hl,de
+        ld (aa_tc),hl
+        call abs_hl
+        ld a,ZHIT_R
+        call aa_in
+        ret nc
+        ld a,(iy+15)                    ; half its height: a ghoul half as
+        ld c,ZHIT_H/2                   ; tall, a lich twice
+        cp ZT_GHOUL
+        jr nz,.nh
+        ld c,ZHIT_H/4
+.nh:    cp ZT_LICH
+        jr nz,.hh
+        ld c,LICH_H/2
+.hh:    ld a,c
+        ld (aa_half),a
+        ld l,(iy+21)                    ; its middle, from the muzzle
+        ld h,(iy+22)
+        add hl,a
+        ld e,(ix+B_Y)
+        ld d,(ix+B_Y+1)
+        or a
+        sbc hl,de
+        ld (aa_ty),hl
+        ld hl,(aa_tl)                   ; the path's height there
+        ld e,(ix+B_SLOPE)
+        ld d,(ix+B_SLOPE+1)
+        call fmul
+        ex de,hl
+        ld hl,(aa_ty)
+        or a
+        sbc hl,de
+        call abs_hl
+        ld a,(aa_half)
+        call aa_in
+        ret nc
+        ld hl,(aa_tl)                   ; this one
+        ld (aa_al),hl
+        ld hl,(aa_tc)
+        ld (aa_ac),hl
+        ld hl,(aa_ty)
+        ld (aa_dy),hl
+        ret
+
+; HL <= aa_lim + A?  Carry set if so
+aa_in:  ld de,(aa_lim)
+        add de,a
+        inc de
+        or a
+        sbc hl,de
         ret
 
 ; Round IX (just spawned) and its muzzle moved HL units to the right of the
@@ -441,12 +706,16 @@ lock_off:
         call lk_lose
         ; fall through
 
-; Clear every monster's drawn mark (+31)
+; Every monster's drawn mark (+31): bit 0 cleared, what it was in bit 1 for
+; the guns, which fire after this (aim_assist)
 lk_clear:
         ld iy,zombies+31
         ld b,NMON
         ld de,ZREC
-.lp:    ld (iy+0),0
+.lp:    ld a,(iy+0)
+        add a,a
+        and 2
+        ld (iy+0),a
         add iy,de
         djnz .lp
         ret
@@ -1144,6 +1413,9 @@ gun_aim:
         ld c,VIEW_H-SIGHT_MARGIN-1
 .sy:    ld a,c
         ld (sight_y),a
+        ld (sight_ay),a                 ; (the centre crosshair: aim_probe
+        ld a,128                        ; moves it)
+        ld (sight_ax),a
         call sel_slot                   ; the crosshairs (sight_mask): a
         ld a,(hl)                       ; linked chain gun selected, one for
         ld c,SM_CENTRE                  ; each fitted; else the centre one
@@ -1599,6 +1871,9 @@ weapons_reset:
         ld (gun_tilt),a                 ; the centre gun level
         ld a,VIEW_CY
         ld (sight_y),a
+        ld (sight_ay),a
+        ld a,128
+        ld (sight_ax),a
         ld a,SM_CENTRE                  ; the centre crosshair
         ld (sight_mask),a
         xor a
@@ -1739,6 +2014,7 @@ laser_update:
 .on:    ld ix,laser_rec
         ld hl,LASER_RANGE
         call spawn_round                ; (start of path = the muzzle)
+        call aim_apply
         ld (ix+B_DMG),LASER_DMG         ; per beam frame on a target
         call bullet_step                ; trace it to the first thing it meets
         ld a,(ix+B_STATE)
@@ -2809,6 +3085,20 @@ sr_cos:     dw 0
 cg_d:       dw 0                        ; chain_round
 cg_s:       dw 0
 rs_off:     dw 0                        ; round_side
+aa_d:       db 0                        ; the frame's aim assist: turn
+aa_ds:      db 0                        ;   (1/256 rad), the slope's change
+aa_probe:   ds BREC                     ; aim_probe's round (never flies)
+aa_n:       db 0                        ; aim_assist: records left,
+aa_al:      dw 0                        ;   the monster chosen: along the path
+aa_ac:      dw 0                        ;   ($FFFF: none), across it,
+aa_dy:      dw 0                        ;   its middle above the muzzle;
+aa_rx:      dw 0                        ; aa_try: from the muzzle,
+aa_rz:      dw 0
+aa_tl:      dw 0                        ;   along, across, up,
+aa_tc:      dw 0
+aa_ty:      dw 0
+aa_lim:     dw 0                        ;   the room each way,
+aa_half:    db 0                        ;   half its height
 rs_dev:     db 0                        ; round_spread: its steps either way
 lk_fired:   db 0                        ; gun_fire: 1 once a linked gun fired
 b_x0:       dw 0                        ; start of this frame's path

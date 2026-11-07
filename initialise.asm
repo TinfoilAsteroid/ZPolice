@@ -44,6 +44,10 @@ initgame:
         nextreg $09,0                   ; Peripheral 4: AY stereo (not
                                         ; mono), no sprite id lockstep, HDMI
                                         ; audio on, no scanlines
+        nextreg $CC,0                   ; DMA Interrupt Enable 0: no NMI, line
+                                        ; or ULA interrupt stops a DMA transfer
+        nextreg $CD,0                   ; DMA Interrupt Enable 1: nor a CTC
+        nextreg $CE,0                   ; DMA Interrupt Enable 2: nor a UART
         xor a
         out ($FE),a                     ; black border
         ret

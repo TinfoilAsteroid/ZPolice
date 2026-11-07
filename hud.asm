@@ -644,7 +644,7 @@ draw_hud:
 ;      past the top)
 ;   A  left 4 pixels: altitude, green; right 4: the height of the city tile
 ;      under the craft (0 on a road), amber.  Both 1 pixel per 4 units, so
-;      the ceiling (MAX_Y 1.5 height units, 192) fills the bar; with the
+;      the ceiling (MAX_Y, 179) nearly fills the bar, 44 of 48; with the
 ;      vertical thrusters 1 per 8, so their ceiling (MAX_Y_THRUST, 384) does.
 ;      A tile taller than the bar's top fills it.  The ground under the
 ;      craft is always lower, so the gap between them is the clearance.

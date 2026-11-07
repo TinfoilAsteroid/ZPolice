@@ -1,18 +1,29 @@
 """Z-Police figure graphics (humans and monsters): the format shared by the
 sprite editor (tools/sprite_editor.py) and gengraphics.py.
 
-The colours: sprites/palette.json, 32 colours, r g b 0..7 each:
+The colours: sprites/palette.json, 32 colours, r g b 0..7 each, and each
+one's colour in each vision mode (VISION_MODES: night vision green and
+monochrome, thermal):
 
     {"format": "Z-Police figure palette", "version": 1,
-     "colours": [[r, g, b], ...32]}
+     "colours": [[r, g, b], ...32],
+     "vision": {"NVG": [[r, g, b], ...32], "NVM": [...], "THM": [...]}}
 
 Colour 0 is transparent (never drawn), so 31 are usable.  They are Layer 2
 palette entries SPR_PAL0 (192) .. SPR_PAL0+31, families 48-55, which no
 building or fixed colour uses: gentables.py puts them in every city's palette
-(and every level's own), so the figures look the same everywhere.
+(and every level's own), so the figures look the same everywhere; and the
+"vision" colours in the vision modes' palettes (tools/visionpal.py).  So a
+vision mode recolours the figures by palette alone: the game has one set of
+figure graphics.  A colour's vision colours are its own, whichever figures
+use it: two figures meant to look different in a vision mode need colours of
+their own (shared_colours lists the ones shared).  An outline that shows in
+a vision mode is drawn: a second colour, the same in normal view (the
+ghost's two whites: in thermal one is its white outline, the other its red
+body).
 
-A figure: sprites/NAME.json, one per figure in FIGURES (zombie, ghoul,
-ghost, banshee, human, lich):
+A figure: sprites/NAME.json, one per figure in FIGURES (zombie,
+fast_zombie, ghoul, ghost, banshee, human, lich):
 
     {"format": "Z-Police figure", "version": 1, "name": "zombie",
      "height": 26,
@@ -30,10 +41,12 @@ one or more levels of detail ("lods"), largest first; each its pixel "rows"
 1-9, A-V for colours 1..31; all rows the same length) and "min_z": the
 nearest camera distance (world units, Z) it is drawn from.  The first (the
 largest) is drawn from 0; null for the others: from the distance its height
-is the figure's projected height (auto_min_z).  The game draws the level
-whose min_z is the largest not past the figure's distance, at its own size
-(no scaling), its bottom centre on the figure's feet.  A side view faces
-left: the game mirrors it for a figure facing right.
+is the figure's projected height (auto_min_z).  The game draws a figure at
+its true projected height, a row at a time, from GFX_MIN_H to GFX_MAX_H rows:
+build makes each size (sized) from the level for that distance, which it
+scales unless it's that size already, so a level drawn by hand is used as it
+stands at its own size.  Its bottom centre is on the figure's feet.  A side
+view faces left: the game mirrors it for a figure facing right.
 
 gengraphics.py packs them all into ZPDATA/SPRITES.ZPG (build, below), which
 the game loads at start-up, and writes gfx_ids.inc (the ANIM_ numbers).
@@ -53,7 +66,7 @@ SPR_PAL0 = 192                          # Layer 2 palette entry of colour 0
 PIXEL_CHARS = ".123456789ABCDEFGHIJKLMNOPQRSTUV"
 assert len(PIXEL_CHARS) == COLOURS
 MAX_W, MAX_H = 64, 64                   # a level of detail at most this big
-MAX_FRAMES, MAX_LODS = 16, 8
+MAX_FRAMES, MAX_LODS = 16, 40         # (every size the game draws, by hand)
 PROJ = 128                              # screen pixels per (world unit / Z)
 
 # The figures, their heights (world units) and the purposes the game asks
@@ -63,6 +76,9 @@ FIGURES = [
     ("zombie", 26, [("walk_front", "walking towards the camera"),
                     ("walk_side", "walking, side on, facing left (mirrored for right)"),
                     ("walk_rear", "walking away from the camera")]),
+    ("fast_zombie", 26, [("walk_front", "walking towards the camera"),
+                         ("walk_side", "walking, side on, facing left (mirrored for right)"),
+                         ("walk_rear", "walking away from the camera")]),
     ("ghoul", 13, [("walk_front", "walking towards the camera"),
                    ("walk_side", "walking, side on, facing left (mirrored for right)"),
                    ("walk_rear", "walking away from the camera")]),
@@ -105,6 +121,54 @@ def is_transparent(c):
 
 
 # ------------------------------------------------------------- the palette
+VISION_MODES = ("NVG", "NVM", "THM")    # (visionpal.MODES after "normal")
+
+
+def default_vision(pal):
+    """Each colour's vision colours, from its brightness: green (night vision
+    green), grey (monochrome), red to yellow (thermal: figures are warm)."""
+    out = {m: [] for m in VISION_MODES}
+    for i, (r, g, b) in enumerate(pal):
+        L = (0.299 * r + 0.587 * g + 0.114 * b) / 7
+        v = round(2 + 5 * L)
+        out["NVG"].append((0, v, 0))
+        out["NVM"].append((v, v, v))
+        out["THM"].append((7, round(6 * L), 0) if L > 0.4 else (round(4 + 3 * L), 0, 0))
+        if i == 0:
+            for m in VISION_MODES:
+                out[m][-1] = (0, 0, 0)
+    return out
+
+
+def load_vision(path=PAL_FILE):
+    """sprites/palette.json's vision colours -> {mode: 32 (r, g, b)}, or from
+    the colours' brightness if it has none.  ValueError if malformed."""
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    v = d.get("vision")
+    if v is None:
+        return default_vision(load_palette(path))
+    try:
+        out = {m: [tuple(int(c) for c in col) for col in v[m]] for m in VISION_MODES}
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"{path}: \"vision\" needs {', '.join(VISION_MODES)}, each [r, g, b] x {COLOURS}")
+    if any(len(t) != COLOURS for t in out.values()):
+        raise ValueError(f"{path}: each vision mode needs {COLOURS} colours")
+    return out
+
+
+def shared_colours(figures):
+    """{colour: [figures]} for the colours more than one figure uses (a
+    vision mode colours them alike: zombie and fast_zombie mean to)."""
+    users = {}
+    for f, d in figures.items():
+        cs = {PIXEL_CHARS.index(ch) for an in d["anims"].values() for fr in an["frames"]
+              for lod in fr["lods"] for r in lod["rows"] for ch in r if ch != "."}
+        for c in cs:
+            users.setdefault(c, []).append(f)
+    return {c: fs for c, fs in sorted(users.items()) if len(fs) > 1}
+
+
 def load_palette(path=PAL_FILE):
     """sprites/palette.json -> 32 (r, g, b).  ValueError if malformed."""
     with open(path, encoding="utf-8") as f:
@@ -120,21 +184,27 @@ def load_palette(path=PAL_FILE):
         raise ValueError(f"{path}: each colour is [r, g, b]")
 
 
-def save_palette(pal, path=PAL_FILE):
-    lines = [f"  {json.dumps(list(c))}" for c in pal]
+def save_palette(pal, vision, path=PAL_FILE):
+    def block(cols):
+        return ",\n".join(f"  {json.dumps(list(c))}" for c in cols)
     text = ('{\n "format": "%s", "version": %d,\n "colours": [\n' % (PAL_FORMAT, VERSION)
-            + ",\n".join(lines) + "\n ]\n}\n")
+            + block(pal) + "\n ],\n \"vision\": {\n"
+            + ",\n".join(f'  "{m}": [\n' + block(vision[m]).replace("\n  ", "\n   ").replace("  [", "   [", 1)
+                          + "\n  ]" for m in VISION_MODES)
+            + "\n }\n}\n")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
 
-def palette_problems(pal):
+def palette_problems(pal, vision=None):
     errs = []
-    for i, c in enumerate(pal):
-        if len(c) != 3 or any(not 0 <= v <= 7 for v in c):
-            errs.append(f"colour {i}: r, g, b are 0..7")
-        elif i and is_transparent(c):
-            errs.append(f"colour {i}: {tuple(c)} is Layer 2's transparent colour")
+    sets = [("", pal)] + [(f"{m} ", vision[m]) for m in VISION_MODES] if vision else [("", pal)]
+    for name, cols in sets:
+        for i, c in enumerate(cols):
+            if len(c) != 3 or any(not 0 <= v <= 7 for v in c):
+                errs.append(f"{name}colour {i}: r, g, b are 0..7")
+            elif i and is_transparent(c):
+                errs.append(f"{name}colour {i}: {tuple(c)} is Layer 2's transparent colour")
     return errs
 
 
@@ -303,86 +373,54 @@ def mirror(px):
     return [list(reversed(r)) for r in px]
 
 
-# ------------------------------------------------- the vision modes' figures
-# In a vision mode (night vision, thermal) the game draws a second set of the
-# figures, made from the first: each pixel is one of its figure's 3 roles,
-# and each role is one Layer 2 entry (SPR_PAL0 + VISION_BASE[fig] + role)
-# that the vision palettes colour (tools/visionpal.py): a human bright green
-# in night vision, white face, yellow core and orange outline in thermal.
-#   outline: an edge pixel (one with a transparent pixel beside it, left,
-#            right, above or below) next to the core (any of its 8);
-#   face:    any other pixel in the top quarter of the rows (at least the
-#            top row);
-#   core:    the rest (a thin limb, with no core beside it, is core too).
-VISION_ROLES = 3                        # face, core, outline: + 0, 1, 2
-ROLE_FACE, ROLE_CORE, ROLE_OUTLINE = 0, 1, 2
-VISION_BASE = {"human": 1, "zombie": 4, "ghoul": 7, "ghost": 10, "banshee": 13, "lich": 16}
-assert max(VISION_BASE.values()) + VISION_ROLES <= COLOURS
-
-
-def vision_pixels(px, fig):
-    """A level's pixels as the vision set's: each opaque pixel its role's
-    colour number (VISION_BASE[fig] + role), transparent stays 0."""
-    h, w = len(px), len(px[0])
-
-    def opaque(x, y):
-        return 0 <= x < w and 0 <= y < h and px[y][x] != 0
-    core = {(x, y) for y in range(h) for x in range(w)
-            if opaque(x, y) and all(opaque(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))}
-    face_rows = max(1, h // 4)
-    base = VISION_BASE[fig]
-    out = []
-    for y in range(h):
-        row = []
-        for x in range(w):
-            if not opaque(x, y):
-                row.append(0)
-                continue
-            if (x, y) in core:
-                role = ROLE_CORE
-            elif any((x + dx, y + dy) in core for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
-                role = ROLE_OUTLINE
-            else:
-                role = ROLE_CORE            # a thin part: no core beside it
-            if role != ROLE_OUTLINE and y < face_rows:
-                role = ROLE_FACE
-            row.append(base + role)
-        out.append(row)
-    return out
-
-
 # ---------------------------------------------------- the game's binary file
 # ZPDATA/SPRITES.ZPG:
 #   +0   4    "ZPGF"
-#   +4   1    format version (2)
+#   +4   1    format version (4)
 #   +5   1    pages (8K each, from PAGE_GFX0), 1..GFX_PAGES_MAX
-#   +6   1    directory entries: 2 x the purposes (the game's GFX_ENTRIES)
+#   +6   1    directory entries: the purposes (the game's GFX_ENTRIES)
 #   +7   9    (reserved, 0)
 #   +16  pages x 8192: the pages, each loaded to $C000 (slot 6)
 # Page 0 starts with the directory (GFX_DIR, $C000):
-#   the purposes, 4 bytes each in ANIMS order, then again for the vision
-#     set (vision_pixels: entry GFX_ANIMS + n is purpose n's): frames, 0,
-#     address of its frame list (2);
-#   a frame list: an address (2) per frame, of its levels of detail:
-#   levels: a count, then 7 bytes each, the farthest first (min_z largest):
-#     min_z (2), width, height, page (0..), address of its pixels (2);
+#   the purposes, 4 bytes each in ANIMS order: frames, 0, address of its
+#     frame list (2).  (No second set for the vision modes: their palettes
+#     recolour these, VISION_MODES);
+#   a frame list: 3 bytes per frame: the page (0..) and address (2) of its
+#     levels.
+# The other pages, and the rest of page 0 (a table doesn't cross a page; a
+# table and its pixels may be apart):
+#   levels: a count, then 4 bytes each, one to every height from GFX_MIN_H
+#     rows up: width, page (0..), address of its pixels (2);
 #   pixels: a row at a time, its first drawn pixel's column (from the left),
 #     the number of pixels, then each a Layer 2 palette entry (SPR_PAL0 +
 #     colour) or 0 (transparent, skipped).
 MAGIC = b"ZPGF"
-BIN_VERSION = 2
+BIN_VERSION = 4
 HEADER = 16
 PAGE = 8192
 GFX_ADDR = 0xC000
-GFX_PAGES_MAX = 4
+GFX_PAGES_MAX = 61                      # (pages 35 to 95: a 1 MB Next has 96)
+GFX_MIN_H, GFX_MAX_H = 3, 32            # the sizes drawn, in rows.  The file
+                                        # grows with the cube of GFX_MAX_H
 
 
-def lod_bytes(lod, fig=None):
-    """A level's pixel data (the rows, as the game draws them); with fig,
-    the vision set's (vision_pixels)."""
+def sized(lods, zs, height, h):
+    """The level of detail for a figure drawn h rows high: the one whose
+    min_z (zs) is the largest not past the distance of that projected height,
+    scaled to h rows and in proportion, unless it is h rows already."""
+    z = auto_min_z(height, h)
+    lod = max(((m, k) for k, m in enumerate(zs) if m <= z), default=(0, 0))[1]
+    lod = lods[lod]
+    w0, h0 = lod_size(lod)
+    if h0 == h:
+        return lod
+    w = max(1, (2 * w0 * h + h0) // (2 * h0))
+    return from_pixels(shrink(pixels(lod), w, h))
+
+
+def lod_bytes(lod):
+    """A level's pixel data (the rows, as the game draws them)."""
     px = pixels(lod)
-    if fig is not None:
-        px = vision_pixels(px, fig)
     out = bytearray()
     for r in px:
         opaque = [i for i, v in enumerate(r) if v]
@@ -398,60 +436,60 @@ def lod_bytes(lod, fig=None):
 def build(figures):
     """figures: {name: data} for every figure -> (the file's bytes, pages
     used, bytes used).  ValueError if it won't fit."""
-    # the directory's size first: then the pixel blocks after it
-    entries = []                        # per purpose: [frame: [(min_z, w, h, bytes)]]
-    for vision in (False, True):        # the purposes, then their vision set
-        for fig, a in ANIMS:
-            d = figures[fig]
-            zs = min_zs(d)[a]
-            frames = []
-            for fi, fr in enumerate(d["anims"][a]["frames"]):
-                lods = []
-                for li, lod in enumerate(fr["lods"]):
-                    w, h = lod_size(lod)
-                    lods.append((zs[fi][li], w, h, lod_bytes(lod, fig if vision else None)))
-                frames.append(sorted(lods, key=lambda t: -t[0]))     # farthest first
-            entries.append(frames)
-    assert len(entries) == 2 * len(ANIMS)
-    dir_size = 4 * len(entries)
-    for frames in entries:
-        dir_size += 2 * len(frames) + sum(1 + 7 * len(l) for l in frames)
+    # the frames, each a list of (width, height, pixels) by height
+    entries = []
+    for fig, a in ANIMS:
+        d = figures[fig]
+        zs = min_zs(d)[a]
+        frames = []
+        for fi, fr in enumerate(d["anims"][a]["frames"]):
+            levels = []
+            for h in range(GFX_MIN_H, GFX_MAX_H + 1):
+                lod = sized(fr["lods"], zs[fi], d["height"], h)
+                levels.append((lod_size(lod)[0], lod_bytes(lod)))
+            frames.append(levels)
+        entries.append(frames)
+    assert len(entries) == len(ANIMS)
+    dir_size = 4 * len(entries) + 3 * sum(len(f) for f in entries)
     if dir_size > PAGE:
         raise ValueError("the directory doesn't fit in a page")
-    # place the pixel blocks: page 0 after the directory, then the next pages
+
     pages = [bytearray(PAGE)]
     page, off = 0, dir_size
-    placed = {}
-    for ai, frames in enumerate(entries):
-        for fi, lods in enumerate(frames):
-            for li, (_, w, h, data) in enumerate(lods):
-                if len(data) > PAGE:
-                    raise ValueError("a level of detail over 8K")
-                if off + len(data) > PAGE:
-                    page += 1
-                    off = 0
-                    if page >= GFX_PAGES_MAX:
-                        raise ValueError(f"the figures need more than {GFX_PAGES_MAX} pages (32K)")
-                    pages.append(bytearray(PAGE))
-                pages[page][off:off + len(data)] = data
-                placed[ai, fi, li] = (page, GFX_ADDR + off)
-                off += len(data)
-    # the directory
+
+    def place(size):
+        """Room for size bytes: where -> (page, address)."""
+        nonlocal page, off
+        if size > PAGE:
+            raise ValueError("a level of detail over 8K")
+        if off + size > PAGE:
+            page += 1
+            off = 0
+            if page >= GFX_PAGES_MAX:
+                raise ValueError(f"the figures need more than {GFX_PAGES_MAX} pages "
+                                 f"({GFX_PAGES_MAX * PAGE // 1024}K)")
+            pages.append(bytearray(PAGE))
+        got = page, GFX_ADDR + off
+        off += size
+        return got
+
+    # the directory, then per frame its table of levels and their pixels
     d = pages[0]
     p = 4 * len(entries)                # after the purpose table
     for ai, frames in enumerate(entries):
         d[4 * ai] = len(frames)
         d[4 * ai + 2:4 * ai + 4] = (GFX_ADDR + p).to_bytes(2, "little")
-        flist = p
-        p += 2 * len(frames)
-        for fi, lods in enumerate(frames):
-            d[flist + 2 * fi:flist + 2 * fi + 2] = (GFX_ADDR + p).to_bytes(2, "little")
-            d[p] = len(lods)
-            p += 1
-            for li, (z, w, h, _) in enumerate(lods):
-                pg, addr = placed[ai, fi, li]
-                d[p:p + 7] = bytes((z & 255, z >> 8, w, h, pg, addr & 255, addr >> 8))
-                p += 7
+        for levels in frames:
+            tp, ta = place(1 + 4 * len(levels))
+            d[p] = tp
+            d[p + 1:p + 3] = ta.to_bytes(2, "little")
+            p += 3
+            t = bytearray((len(levels),))
+            for w, data in levels:
+                pg, addr = place(len(data))
+                pages[pg][addr - GFX_ADDR:addr - GFX_ADDR + len(data)] = data
+                t += bytes((w, pg, addr & 255, addr >> 8))
+            pages[tp][ta - GFX_ADDR:ta - GFX_ADDR + len(t)] = t
     assert p == dir_size
     used = page * PAGE + off
     head = MAGIC + bytes((BIN_VERSION, len(pages), len(entries))) + bytes(HEADER - 7)

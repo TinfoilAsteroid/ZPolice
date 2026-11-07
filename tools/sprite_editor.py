@@ -2,16 +2,20 @@
 and their 32 colours, sprites/palette.json (tools/spritefile.py has the
 format).
 
-    python tools/sprite_editor.py [zombie|ghoul|ghost|banshee|human|lich]
+    python tools/sprite_editor.py [zombie|fast_zombie|ghoul|ghost|banshee|human|lich]
 
 On the left: the figure, its purposes (what the game draws it doing: a
 zombie walking towards the camera, side on or away; a human waving or
-running to the VTOL; ...), the purpose's frames (played in turn) and the
-frame's levels of detail (largest first, each drawn from its min_z, the
-nearest distance in world units: the game picks the level for the figure's
-distance and draws it at its own size).  In the middle the level's pixels,
-enlarged; on the right the colours, the tools and a preview, at the game's
-size and twice it, playing the frames.
+running to the VTOL; ...), the purpose's frames (played in turn) and every
+size the game draws the frame at, one to every row from GFX_MIN_H to
+GFX_MAX_H (and any drawn size taller), each with the distance it's drawn at.
+A size is either drawn by hand (a level of detail in the file) or generated:
+the build makes it from the drawn size for its distance (the next larger, as
+a rule), and the editor shows it as the build will make it.  Painting on a
+generated size draws it by hand from then on, starting from what was
+generated; Size > Back to generated forgets a drawn one.  In the middle the
+size's pixels, enlarged; on the right the colours, the tools and a preview,
+at the game's size and twice it, playing the frames.
 
     Left button     paint the left colour      Right button   the right one
     Ctrl+click      pick up the pixel's colour (as the left colour)
@@ -22,11 +26,22 @@ Line.  Colour 0 (top left) is transparent.  Edit colour... (or double-click
 a swatch) sets a colour's r, g, b (0..7 each): the same colours are in every
 city's palette (entries 192-223).
 
-Frame menu: add, duplicate, delete, move.  Level menu: add a level (its
-size, and its min_z: blank for automatic, from the figure's height), make
-one from the larger level before it (scaled down), resize, set min_z,
-delete.  Edit: mirror, flip, shift, clear, copy the previous frame's level,
-onion skin (the previous frame faintly under this one).
+Colours shown (the buttons on the right, or the View menu): normal, or a
+vision mode's (night vision green or monochrome, thermal), as the game shows
+the figures in it: the mode's palette recolours each colour (the figures'
+pixels are the same in every mode).  Edit colour sets the colour for the
+mode shown.  Two figures meant to look different in a vision mode need
+colours of their own (File > Check lists the shared ones); an outline that
+shows in a mode is a second colour, the same in normal view (the ghost's two
+whites: in thermal one is its white outline, the other its red body).
+
+Frame menu: add, duplicate, delete, move.  Size menu: draw this size by
+hand, back to generated (one size, or every size but the largest in every
+frame of the purpose), add a drawn size of any width and height, resize a
+drawn size (it moves to its new height), set a drawn size's min_z (blank:
+automatic, the distance of its height).  Edit: mirror, flip, shift, clear,
+copy the previous frame's size, onion skin (the previous frame faintly under
+this one).
 
 Save (Ctrl+S) checks the figure (spritefile.problems) and writes its file
 and the colours; build.bat (gengraphics.py) then makes ZPDATA/SPRITES.ZPG.
@@ -43,6 +58,10 @@ import spritefile as sf
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SWATCH = 22
 PREVIEW_MS = 200                        # a preview frame (4 game frames at 20 fps)
+
+
+VIEW_MODES = [("normal", "Normal"), ("NVG", "Night vision green"),
+              ("NVM", "Night vision mono"), ("THM", "Thermal")]
 
 
 def hex_rgb(c):
@@ -65,7 +84,7 @@ class Editor:
         self.fig = None
         self.anim = None
         self.frame = 0
-        self.lod = 0
+        self.size = 16                  # the size (rows) shown
         self.left, self.right = 1, 0    # colours of the two buttons
         self.tool = tk.StringVar(value="pencil")
         self.onion = tk.BooleanVar(value=False)
@@ -79,6 +98,12 @@ class Editor:
         except (OSError, ValueError) as e:
             messagebox.showerror("Colours", f"{e}\n\nRun gengraphics.py (build.bat) to make them.")
             self.pal = [(0, 0, 0)] * sf.COLOURS
+        try:
+            self.vision = sf.load_vision()
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Vision colours", str(e))
+            self.vision = sf.default_vision(self.pal)
+        self.view_mode = tk.StringVar(value="normal")
         for f in sf.FIGURE_NAMES:
             p = sf.figure_path(f)
             try:
@@ -109,7 +134,7 @@ class Editor:
             em.add_command(label=f"Shift {name}", command=lambda dx=dx, dy=dy: self.edit(
                 lambda p, dx=dx, dy=dy: self.shift(p, dx, dy)))
         em.add_command(label="Clear", command=lambda: self.edit(lambda p: [[0] * len(p[0]) for _ in p]))
-        em.add_command(label="Copy the previous frame's level", command=self.cmd_copy_prev)
+        em.add_command(label="Copy the previous frame's size", command=self.cmd_copy_prev)
         em.add_separator()
         em.add_command(label="Edit colour...", command=lambda: self.edit_colour(self.left))
         mb.add_cascade(label="Edit", menu=em)
@@ -121,21 +146,26 @@ class Editor:
         frm.add_command(label="Move later", command=lambda: self.cmd_frame_move(1))
         mb.add_cascade(label="Frame", menu=frm)
         lm = tk.Menu(mb, tearoff=0)
-        lm.add_command(label="Add a level...", command=self.cmd_lod_add)
-        lm.add_command(label="Make the next level from this one (scaled)...", command=self.cmd_lod_make)
-        lm.add_command(label="Resize this level...", command=self.cmd_lod_resize)
-        lm.add_command(label="Set min_z...", command=self.cmd_lod_minz)
-        lm.add_command(label="Delete this level", command=self.cmd_lod_del)
+        lm.add_command(label="Draw this size by hand (from what's shown)", command=self.cmd_pin)
+        lm.add_command(label="Back to generated", command=self.cmd_unpin)
         lm.add_separator()
-        lm.add_command(label="Remake every frame's smaller levels from the largest",
-                       command=self.cmd_lod_remake_all)
-        mb.add_cascade(label="Level", menu=lm)
+        lm.add_command(label="Add a drawn size...", command=self.cmd_lod_add)
+        lm.add_command(label="Resize this drawn size...", command=self.cmd_lod_resize)
+        lm.add_command(label="Set min_z...", command=self.cmd_lod_minz)
+        lm.add_separator()
+        lm.add_command(label="Back to generated: every size but the largest, every frame",
+                       command=self.cmd_unpin_all)
+        mb.add_cascade(label="Size", menu=lm)
         vm = tk.Menu(mb, tearoff=0)
         for z in (8, 14, 20):
             vm.add_command(label=f"{z} pixels a pixel", command=lambda z=z: self.set_zoom(z))
         vm.add_checkbutton(label="Grid", variable=self.grid, command=self.redraw)
         vm.add_checkbutton(label="Onion skin (previous frame)", variable=self.onion, command=self.redraw)
         vm.add_checkbutton(label="Play the preview", variable=self.playing)
+        vm.add_separator()
+        for val, name in VIEW_MODES:
+            vm.add_radiobutton(label=f"Colours: {name}", variable=self.view_mode, value=val,
+                               command=self.redraw)
         mb.add_cascade(label="View", menu=vm)
         r.config(menu=mb)
         r.bind("<Control-s>", lambda e: self.cmd_save())
@@ -160,10 +190,16 @@ class Editor:
         self.framelist = tk.Listbox(left, height=6, exportselection=False, width=24)
         self.framelist.pack(anchor=tk.W)
         self.framelist.bind("<<ListboxSelect>>", lambda e: self.on_list(self.framelist, self.select_frame))
-        tk.Label(left, text="Level of detail (size, drawn from Z)").pack(anchor=tk.W, pady=(8, 0))
-        self.lodlist = tk.Listbox(left, height=6, exportselection=False, width=24)
-        self.lodlist.pack(anchor=tk.W)
-        self.lodlist.bind("<<ListboxSelect>>", lambda e: self.on_list(self.lodlist, self.select_lod))
+        tk.Label(left, text="Size (rows, distance: drawn or generated)").pack(anchor=tk.W, pady=(8, 0))
+        sz = tk.Frame(left)
+        sz.pack(anchor=tk.W, fill=tk.Y, expand=True)
+        self.lodlist = tk.Listbox(sz, height=16, exportselection=False, width=34,
+                                  font=("Courier", 9))
+        sb = tk.Scrollbar(sz, command=self.lodlist.yview)
+        self.lodlist.config(yscrollcommand=sb.set)
+        self.lodlist.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.lodlist.bind("<<ListboxSelect>>", lambda e: self.on_list(self.lodlist, self.select_size_i))
 
         mid = tk.Frame(r, padx=6, pady=6)
         mid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -187,6 +223,12 @@ class Editor:
         self.pick_label = tk.Label(right, text="", justify=tk.LEFT)
         self.pick_label.pack(anchor=tk.W)
         tk.Button(right, text="Edit colour...", command=lambda: self.edit_colour(self.left)).pack(anchor=tk.W)
+        tk.Label(right, text="Colours shown (vision mode)").pack(anchor=tk.W, pady=(8, 0))
+        vb = tk.Frame(right)
+        vb.pack(anchor=tk.W)
+        for k, (val, name) in enumerate(VIEW_MODES):
+            tk.Radiobutton(vb, text=name, variable=self.view_mode, value=val, indicatoron=False,
+                           width=17, command=self.redraw).grid(row=k // 2, column=k % 2, sticky=tk.W)
         tk.Label(right, text="Tool").pack(anchor=tk.W, pady=(8, 0))
         for name, val in (("Pencil", "pencil"), ("Fill", "fill"), ("Line", "line")):
             tk.Radiobutton(right, text=name, variable=self.tool, value=val).pack(anchor=tk.W)
@@ -206,6 +248,14 @@ class Editor:
         star = "*" if (self.fig in self.dirty or self.pal_dirty) else ""
         self.root.title(f"Z-Police figures - {self.fig}{star}")
 
+    def cols(self):
+        """The colours shown: the normal ones, or a vision mode's."""
+        m = self.view_mode.get()
+        return self.pal if m == "normal" else self.vision[m]
+
+    def mode_name(self):
+        return dict(VIEW_MODES)[self.view_mode.get()]
+
     def set_zoom(self, z):
         self.zoom = z
         self.redraw()
@@ -218,11 +268,70 @@ class Editor:
         an = self.data()["anims"].setdefault(self.anim, {"frames": []})
         return an["frames"]
 
+    def lods(self, fi=None):
+        return self.frames()[self.frame if fi is None else fi]["lods"]
+
+    def sizes(self, fi=None):
+        """Every size listed for frame fi: the game's, and any drawn size
+        taller, tallest first."""
+        hs = set(range(sf.GFX_MIN_H, sf.GFX_MAX_H + 1))
+        hs |= {sf.lod_size(l)[1] for l in self.lods(fi)}
+        return sorted(hs, reverse=True)
+
+    def drawn(self, h, fi=None):
+        """Frame fi's level drawn h rows high, or None (generated)."""
+        return next((l for l in self.lods(fi) if sf.lod_size(l)[1] == h), None)
+
+    def frame_zs(self, fi):
+        return sf.min_zs({"height": self.data()["height"],
+                          "anims": {self.anim: {"frames": self.frames()}}})[self.anim][fi]
+
+    def source(self, h, fi=None):
+        """The drawn level a generated size h is made from (sf.sized's)."""
+        fi = self.frame if fi is None else fi
+        z = sf.auto_min_z(self.data()["height"], h)
+        zs = self.frame_zs(fi)
+        k = max(((m, k) for k, m in enumerate(zs) if m <= z), default=(0, 0))[1]
+        return self.lods(fi)[k]
+
+    def view_px(self, h=None, fi=None):
+        """Frame fi's pixels at size h, as the game draws them."""
+        fi = self.frame if fi is None else fi
+        h = self.size if h is None else h
+        lod = self.drawn(h, fi)
+        if lod is None:
+            lod = sf.sized(self.lods(fi), self.frame_zs(fi), self.data()["height"], h)
+        return sf.pixels(lod)
+
     def cur_lod(self):
+        """The level drawn at the size shown, or None (generated)."""
         fr = self.frames()
         if not fr or not fr[self.frame]["lods"]:
             return None
-        return fr[self.frame]["lods"][self.lod]
+        return self.drawn(self.size)
+
+    def normalise(self, fi=None):
+        """Frame fi's levels tallest first, the first drawn from 0, any other
+        left at 0 back to automatic."""
+        lods = self.lods(fi)
+        lods.sort(key=lambda l: -sf.lod_size(l)[1])
+        for k, l in enumerate(lods):
+            if k == 0:
+                l["min_z"] = 0
+            elif l.get("min_z") == 0:
+                l["min_z"] = None
+
+    def pin(self):
+        """The size shown drawn by hand from now on, from its pixels as shown:
+        its level (the one there already, if it is drawn)."""
+        lod = self.cur_lod()
+        if lod is not None:
+            return lod
+        lod = {"min_z": None, **sf.from_pixels(self.view_px())}
+        self.lods().append(lod)
+        self.normalise()
+        self.changed()
+        return lod
 
     def select_fig_i(self, i):
         self.select_fig(sf.FIGURE_NAMES[i])
@@ -254,70 +363,100 @@ class Editor:
         self.framelist.delete(0, tk.END)
         for k, fr in enumerate(self.frames()):
             w, h = sf.lod_size(fr["lods"][0]) if fr["lods"] else (0, 0)
-            self.framelist.insert(tk.END, f"frame {k + 1}: {len(fr['lods'])} levels, {w}x{h}")
+            n = len(fr["lods"])
+            self.framelist.insert(tk.END, f"frame {k + 1}: {n} drawn, largest {w}x{h}")
 
     def select_frame(self, k):
         self.frame = k
         self.framelist.selection_clear(0, tk.END)
         self.framelist.selection_set(k)
-        self.lod = min(self.lod, len(self.frames()[k]["lods"]) - 1)
         self.refresh_lods()
-        self.select_lod(max(0, self.lod))
+        self.select_size(self.size)
+
+    def distance(self, h):
+        """Where the game draws size h, in metres (12.8 world units a metre):
+        its projected height rounds to h.  GFX_MAX_H from there in."""
+        H = self.data()["height"] * sf.PROJ / 12.8
+        if h > sf.GFX_MAX_H:
+            return "not drawn: a source"
+        far = f"{H / (h - 0.5):.1f}" if h > 0.5 else "-"
+        if h == sf.GFX_MAX_H:
+            return f"{far} m in"
+        if h == sf.GFX_MIN_H:                   # (to where figures stop being drawn)
+            return f"{H / (h + 0.5):.1f} m out"
+        return f"{H / (h + 0.5):.1f}-{far} m"
 
     def refresh_lods(self):
         self.lodlist.delete(0, tk.END)
-        zs = sf.min_zs({"height": self.data()["height"],
-                        "anims": {self.anim: {"frames": self.frames()}}})[self.anim][self.frame]
-        lods = self.frames()[self.frame]["lods"]
-        for k, lod in enumerate(lods):
-            w, h = sf.lod_size(lod)
-            far = f"-{zs[k + 1] - 1}" if k + 1 < len(lods) else " on"
-            auto = " (auto)" if k and lod.get("min_z") is None else ""
-            self.lodlist.insert(tk.END, f"{w}x{h}: Z {zs[k]}{far}{auto}")
+        for h in self.sizes():
+            lod = self.drawn(h)
+            if lod is not None:
+                w = sf.lod_size(lod)[0]
+                kind = "DRAWN"
+            else:
+                w = len(self.view_px(h)[0])
+                kind = f"from {sf.lod_size(self.source(h))[1]}"
+            self.lodlist.insert(tk.END, f"{h:2} {w:2}x{h:<2} {self.distance(h):>14} {kind}")
+            if lod is not None:
+                self.lodlist.itemconfig(tk.END, fg="#0000c0")
 
-    def select_lod(self, k):
-        self.lod = k
+    def select_size_i(self, i):
+        self.select_size(self.sizes()[i])
+
+    def select_size(self, h):
+        hs = self.sizes()
+        if h not in hs:
+            h = min(hs, key=lambda v: abs(v - h))
+        self.size = h
+        i = hs.index(h)
         self.lodlist.selection_clear(0, tk.END)
-        self.lodlist.selection_set(k)
-        self.undo_mark = None
+        self.lodlist.selection_set(i)
+        self.lodlist.see(i)
         self.redraw()
 
     # -------------------------------------------------------------- drawing
     def redraw(self):
         c = self.canvas
         c.delete("all")
-        lod = self.cur_lod()
-        if lod is None:
+        if not self.frames() or not self.lods():
             return
-        px = sf.pixels(lod)
-        w, h = sf.lod_size(lod)
+        lod = self.cur_lod()
+        px = self.view_px()
+        h, w = len(px), len(px[0])
         z = self.zoom
+        cols = self.cols()
         onion = None
         if self.onion.get() and self.frame > 0:
-            prev = self.frames()[self.frame - 1]["lods"]
-            if self.lod < len(prev) and sf.lod_size(prev[self.lod]) == (w, h):
-                onion = sf.pixels(prev[self.lod])
+            prev = self.view_px(fi=self.frame - 1)
+            if (len(prev), len(prev[0])) == (h, w):
+                onion = prev
         for y in range(h):
             for x in range(w):
                 v = px[y][x]
                 if v:
-                    fill = hex_rgb(self.pal[v])
+                    fill = hex_rgb(cols[v])
                 elif onion and onion[y][x]:
-                    fill = hex_rgb(blend(self.pal[onion[y][x]]))
+                    fill = hex_rgb(blend(cols[onion[y][x]]))
                 else:
                     fill = "#505050" if (x + y) % 2 else "#585858"
                 c.create_rectangle(x * z, y * z, (x + 1) * z, (y + 1) * z, fill=fill,
                                    outline="#303030" if self.grid.get() and z >= 8 else "")
         c.create_line(w * z / 2, h * z, w * z / 2, h * z + 8, fill="yellow")   # the feet
+        if lod is not None:
+            how = "drawn by hand"
+        else:
+            how = (f"generated from the {sf.lod_size(self.source(h))[1]}-row drawing: "
+                   "painting draws it by hand")
         c.create_text(4, h * z + 10, anchor=tk.NW, fill="#c0c0c0",
-                      text=f"{w}x{h}: the bottom centre (yellow) stands on the figure's feet")
+                      text=f"{w}x{h}, {self.distance(h)}: {how}.\n"
+                           "The bottom centre (yellow) stands on the figure's feet.")
         self.draw_palette()
         self.draw_preview()
 
     def draw_palette(self):
         pc = self.pcanvas
         pc.delete("all")
-        for i, col in enumerate(self.pal):
+        for i, col in enumerate(self.cols()):
             x, y = (i % 8) * (SWATCH + 4) + 2, (i // 8) * (SWATCH + 4) + 2
             if i == 0:
                 pc.create_rectangle(x, y, x + SWATCH, y + SWATCH, fill="#808080")
@@ -328,7 +467,8 @@ class Editor:
                 pc.create_rectangle(x - 2, y - 2, x + SWATCH + 2, y + SWATCH + 2, outline="yellow", width=2)
             if i == self.right:
                 pc.create_rectangle(x - 1, y - 1, x + SWATCH + 1, y + SWATCH + 1, outline="cyan", width=1)
-        self.pick_label.config(text=f"left: colour {self.left} (yellow)\nright: colour {self.right} (cyan)")
+        self.pick_label.config(text=f"left: colour {self.left} (yellow)\nright: colour {self.right} (cyan)"
+                                   f"\nshown: {self.mode_name()}")
 
     def draw_preview(self):
         pv = self.preview
@@ -336,10 +476,12 @@ class Editor:
         frames = self.frames()
         if not frames:
             return
-        fr = frames[self.pframe % len(frames)]["lods"]
-        lod = fr[min(self.lod, len(fr) - 1)]
-        px = sf.pixels(lod)
-        w, h = sf.lod_size(lod)
+        fi = self.pframe % len(frames)
+        if not frames[fi]["lods"]:
+            return
+        cols = self.cols()
+        px = self.view_px(fi=fi)
+        w, h = len(px[0]), len(px)
         for scale, ox in ((1, 30), (2, 100)):
             base = 160
             for y in range(h):
@@ -347,7 +489,7 @@ class Editor:
                     v = px[y][x]
                     if v:
                         X, Y = ox - (w * scale) // 2 + x * scale, base - (h - y) * scale
-                        pv.create_rectangle(X, Y, X + scale, Y + scale, fill=hex_rgb(self.pal[v]), width=0)
+                        pv.create_rectangle(X, Y, X + scale, Y + scale, fill=hex_rgb(cols[v]), width=0)
 
     def tick(self):
         if self.playing.get():
@@ -357,7 +499,7 @@ class Editor:
 
     # -------------------------------------------------------------- editing
     def push_undo(self):
-        self.undo.append((self.fig, self.anim, copy.deepcopy(self.frames()), self.frame, self.lod))
+        self.undo.append((self.fig, self.anim, copy.deepcopy(self.frames()), self.frame, self.size))
         del self.undo[:-100]
 
     def changed(self):
@@ -365,19 +507,26 @@ class Editor:
         self.set_title()
 
     def set_px(self, px):
-        lod = self.cur_lod()
+        drawn = self.cur_lod() is not None
+        lod = self.pin()
         lod["rows"] = sf.from_pixels(px)["rows"]
         self.changed()
-        self.redraw()
+        if not drawn:
+            self.refresh_frames()
+            self.framelist.selection_set(self.frame)
+            self.refresh_lods()
+            self.select_size(self.size)
+        else:
+            self.redraw()
 
     def cell(self, ev):
-        lod = self.cur_lod()
-        w, h = sf.lod_size(lod)
+        px = self.view_px()
+        w, h = len(px[0]), len(px)
         x, y = int(self.canvas.canvasx(ev.x) // self.zoom), int(self.canvas.canvasy(ev.y) // self.zoom)
         return (x, y) if 0 <= x < w and 0 <= y < h else None
 
     def on_mouse(self, ev):
-        if self.cur_lod() is None:
+        if not self.frames() or not self.lods():
             return
         t = ev.type.name                # (str() of it is the number on Python 3.11 on)
         btn_right = ev.num == 3 or (ev.state & 0x400)
@@ -385,7 +534,7 @@ class Editor:
         at = self.cell(ev)
         if t == "ButtonPress" and (ev.state & 0x4):     # Ctrl: pick up
             if at:
-                v = sf.pixels(self.cur_lod())[at[1]][at[0]]
+                v = self.view_px()[at[1]][at[0]]
                 if btn_right:
                     self.right = v
                 else:
@@ -396,7 +545,7 @@ class Editor:
         if t == "ButtonPress":
             self.push_undo()
             if tool == "fill" and at:
-                px = sf.pixels(self.cur_lod())
+                px = self.view_px()
                 self.fill(px, at, colour)
                 self.set_px(px)
             elif tool == "line":
@@ -406,14 +555,14 @@ class Editor:
         elif t == "Motion" and tool == "pencil" and at:
             self.paint(at, colour)
         elif t == "ButtonRelease" and tool == "line" and self.line0 and at:
-            px = sf.pixels(self.cur_lod())
+            px = self.view_px()
             for x, y in self.line_cells(self.line0, at):
                 px[y][x] = colour
             self.line0 = None
             self.set_px(px)
 
     def paint(self, at, colour):
-        px = sf.pixels(self.cur_lod())
+        px = self.view_px()
         if px[at[1]][at[0]] != colour:
             px[at[1]][at[0]] = colour
             self.set_px(px)
@@ -444,20 +593,20 @@ class Editor:
                  for x in range(w)] for y in range(h)]
 
     def edit(self, fn):
-        if self.cur_lod() is None:
+        if not self.frames() or not self.lods():
             return
         self.push_undo()
-        self.set_px(fn(sf.pixels(self.cur_lod())))
+        self.set_px(fn(self.view_px()))
 
     def cmd_undo(self):
         if not self.undo:
             return self.say("nothing to undo")
-        fig, anim, frames, fr, lod = self.undo.pop()
+        fig, anim, frames, fr, size = self.undo.pop()
         self.figs[fig]["anims"][anim]["frames"] = frames
         if fig != self.fig:
             self.select_fig(fig)
         self.anim = anim
-        self.frame, self.lod = min(fr, len(frames) - 1), lod
+        self.frame, self.size = min(fr, len(frames) - 1), size
         self.dirty.add(fig)
         self.select_anim_i([a for a, _ in sf.figure_anims(self.fig)].index(anim))
         self.say("undone")
@@ -465,12 +614,8 @@ class Editor:
     def cmd_copy_prev(self):
         if self.frame == 0:
             return self.say("this is the first frame")
-        prev = self.frames()[self.frame - 1]["lods"]
-        if self.lod >= len(prev):
-            return self.say("the previous frame has no such level")
         self.push_undo()
-        self.frames()[self.frame]["lods"][self.lod] = copy.deepcopy(prev[self.lod])
-        self.changed()
+        self.set_px(self.view_px(fi=self.frame - 1))
         self.select_frame(self.frame)
 
     # ------------------------------------------------------------- colours
@@ -493,16 +638,17 @@ class Editor:
     def edit_colour(self, i):
         if i == 0:
             return messagebox.showinfo("Colour 0", "Colour 0 is transparent: it is never drawn.")
+        cols = self.cols()
         w = tk.Toplevel(self.root)
-        w.title(f"Colour {i}")
+        w.title(f"Colour {i}: {self.mode_name()}")
         w.transient(self.root)
         vs = []
         for j, name in enumerate("rgb"):
             tk.Label(w, text=name).grid(row=0, column=j)
-            v = tk.IntVar(value=self.pal[i][j])
+            v = tk.IntVar(value=cols[i][j])
             tk.Spinbox(w, from_=0, to=7, width=3, textvariable=v).grid(row=1, column=j, padx=4)
             vs.append(v)
-        sw = tk.Canvas(w, width=40, height=24, bg=hex_rgb(self.pal[i]))
+        sw = tk.Canvas(w, width=40, height=24, bg=hex_rgb(cols[i]))
         sw.grid(row=1, column=3, padx=6)
 
         def ok():
@@ -513,7 +659,7 @@ class Editor:
             if sf.is_transparent(c):
                 return messagebox.showerror("Transparent", f"{c} is Layer 2's transparent colour: "
                                             "it would never show.", parent=w)
-            self.pal[i] = c
+            cols[i] = c
             self.pal_dirty = True
             self.set_title()
             self.redraw()
@@ -594,64 +740,68 @@ class Editor:
         except ValueError:
             return False, None
 
-    def sort_lods(self, new):
-        """The levels after the largest in size order, tallest first (their
-        automatic min_z then rising): the level `new` selected."""
-        lods = self.frames()[self.frame]["lods"]
-        rest = sorted(lods[1:], key=lambda l: -sf.lod_size(l)[1])
-        lods[1:] = rest
+    def after_sizes(self, h):
         self.changed()
-        self.select_frame(self.frame)
-        self.select_lod(next(k for k, l in enumerate(lods) if l is new))
+        self.refresh_frames()
+        self.framelist.selection_set(self.frame)
+        self.refresh_lods()
+        self.select_size(h)
+
+    def cmd_pin(self):
+        if self.cur_lod() is not None:
+            return self.say(f"{self.size} rows is drawn by hand already")
+        self.push_undo()
+        self.pin()
+        self.after_sizes(self.size)
+        self.say(f"{self.size} rows: drawn by hand from now on")
+
+    def cmd_unpin(self):
+        lod = self.cur_lod()
+        if lod is None:
+            return self.say(f"{self.size} rows is generated already")
+        lods = self.lods()
+        if len(lods) == 1:
+            return self.say("a frame needs one drawn size: the others are made from it")
+        self.push_undo()
+        lods.remove(lod)
+        self.normalise()
+        self.after_sizes(self.size)
+        self.say(f"{self.size} rows: generated again")
+
+    def cmd_unpin_all(self):
+        if not messagebox.askyesno("Back to generated", "Every frame of this purpose: every "
+                                   "drawn size but the largest forgotten, so the build makes "
+                                   "them all from the largest?  Hand edits to them are lost."):
+            return
+        self.push_undo()
+        for fi in range(len(self.frames())):
+            self.normalise(fi)
+            del self.lods(fi)[1:]
+        self.after_sizes(self.size)
 
     def cmd_lod_add(self):
-        lods = self.frames()[self.frame]["lods"]
-        w0, h0 = sf.lod_size(lods[-1])
-        size = self.ask_size("Add a level", max(1, w0 // 2), max(1, h0 // 2))
+        w0, h0 = len(self.view_px()[0]), len(self.view_px())
+        size = self.ask_size("Add a drawn size (blank)", w0, h0)
         if not size:
             return
+        if self.drawn(size[1]) is not None:
+            return messagebox.showerror("Add a drawn size", f"{size[1]} rows is drawn already")
         self.push_undo()
-        new = sf.new_lod(*size)
-        lods.append(new)
-        self.sort_lods(new)
-
-    def cmd_lod_make(self):
-        lods = self.frames()[self.frame]["lods"]
-        src = lods[self.lod]
-        w0, h0 = sf.lod_size(src)
-        size = self.ask_size("Make the next level", max(1, w0 * 3 // 4), max(1, h0 * 3 // 4))
-        if not size:
-            return
-        self.push_undo()
-        new = {"min_z": None, **sf.from_pixels(sf.shrink(sf.pixels(src), *size))}
-        same = [k for k, l in enumerate(lods) if k and sf.lod_size(l) == size]
-        if same:
-            lods[same[0]] = new                     # (that size already: replaced)
-        else:
-            lods.append(new)
-        self.sort_lods(new)
-
-    def cmd_lod_remake_all(self):
-        if not messagebox.askyesno("Remake the levels", "Every frame of this purpose: its smaller "
-                                   "levels made again from its largest (scaled down, the sizes "
-                                   "kept)?  Hand edits to them are lost."):
-            return
-        self.push_undo()
-        for fr in self.frames():
-            big = sf.pixels(fr["lods"][0])
-            for k in range(1, len(fr["lods"])):
-                w, h = sf.lod_size(fr["lods"][k])
-                fr["lods"][k]["rows"] = sf.from_pixels(sf.shrink(big, w, h))["rows"]
-        self.changed()
-        self.select_frame(self.frame)
+        self.lods().append(sf.new_lod(*size))
+        self.normalise()
+        self.after_sizes(size[1])
 
     def cmd_lod_resize(self):
         lod = self.cur_lod()
+        if lod is None:
+            return self.say("a generated size: draw it by hand first (Size menu)")
         w0, h0 = sf.lod_size(lod)
-        size = self.ask_size("Resize this level (the pixels kept, bottom centre)", w0, h0)
+        size = self.ask_size("Resize this drawn size (the pixels kept, bottom centre)", w0, h0)
         if not size:
             return
         w, h = size
+        if h != h0 and self.drawn(h) is not None:
+            return messagebox.showerror("Resize", f"{h} rows is drawn already")
         px = sf.pixels(lod)
         ox, oy = (w - w0) // 2, h - h0           # keep the feet where they are
         out = [[0] * w for _ in range(h)]
@@ -660,37 +810,35 @@ class Editor:
                 if 0 <= x + ox < w and 0 <= y + oy < h:
                     out[y + oy][x + ox] = px[y][x]
         self.push_undo()
-        self.set_px(out)
-        self.select_frame(self.frame)
+        lod["rows"] = sf.from_pixels(out)["rows"]
+        self.normalise()
+        self.after_sizes(h)
 
     def cmd_lod_minz(self):
-        if self.lod == 0:
-            return messagebox.showinfo("min_z", "The largest level is drawn from 0 (nearer than "
-                                       "the next level's min_z).")
-        ok, z = self.ask_minz(self.cur_lod().get("min_z"))
+        lod = self.cur_lod()
+        if lod is None:
+            return self.say("a generated size: draw it by hand first (Size menu)")
+        if lod is self.lods()[0]:
+            return messagebox.showinfo("min_z", "The largest drawn size is used from 0 (nearer "
+                                       "than the next one's min_z).")
+        ok, z = self.ask_minz(lod.get("min_z"))
         if not ok:
             return
         self.push_undo()
-        self.cur_lod()["min_z"] = z
-        self.changed()
-        self.select_frame(self.frame)
-
-    def cmd_lod_del(self):
-        lods = self.frames()[self.frame]["lods"]
-        if len(lods) == 1:
-            return self.say("a frame needs a level")
-        self.push_undo()
-        del lods[self.lod]
-        lods[0]["min_z"] = 0
-        self.lod = min(self.lod, len(lods) - 1)
-        self.changed()
-        self.select_frame(self.frame)
+        lod["min_z"] = z
+        self.after_sizes(self.size)
 
     # ---------------------------------------------------------------- files
     def cmd_check(self):
-        errs = sf.problems(self.fig, self.data()) + sf.palette_problems(self.pal)
+        errs = sf.problems(self.fig, self.data()) + sf.palette_problems(self.pal, self.vision)
+        shared = {c: fs for c, fs in sf.shared_colours(self.figs).items()
+                  if self.fig in fs and set(fs) != {"zombie", "fast_zombie"}}
+        note = "".join(f"\n- colour {c} is used by {', '.join(fs)}: a vision mode colours them alike"
+                       for c, fs in shared.items())
         if errs:
-            messagebox.showwarning("Check", "- " + "\n- ".join(errs))
+            messagebox.showwarning("Check", "- " + "\n- ".join(errs) + note)
+        elif note:
+            messagebox.showinfo("Check", f"The game can use {self.fig}.  Shared colours:" + note)
         else:
             messagebox.showinfo("Check", f"No problems: the game can use {self.fig}.")
 
@@ -708,9 +856,9 @@ class Editor:
             except OSError as e:
                 return messagebox.showerror("Can't save", str(e))
         if self.pal_dirty:
-            errs += sf.palette_problems(self.pal)
+            errs += sf.palette_problems(self.pal, self.vision)
             try:
-                sf.save_palette(self.pal)
+                sf.save_palette(self.pal, self.vision)
             except OSError as e:
                 return messagebox.showerror("Can't save", str(e))
         saved = sorted(self.dirty) + (["the colours"] if self.pal_dirty else [])

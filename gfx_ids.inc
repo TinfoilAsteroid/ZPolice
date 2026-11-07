@@ -2,29 +2,35 @@
 ; The figures' graphics (tools/spritefile.py has the format): the purposes
 ; the game asks for, in ZPDATA/SPRITES.ZPG's order
 SPR_PAL0        equ 192     ; Layer 2 entry of figure colour 0
-GFX_ANIMS       equ 16
-GFX_ENTRIES     equ 32     ; the directory: the purposes, then their vision set
-GFX_PAGES_MAX   equ 4
+GFX_ANIMS       equ 19
+GFX_ENTRIES     equ 19     ; the directory: the purposes (the vision modes: by palette)
+GFX_PAGES_MAX   equ 61
+GFX_MIN_H       equ 3      ; the sizes drawn, in rows
+GFX_MAX_H       equ 32
 GFX_DIR         equ $C000
-GFX_VERSION     equ 2
+GFX_VERSION     equ 4
 GFX_HEADER      equ 16
 ANIM_ZOMBIE_WALK_FRONT          equ 0
 ANIM_ZOMBIE_WALK_SIDE           equ 1
 ANIM_ZOMBIE_WALK_REAR           equ 2
-ANIM_GHOUL_WALK_FRONT           equ 3
-ANIM_GHOUL_WALK_SIDE            equ 4
-ANIM_GHOUL_WALK_REAR            equ 5
-ANIM_GHOST_FLOAT                equ 6
-ANIM_BANSHEE_FLOAT              equ 7
-ANIM_HUMAN_WAVE                 equ 8
-ANIM_HUMAN_RUN_FRONT            equ 9
-ANIM_HUMAN_RUN_SIDE             equ 10
-ANIM_HUMAN_RUN_REAR             equ 11
-ANIM_HUMAN_STAND                equ 12
-ANIM_LICH_WALK_FRONT            equ 13
-ANIM_LICH_WALK_SIDE             equ 14
-ANIM_LICH_WALK_REAR             equ 15
+ANIM_FAST_ZOMBIE_WALK_FRONT     equ 3
+ANIM_FAST_ZOMBIE_WALK_SIDE      equ 4
+ANIM_FAST_ZOMBIE_WALK_REAR      equ 5
+ANIM_GHOUL_WALK_FRONT           equ 6
+ANIM_GHOUL_WALK_SIDE            equ 7
+ANIM_GHOUL_WALK_REAR            equ 8
+ANIM_GHOST_FLOAT                equ 9
+ANIM_BANSHEE_FLOAT              equ 10
+ANIM_HUMAN_WAVE                 equ 11
+ANIM_HUMAN_RUN_FRONT            equ 12
+ANIM_HUMAN_RUN_SIDE             equ 13
+ANIM_HUMAN_RUN_REAR             equ 14
+ANIM_HUMAN_STAND                equ 15
+ANIM_LICH_WALK_FRONT            equ 16
+ANIM_LICH_WALK_SIDE             equ 17
+ANIM_LICH_WALK_REAR             equ 18
 FIG_ZOMBIE_H                    equ 26      ; its height (world units)
+FIG_FAST_ZOMBIE_H               equ 26      ; its height (world units)
 FIG_GHOUL_H                     equ 13      ; its height (world units)
 FIG_GHOST_H                     equ 26      ; its height (world units)
 FIG_BANSHEE_H                   equ 26      ; its height (world units)

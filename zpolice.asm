@@ -52,6 +52,13 @@
 ; and DOTS_ALL, a START_LEVEL_SET, a START_SALVAGE.  It's assembled into
 ; release_tmp/, so the debug build's files (and the tests') stay as they are.
 
+; REAL_HARDWARE: the build for a real Next (-DREAL_HARDWARE: build.bat
+; hardware), which may use DMA+ (the zxnDDMA, the blitter of core 3.03.00, see
+; layer2_cls.asm).  Off, the DMA routines use only the plain zxnDMA, as CSpect
+; doesn't have DMA+ yet.  The .nex then also asks for core 3.03.00: on an older
+; core DMA+'s commands would be misread, not ignored.
+        ;DEFINE REAL_HARDWARE
+
 ; DRAW_LINES: outline building faces with EDGE_COL vectors.  Comment it out for solid-colour buildings only; the HUD
 ; is always drawn.  Can also be set from the command line: -DDRAW_LINES
         ;DEFINE DRAW_LINES
@@ -175,7 +182,10 @@ PDAMP_FRAMES    equ 1           ; frames between damping steps
 PDAMP_K         equ 0           ; no share: a steady rate
 PDAMP_MIN       equ 128         ; 128/256: half a pitch unit a frame
 MIN_Y           equ 8           ; lowest flight: 0.6 m
-MAX_Y           equ 3*HEIGHT_UNITS/2  ; ceiling 1.5 height units: 15 m
+MAX_Y           equ 7*HEIGHT_UNITS/5  ; ceiling 1.4 height units: 14 m, 179.
+                                ; Never a roof's resting height (height +
+                                ; COLL_H + 1: 192 is level 3's): the VTOL
+                                ; would land there and couldn't climb off
 MAX_Y_THRUST    equ 3*HEIGHT_UNITS  ; with the vertical thrusters (a salvage
                                 ; reward, vthrust_fitted): 3.0 height units, 30 m
 BLD_MAX_H       equ 7*HEIGHT_UNITS  ; tallest building 7.0 height units: 70 m
@@ -301,6 +311,15 @@ INT_PCT_COL     equ 12              ; "nnn%" from this column
 INT_WARN        equ 50              ; below this percentage: amber,
 INT_DANGER      equ 25              ;   below this: red (else green)
 CHAIN_DEV       equ 9           ; spread: 9/256 rad = 2.01 degrees
+; Aim assist (aim_assist, weapons.asm): a centre slot shot turns to the middle
+; of the nearest monster within AIM_DEV steps of 1/256 rad either way of it,
+; as long as the monster was drawn last frame.  The view's 256 headings are
+; 1.4 degrees apart, so without it a far monster can lie between two of them.
+AIM_DEV         equ 8           ; 8/256 rad = 1.8 degrees: tune this
+AIM_COLS        equ AIM_DEV/2+12    ; only monsters drawn this near the view's
+                                    ; centre column are measured: the cone,
+                                    ; then a frame's turn and a close one's box
+        ASSERT AIM_DEV > 0 && AIM_DEV < 64
 ; Pulse laser: the beam is on for LASER_ON frames (0.1 s), then cools for
 ; LASER_COOL frames (0.25 s) before it can fire again; holding SPACE repeats.
 ; (Frame counts as specified; at 14 fps they last 0.21 s and 0.57 s.)  Each
@@ -437,8 +456,8 @@ HUMAN_MAX       equ 20          ; room for this many
 HUMANS_INIT     equ 5           ; placed at start
 PASSENGER_MAX   equ 5           ; the craft carries this many
 RESCUE_R        equ 512         ; 2.0 tiles (40 m): a landed craft this close
-HUMAN_ROOF_MAX  equ MAX_Y-HEIGHT_UNITS  ; humans aren't placed on roofs
-                                ; taller than the ceiling - 1.0 height unit
+HUMAN_ROOF_MAX  equ HEIGHT_UNITS/2  ; humans aren't placed on roofs taller
+                                ; than 0.5 height units (level 1's)
 HUMAN_RUN       equ TILE_UNITS*10/(TILE_M*NOMINAL_FPS)  ; 10 m/s: 9 units/frame
 HUMAN_HP        equ 10          ; hit points (a rocket blast kills)
 WAVE_R          equ 4*TILE_UNITS    ; 80 m: the VTOL this near (x and z), a
@@ -1885,7 +1904,10 @@ SM_CENTRE       equ 1               ; sight_mask: the crosshairs drawn: the
 SM_LINK_L       equ 2               ;   centre one, the linked chain guns'
 SM_LINK_R       equ 4               ;   left and right (gun_aim)
 sight_mask: db SM_CENTRE
+sight_ax:   db 128                      ; the centre crosshair: where the
+sight_ay:   db VIEW_CY                  ;   aim assist turns its rounds
 sight_x:       db 128                      ; draw_gunsight: a crosshair's centre
+gs_row:     db VIEW_CY                  ;   and row
 ; The missile lock (lock_update, weapons.asm; drawn by draw_reticule)
 ret_on:     db 0                        ; 1: the reticule is shown
 ret_x:      db 128                      ;   its centre (view pixels)
@@ -1914,8 +1936,8 @@ vthrust_fitted: db 0
 ; on): the strafe controls each give a sideways pulse (player.asm).  Saved.
 lthrust_fitted: db 0
 ; The vision mode in use (K_VISION steps through the ones the VTOL has:
-; vis_cycle, level_load.asm): its palette is in the Layer 2 palette and, if
-; not 0, the figures are drawn from their vision set (spr_lod).  Not saved.
+; vis_cycle, level_load.asm): its palette is in the Layer 2 palette, which
+; recolours the figures too (sprites/palette.json's "vision").  Not saved.
 VM_NORMAL       equ 0
 VM_NV_GREEN     equ 1                   ; (VIS_NV_GREEN)
 VM_NV_MONO      equ 2                   ; (VIS_NV_MONO)
@@ -2120,7 +2142,11 @@ city_map:   ds GRID*GRID                ; each cell's code and marks
     ELSE
         SAVENEX OPEN "zpolice.nex", boot, boot_stack
     ENDIF
+    IFDEF REAL_HARDWARE
+        SAVENEX CORE 3,3,0
+    ELSE
         SAVENEX CORE 3,0,0
+    ENDIF
         SAVENEX CFG 0
         SAVENEX AUTO
         SAVENEX CLOSE

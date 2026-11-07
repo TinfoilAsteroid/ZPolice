@@ -328,7 +328,7 @@ gfx_load:
         jr nc,.cl
         ld (gl_n),a
         ld a,(ll_cbuf+6)                ; the game's purposes, and their
-        cp GFX_ENTRIES                  ;   vision set
+        cp GFX_ENTRIES                  ;   (no vision set)
         jr nz,.cl
         ld a,PAGE_GFX0
         ld (gl_pg),a

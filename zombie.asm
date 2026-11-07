@@ -29,7 +29,9 @@
 ;   +19,+20  cell (x, z) marked with CELL_ZOMBIE in city_map ($FF = none)
 ;   +21,+22  height of its feet (0 for zombies; special monsters fly)
 ;   +23..+30 special monsters' own fields (specials.asm)
-;   +31    1 = drawn last frame (fig_seen; cleared by lock_update, weapons.asm)
+;   +31    bit 0: drawn last frame (fig_seen; moved to bit 1 by lk_clear,
+;          weapons.asm); bit 1: so, once the missile lock has used bit 0, for
+;          the guns (aim_assist)
 ;   +32,+33  where: the centre column and row on the view (the missile lock)
 ; Records 0..NZOMB-1 are the zombies, NZOMB..NMON-1 the special monsters
 ; (specials.asm), which share the drawing, cell marks, map blips and weapon
@@ -1401,6 +1403,17 @@ fig_seen:
 fig_size:
         ld hl,(fig_h)
         call scale_comp                 ; projected height (the last project's Z)
+        ld c,a
+        ld a,(fig_h)                    ; (a lich right beside the camera, over
+        cp 40                           ; 255 rows: it would wrap)
+        jr c,.h
+        ld hl,(zt+4)
+        ld de,27
+        or a
+        sbc hl,de
+        jr nc,.h
+        ld c,255
+.h:     ld a,c
         ld (zhr),a
         cp 3
         ret c
@@ -1429,14 +1442,18 @@ zfig_sel:
         jr z,.m
         ld a,2
 .m:     ld (zface),a
-        ld a,(ix+15)
-        cp ZT_GHOUL
-        ld a,ANIM_ZOMBIE_WALK_FRONT
-        jr c,.z
-        ld a,ANIM_GHOUL_WALK_FRONT
+        ld a,(ix+15)                    ; its type's figure
+        ld b,ANIM_ZOMBIE_WALK_FRONT
+        or a
         jr z,.z
-        ld a,ANIM_LICH_WALK_FRONT
-.z:     ld b,a
+        ld b,ANIM_FAST_ZOMBIE_WALK_FRONT
+        cp ZT_FAST
+        jr z,.z
+        ld b,ANIM_GHOUL_WALK_FRONT
+        cp ZT_GHOUL
+        jr z,.z
+        ld b,ANIM_LICH_WALK_FRONT
+.z:
         ld a,c
         and 3
         add a,b
@@ -1457,6 +1474,7 @@ zfig_sel:
         ld (fig_frame),a
         ret
         ASSERT ANIM_ZOMBIE_WALK_SIDE == ANIM_ZOMBIE_WALK_FRONT+1 && ANIM_ZOMBIE_WALK_REAR == ANIM_ZOMBIE_WALK_FRONT+2
+        ASSERT ANIM_FAST_ZOMBIE_WALK_SIDE == ANIM_FAST_ZOMBIE_WALK_FRONT+1 && ANIM_FAST_ZOMBIE_WALK_REAR == ANIM_FAST_ZOMBIE_WALK_FRONT+2
         ASSERT ANIM_GHOUL_WALK_SIDE == ANIM_GHOUL_WALK_FRONT+1 && ANIM_GHOUL_WALK_REAR == ANIM_GHOUL_WALK_FRONT+2
         ASSERT ANIM_LICH_WALK_SIDE == ANIM_LICH_WALK_FRONT+1 && ANIM_LICH_WALK_REAR == ANIM_LICH_WALK_FRONT+2
         ASSERT (ZT_LICH & 1) && (ZT_FAST & 1) && !(ZT_GHOUL & 1)
