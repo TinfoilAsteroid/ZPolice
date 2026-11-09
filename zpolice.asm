@@ -1049,7 +1049,8 @@ next_level:
         call base_init                  ; the pad and terrace, at full strength
         nextreg LOGIC_MMU,PAGE_WEAPONS
         call weapons_reset
-
+        call l2_game_mode               ; Layer 2 256x192 again, if a screen
+                                        ; had it at 320x256
         ; clear both buffers
         nextreg CODE_MMU,PAGE_CITY
         ld a,VIEW_CY
@@ -1214,6 +1215,15 @@ map_shadow:
         call read_nextreg
         add a,a                         ; 16K bank -> 8K page
         ld (seg_base),a
+        ret
+
+; Back from the screens outside the game (320x256, layer2-320x256.asm) to
+; the game's Layer 2, 256x192 and hidden, and the occlusion page back in
+; slot 2 where the 320x256 page was.  (Nothing changes if it wasn't.)
+l2_game_mode:
+        nextreg L320_MMU,PAGE_L320
+        call l320_mode256
+        nextreg OCC_MMU,PAGE_OCC0
         ret
 
 ; Show the shadow buffer and make the old active buffer the new shadow
@@ -2124,6 +2134,14 @@ stack_top:
         INCLUDE "city2.asm"
         DISPLAY "City2 end: ",/A,$
         ASSERT $ <= CITY2_ADDR+MEMBANK_SIZE
+
+; The 320x256 Layer 2 graphics for the screens outside the game: assembled
+; at $4000, mapped into slot 2 (over the occlusion page) while they're up
+        MMU L320_SLOT e, PAGE_L320, L320_ADDR
+        ORG L320_ADDR
+        INCLUDE "layer2-320x256.asm"
+        DISPLAY "L320 end:  ",/A,$
+        ASSERT $ <= L320_ADDR+MEMBANK_SIZE
 
         MMU CODE_SLOT e, PAGE_HUD, CODE_ADDR
         ORG CODE_ADDR

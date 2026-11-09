@@ -399,7 +399,7 @@ BIN_VERSION = 4
 HEADER = 16
 PAGE = 8192
 GFX_ADDR = 0xC000
-GFX_PAGES_MAX = 61                      # (pages 35 to 95: a 1 MB Next has 96)
+GFX_PAGES_MAX = 60                      # (pages 36 to 95: a 1 MB Next has 96)
 GFX_MIN_H, GFX_MAX_H = 3, 32            # the sizes drawn, in rows.  The file
                                         # grows with the cube of GFX_MAX_H
 

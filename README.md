@@ -882,7 +882,7 @@ Inspired by *Defender*: humans wait around the city to be picked up.
   address (`$6000–$6FFF`), listed before the building so it's drawn after
   it.
 * The humans' code and records sit in the zombie page (slot 1), which is
-  always mapped; their graphics are the figures' (pages 35 on).
+  always mapped; their graphics are the figures' (pages 36 on).
 
 **Not yet:** shots don't hit humans.
 
@@ -1703,6 +1703,7 @@ NextReg select alone, so this still works):
 | `specials.asm` | special monsters (`PAGE_SPECIAL`, page 31, game logic at `$C000`): the ghost and banshee behaviour, `spec_init` (wave 1), `spec_wave` (each wave's specials from the level file) and `spec_update` |
 | `keydef.asm` | redefine keys screen (`PAGE_KEYDEF`, page 33, game logic at `$C000`): list the controls with their keys and joystick inputs, change one, put the defaults back |
 | `loadout.asm` | load-out screen (`PAGE_LOADOUT`, page 32, game logic at `$C000`): before the first level and between levels, fit unlocked weapons from the store into the 5 slots |
+| `layer2-320x256.asm` | Layer 2 320x256 graphics for the screens outside the game (`PAGE_L320`, page 35, runs at `$4000` in slot 2, over the occlusion page): `l320_mode320` / `l320_mode256` switch the display (clip window, layer priority S L U, Layer 2's second palette set to RRRGGGBB) and back to the game's 256x192; `l320_cls` (DMA, 10 pages through slot 0); text with the 8x8 font, 40x32 (`l320_at`, `l320_pos`, `l320_char`, `l320_print` with ink / paper / position codes, `l320_print_list`); `l320_recolour` (highlight text cells) and `l320_swap` (one colour in a box); `l320_plot`, `l320_line` (Bresenham), `l320_fill`, `l320_hline`, `l320_vline`, `l320_box`. The screen is banks 9–13 (pages 18–27). `l2_game_mode` (zpolice.asm) switches back and puts the occlusion page back in slot 2; the game start calls it. Not used by any screen yet |
 | `text.asm` | text screens (resident): `menu_clear`, `menu_print`, `menu_char`, `menu_frame` and the menu font, shared by the menu and load-out pages; `MENU_ATTR`, `MENU_TITLE`, `MENU_OK`, `MENU_BAD` |
 | `level_load.asm` | level loading (`PAGE_LEVEL`, page 30, game logic at `$C000`): `load_level` (A = level) reads `ZPDATA/LEVELnn.ZPL` and its city's `ZPDATA/CITYnn.ZPC` with the file handler: the record, the city bank, the level's map changes, the palette and sky colour, the draw distance |
 | `ZPDATA/` | the level and city data files, made by `gentables.py`: `LEVEL01`–`LEVEL50.ZPL`, `CITY01`–`CITY10.ZPC`. Copy beside `zpolice.nex` |
@@ -1965,18 +1966,18 @@ suit their distance.
   and packs them into `ZPDATA/SPRITES.ZPG`.
   * A figure without a file is made from the original stick figures, in
     colour, at 4 levels (16, 12, 8 and 4 rows high).
-  * Up to 61 pages of 8K (`GFX_PAGES_MAX`, to page 95: all a 1 MB Next has):
+  * Up to 60 pages of 8K (`GFX_PAGES_MAX`, pages 36 to 95: all a 1 MB Next has):
     the directory (per purpose its frames; per frame the page and address of
     its table), then per frame a table with each height's width, page and
     address, and the pixels, a row at a time: its first drawn pixel's column,
     a count, and each pixel's palette entry (0: transparent).
-  * The figures take 30 pages (240K) of the 61. Each walking figure (3
+  * The figures take 30 pages (240K) of the 60. Each walking figure (3
     purposes, 4 frames) is about 6 pages. The file grows with the cube of
     `GFX_MAX_H`. A size scaled up from the art looks blocky until it's
     drawn larger.
 * **In the game:**
   * **Loading:** at start-up `gfx_load` (`level_load.asm`) reads the file
-    into pages 35 on (`PAGE_GFX0`), each through slot 4, and checks it
+    into pages 36 on (`PAGE_GFX0`), each through slot 4, and checks it
     fits this game (magic, version, pages, purposes). Without it
     (`gfx_ok` 0) the figures aren't drawn.
   * **Drawing:** while the city is drawn, the graphics pages are mapped in
@@ -2928,6 +2929,7 @@ by playing doesn't change the results.
 | File | What it checks |
 |------|----------------|
 | `test_data.py` | every city map, level and level palette passes `tools/check_maps.py`; every figure and the figure colours pass the sprite editor's checks; `ZPDATA/SPRITES.ZPG` is up to date with `sprites/`; `sprites/hud.json` passes its checks and matches `tables_hspr.inc`, and the HUD sprite editor's pixel operations work |
+| `test_l320.py` | the 320x256 graphics (`layer2-320x256.asm`), each routine on its own against a Python model, pixel for pixel: the DMA clear, the display switched to 320x256 and back, text (characters, strings with codes, tables), recolouring, pixels, lines (Bresenham), fills and boxes; `l2_game_mode` puts the occlusion page back |
 | `test_render.py` | ten fixed views of level 1 (high, low, pitched up and down) are drawn byte for byte as the reference `tests/ref/render.ref`; prints each view's frame time against the reference's (reported, not a failure); and 16 pitched views drawn with the occlusion pass (`OCC_PITCHED`) are the same as with the painter's path (`occ_begin` patched to return) |
 | `test_interrupts.py` | 30 frames of flight drawn the same with no interrupts, with the 50 Hz interrupt, and under stress (an interrupt every ~2,000 T-states, and in the window before `push_end`'s DI with SP in Layer 2) |
 | `test_figures.py` | `SPRITES.ZPG` is loaded into the graphics pages; a waiting human waves, and a running one is drawn from the front, the side (mirrored or not) or behind by the way it runs; without the file the game runs and draws no figures |

@@ -1047,7 +1047,7 @@ def write_png(path, bank, cpu):
     buf = b"".join(bytes(cpu.page(bank * 2 + i)) for i in range(npages))
     ula = bytes(cpu.page(10)) + bytes(cpu.page(11))     # bank 5
     ula_above = (cpu.nextreg.get(0x15, 0) >> 2) & 7 in (2, 4, 5)
-    l2pal = cpu.palettes.get(1, {})
+    l2pal = cpu.palettes.get(5 if cpu.nextreg.get(0x43, 0) & 4 else 1, {})   # (second: $43 bit 2)
     upal = [to9(c) for c in ULA_DEFAULT]
     for k, v in cpu.palettes.get(0, {}).items():
         if k < 32:

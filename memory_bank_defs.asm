@@ -13,7 +13,8 @@
 ;                 table (PAGE_SIN) whenever get_sin reads it
 ;   slot 1 $2000  zombie page, always mapped: zombies, humans, the HUD
 ;                 map, the IM 2 table
-;   slot 2 $4000  occlusion data
+;   slot 2 $4000  occlusion data; the 320x256 graphics (PAGE_L320) on the
+;                 screens outside the game
 ;   slot 3 $6000  the city bank (always mapped): city_col at $6000,
 ;                 city_map at $7000, loaded from the level's city file
 ;   slot 4 $8000  ULA screen (page 10, the first half of bank 5)
@@ -88,6 +89,13 @@ ZOMBIE_ADDR             equ membank1
 OCC_SLOT                equ MMU_SLOT_2
 OCC_MMU                 equ MMU_SLOT_2_REGISTER
 OCC_ADDR                equ membank2
+; slot 2 also: the 320x256 Layer 2 graphics (layer2-320x256.asm), for the
+; screens outside the game (menus, load-out, level complete, game over),
+; which never draw the city.  The occlusion page goes back before the game
+; (l2_game_mode).
+L320_SLOT               equ MMU_SLOT_2
+L320_MMU                equ MMU_SLOT_2_REGISTER
+L320_ADDR               equ membank2
 
 ; slot 3: the city bank, always mapped: city_col at $6000, city_map at
 ; $7000, read from the level's city file (level_load.asm) in one go
@@ -168,7 +176,9 @@ PAGE_KEYDEF             equ 33          ; keydef.asm: the redefine keys
                                         ; screen (slot 6)
 PAGE_CITY2              equ 34          ; city2.asm: more Layer 2 drawing
                                         ; (slot 4, with the city page)
-PAGE_GFX0               equ 35          ; the figures' graphics (from page 35,
+PAGE_L320               equ 35          ; layer2-320x256.asm: Layer 2 320x256
+                                        ; graphics for the menu screens (slot 2)
+PAGE_GFX0               equ 36          ; the figures' graphics (from page 36,
                                         ; GFX_PAGES_MAX at most), loaded from
                                         ; ZPDATA/SPRITES.ZPG at start-up; each
                                         ; mapped at $C000 (slot 6) to draw

@@ -45,6 +45,8 @@ Items marked "(also below)" repeat an open point further down this file.
   distance (the per-level draw distance already exists).
 - HUD polish: weapon icons in place of letters, an ammo bar per slot, and a
   warning flash at low integrity.
+- Screens outside the game in Layer 2 320x256: see "Screens in Layer 2
+  320x256" below.
 
 ### Sound
 
@@ -137,6 +139,41 @@ Items marked "(also below)" repeat an open point further down this file.
 - Corner transform and projection: see "Projection optimisation" below.
 
 Completed items are in DONE.md.
+
+## Screens in Layer 2 320x256 (2026-11-09)
+
+Move the screens outside the game from the ULA (`text.asm`: 32x24
+characters, attribute colours) to Layer 2 320x256 (40x32 characters, any
+colour). The graphics page is done and tested: `layer2-320x256.asm`
+(`PAGE_L320`, in slot 2 over the occlusion page), test_l320.py; see README.
+The game start already switches back to 256x192 and puts the occlusion page
+back (`l2_game_mode`).
+
+Each screen, in place of `menu_clear` / `menu_print`:
+- `nextreg L320_MMU,PAGE_L320`, `l320_cls`, `l320_mode320` (clear before
+  switching, so the old contents never show).
+- Its text tables (row, column, colour, text) through `l320_print_list`,
+  with the colours as RRRGGGBB (`L320_WHITE`, `L320_YELLOW`, ...) in place
+  of the `MENU_*` attributes, re-laid out for 40x32.
+- Highlights (the selected option, a fit / can't-fit colour) with
+  `l320_recolour`, or by printing again in the new colour.
+- Panels and frames with `l320_box` / `l320_fill`.
+
+1. Main menu (`main_menu`, menu.asm), and its NO SAVED GAME message.
+2. Game over (`game_over_screen`, menu.asm).
+3. Level complete and game complete (`level_complete_screen`,
+   `game_complete_screen`, menu.asm), and `space_prompt`.
+4. Load error (`load_error_screen`, menu.asm).
+5. VTOL load-out (`loadout_screen`, loadout.asm): the store list, the 5
+   slots, the selected slot and the highlighted weapon (green / red / white).
+6. Redefine keys (`keydef_screen`, keydef.asm).
+7. Then: check that nothing still uses `menu_clear` / `menu_print` /
+   `menu_char` (the pause screen, in flight, stays on the ULA) and remove
+   what isn't used from the resident page. test_gameover.py reads the ULA
+   screen (page 10) to see the game over screen: it would read Layer 2
+   instead.
+8. Maybe: a double-size font for titles, and a title picture (see Graphics
+   above).
 
 ## Projection optimisation (2026-11-07, to review)
 

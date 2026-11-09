@@ -34,13 +34,16 @@ page.
 | | `map.asm` (the HUD map) | to `$3BE1` |
 | | `interrupts.asm` (IM 2 table at `$3C00`, the ISR, `engine_tick`, `sfx_tick`) | to `$3F99` |
 
-## MMU 2: `$4000`–`$5FFF` (NextReg `$52`), always mapped
+## MMU 2: `$4000`–`$5FFF` (NextReg `$52`)
 
-`initialise.asm` maps this page in.
+`initialise.asm` maps the occlusion page in. The screens outside the game
+(menus, load-out, level complete, game over) may map the 320x256 graphics
+page over it; `l2_game_mode` puts the occlusion page back before the game.
 
 | Page | Contents |
 |------|----------|
 | 6 `PAGE_OCC0` | Occlusion data, used by city.asm. Not assembled: it is filled each frame. |
+| 35 `PAGE_L320` | `layer2-320x256.asm`: Layer 2 320x256 graphics (switching, DMA clear, text, recolouring, lines, boxes) for the screens outside the game. The screen itself is banks 9–13 (pages 18–27: buffer A and part of B). |
 
 The occlusion data is laid out as follows:
 - `OCC_YBUF` `$4000`: the cover row of each screen column.
@@ -111,10 +114,10 @@ for this slot.
 | 31 `PAGE_SPECIAL`  | `specials.asm`   | `$C75C` |
 | 32 `PAGE_LOADOUT`  | `loadout.asm`    | `$C2DF` |
 | 33 `PAGE_KEYDEF`   | `keydef.asm`     | `$C5C0` |
-| 35–64 `PAGE_GFX0` on (at most 61 pages, to 95) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
+| 36–65 `PAGE_GFX0` on (at most 60 pages, to 95) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
 
 The figures' graphics pages are mapped here only while the city is drawn
-(the game logic doesn't run then): `spr_lod` maps page 35 (the directory),
+(the game logic doesn't run then): `spr_lod` maps page 36 (the directory),
 then the frame's page (its table of sizes), `spr_draw` the page of the size
 it draws. `main_loop` maps the logic pages
 back before they run.
@@ -127,7 +130,7 @@ back before they run.
 | `ZPDATA/CITYnn.ZPC`: header and palette, the first 544 bytes | 30 | `ll_cbuf`, `$C317` | `load_level` |
 | `ZPDATA/LEVELnn.ZPP`: the level's own palette (only if it has one), 520 bytes | 30 | `ll_cbuf`, `$C317` (once the city's header is used) | `load_level` |
 | `ZPDATA/LEVELnn.ZPV`: the level's 4 vision palettes (normal, night vision green and monochrome, thermal), 2,056 bytes | 30 | `ll_vbuf` (kept there: `vis_cycle` swaps one into the Layer 2 palette in flight, with this page mapped) | `load_level` (`vis_load`) |
-| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–61 pages of 8K (30 now) | 35 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
+| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–60 pages of 8K (30 now) | 36 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
 
 `load_level` then sends the palette to the Layer 2 palette (NextReg `$44`).
 The rest of the city file goes to MMU 3.
@@ -158,6 +161,7 @@ The rest of the city file goes to MMU 3.
 | 14    | 0 $0000 | sin_tables.asm                                                                     |
 | 5     | 1 $2000 | zombie.asm, human.asm, map.asm, interrupts.asm - Never paged out                   |
 | 6     | 2 $4000 | occlusion data                                                                     |
+| 35    | 2 $4000 | layer2-320x256.asm (on the screens outside the game, over the occlusion data)      |
 | 7     | 3 $6000 | city bank (CITYnn.ZPC loaded here)                                                 |
 | 10    | 4 $8000 | ULA screen                                                                         |
 | 11    | 5 $A000 | zpolice.asm and its includes (SAVEGAME.ZPS loaded here)                            |
@@ -229,6 +233,6 @@ swaps pages and then calls into them has to be resident.
 
 ### Always-mapped data (no code)
 
-- **MMU 2, page 6:** the occlusion data.
+- **MMU 2, page 6:** the occlusion data (page 35, the 320x256 graphics, over it on the screens outside the game).
 - **MMU 3, page 7:** the city bank, `city_col` and `city_map`.
 - **MMU 4, page 10:** the ULA screen.
