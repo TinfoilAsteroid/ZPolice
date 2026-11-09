@@ -149,7 +149,13 @@ To do, roughly 6-8% of a frame together (estimates):
    outcode and screen position, the first time in a frame, reused by its
    neighbours and by roofs of the same height (a small table round the
    camera, marked with the frame). The street dots (draw_dots, 4.2% of a
-   frame) project grid points too: check whether they could share it.
+   frame) project grid points too, but likely can't share it with the
+   buildings: a dot is only worked out for a corner with no building next
+   to it, when drawing a floor tile, so the two sets of points barely
+   meet. The dots can share among the floor tiles, though: a dot already
+   cached for the frame when a tile gets ready to project it means that
+   dot is already drawn, so the tile can skip it (no second projection,
+   no second draw).
 3. Outcode and projection in one pass (~1-1.5%): the corner read once, the
    outcode worked out on the way into the projection.
 4. Fewer buildings reaching the transform: the cull and the occlusion
