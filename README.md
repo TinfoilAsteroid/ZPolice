@@ -83,6 +83,7 @@ the sjasmplus command line:
 | `SKY_IS_WALL` | on | fill the sky in the perimeter wall's colour and draw the wall only up to camera height, below |
 | `LEVEL_FAST_PATH` | on | shortcuts for level flight (pitch 0), below |
 | `OCCLUSION_CULL` | on | in level flight, skip buildings completely hidden behind nearer ones, below |
+| `OCC_PITCHED` | on | the same pitched, up to `OCC_PMAX` (18), below |
 
 **`OCCLUSION_CULL`:** at street level most buildings in view end up
 completely hidden behind the ones lining the street. Measured before this
@@ -123,7 +124,7 @@ exact test:
     below it. The picture is unchanged: those rows are painted over later.
   * Over the ten test views it saves 0.3% in all, up to 2.2% at street
     level; one level view (view 0) is 0.3% slower, as its cut rows save
-    less than finding them costs. Pitched views (no occlusion) pay about
+    less than finding them costs. Views past `OCC_PMAX` (no occlusion) pay about
     0.1% for the check.
   * A first version scanned the end groups column by column for a lower
     cut, but cost more than it saved.
@@ -143,8 +144,29 @@ exact test:
   (`PAGE_OCC0`, slot 2). The busiest test view at the full draw distance
   (8 tiles) keeps 35. If they ever run out, that frame is drawn the plain
   way (every building again, in painter's order).
-* **When it runs:** only in level flight. With the nose pitched the plain
-  painter's path runs unchanged.
+* **When it runs:** in level flight, and pitched up to `OCC_PMAX` (18) with
+  `OCC_PITCHED` (on; 2026-11-09). Past that the plain painter's path runs
+  unchanged (the sides lean too far and the bounds are too loose to pay).
+  Pitched, two things change:
+  * Screen columns are no longer vertical slices: a building's vertical
+    edges lean on screen, so its outermost columns are only partly
+    covered. It covers only the columns of both its top corners and its
+    bottom corners (`o_tx0`..`o_tx1` and `o_bx0`..`o_bx1`, `occ_test`), from
+    its lowest top corner down. Its outline is convex, so those columns
+    are covered. The rest of the rule holds as in level flight (no roll,
+    the camera above the ground: what is behind sits higher in its column).
+    Covering the whole span, the first try, changed 50 of 124 views.
+  * `occ_pretest` bounds the building from its cell centre in camera
+    space (`occ_pretest.pit`): Z = Yw sinP + Z1 cosP and Y = Yw cosP − Z1
+    sinP over its height above the eye (Yw) and the circle round its centre
+    (Z1), each widened by `OP_M` (8) for rounding; 2R cosP and min(0, 2R
+    sinP) once a frame (`occ_begin`). About 3,600–4,500 T a building.
+  * Measured over 124 random pitched views: pixel-identical, frame time
+    −7.7% (median frame 14.9 → 16.7 fps, the 90th percentile 12.1 → 12.7;
+    the single slowest view 10.1 → 9.6). By view −45% to +18%: it pays
+    where much is hidden, and costs where little is (low and steep). Of
+    the render test's views, 4 and 5 are 5% and 13% slower, 9 is 4%
+    faster, 8 (pitch −20) is past `OCC_PMAX`.
 
 Why it can't hide something visible:
 * Buildings that share a column reach the test front to back; the grid
@@ -2784,6 +2806,28 @@ city): identical.
 * **`scale_comp`**: `zpatch` patches the barrel shift's count and its opcode
   (`BSRL` or `BSLA`, `OP_BSRL`, `OP_BSLA`), so the shift runs straight
   through (a right shift by 0 for a Z already normalised).
+* **Cells out of view** (2026-11-09): the walks skip a cell whose centre
+  is surely out of view before `try_cell` (`WALK_TRY`, zpolice.asm: in
+  level flight |X| − Z1 ≥ `WALK_R`, 320; pitched, behind, Z1 < −`WALK_R`),
+  from the walk's own registers, still stepping every cell. `WALK_R` is
+  over `BLD_R` (so no building `draw_bld` would draw is skipped) by enough
+  for a figure at a street cell's edge. `row_cull` (city.asm) works out
+  once a frame the rows with no cell in view (`row_skip`): its end cells
+  past the same edge, left, right or behind, with `ROW_M` for rounding;
+  `draw_row` and `occ_row` return at once for those. `occ_pretest`
+  normalises each Z once (`oz_norm`, its far Z only if needed) and scales
+  by `oz_sc` (`VP_SCALE`), with no `zpatch` / `scale_comp`.
+* **Building corners** (`vproj`, `vproj_y`, city.asm; 2026-11-09): the
+  corners `draw_bld` projects (outcode 0) skip `vtx_proj`: one routine
+  with the same arithmetic, step for step, so the same pixels. Z's shift
+  is one of three branches (left, none, right), X and Y are made positive
+  and shifted as they're read, the reciprocal stays in BC for both, and
+  `VP_SCALE` (zpolice.asm) adds the rounding before bit 8's reciprocal, so
+  the sum's bit 16 is the carry and `RRA` gives the result. 703 T a corner
+  rather than 1,096; it leaves `scale_comp` unpatched, so the level-flight
+  top corner uses `vproj_y` (its own shift and reciprocal) rather than
+  `proj_y`. tests/test_project.py compares them with `vtx_proj` and
+  `proj_y` over 4,064 corners.
 * Looked at and not used: the alternate registers in the span filler, the
   edge walker and the occlusion tests (an `EXX` costs more than the memory
   traffic it would save there), and reusing the buildings' projected
@@ -2884,7 +2928,7 @@ by playing doesn't change the results.
 | File | What it checks |
 |------|----------------|
 | `test_data.py` | every city map, level and level palette passes `tools/check_maps.py`; every figure and the figure colours pass the sprite editor's checks; `ZPDATA/SPRITES.ZPG` is up to date with `sprites/`; `sprites/hud.json` passes its checks and matches `tables_hspr.inc`, and the HUD sprite editor's pixel operations work |
-| `test_render.py` | ten fixed views of level 1 (high, low, pitched up and down) are drawn byte for byte as the reference `tests/ref/render.ref`; prints each view's frame time against the reference's (reported, not a failure) |
+| `test_render.py` | ten fixed views of level 1 (high, low, pitched up and down) are drawn byte for byte as the reference `tests/ref/render.ref`; prints each view's frame time against the reference's (reported, not a failure); and 16 pitched views drawn with the occlusion pass (`OCC_PITCHED`) are the same as with the painter's path (`occ_begin` patched to return) |
 | `test_interrupts.py` | 30 frames of flight drawn the same with no interrupts, with the 50 Hz interrupt, and under stress (an interrupt every ~2,000 T-states, and in the window before `push_end`'s DI with SP in Layer 2) |
 | `test_figures.py` | `SPRITES.ZPG` is loaded into the graphics pages; a waiting human waves, and a running one is drawn from the front, the side (mirrored or not) or behind by the way it runs; without the file the game runs and draws no figures |
 | `test_keys.py` | the default keys without `KEYS.ZPK`; a redefined key is saved on leaving the redefine screen and loaded at the next start; a file of the wrong version is ignored; X on the pause screen returns to the menu without saving |
@@ -2892,6 +2936,7 @@ by playing doesn't change the results.
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
 | `test_aim.py` | a centre slot shot just off a zombie, either side, turns to it (at most `AIM_DEV`) and hits, and the centre crosshair moves to show where before it's fired; machine gun, chain gun (with its spread) and laser; not one outside the cone, far above the path or not drawn, nor a linked gun's; the zombie is drawn at its projected height, up to the largest, in proportion |
+| `test_project.py` | building corners projected by `vproj` and `vproj_y` land on the same screen x and y as `vtx_proj` and the level shortcut `proj_y`: 4,064 corners, every shift of Z, the frustum's edges; `occ_pretest`'s `oz_sc` / `oz_sx` give `scale_comp`'s and `occ_sx`'s results for 1,581 Z and components |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 50 hit points and 60 frames a shot in city 1, 75 and 50 in city 2, 275 and 10 in city 10; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |
 | `test_debug_keys.py` | debug key 0 moves on a wave, and on the last wave completes the level; key 9 completes the level from any wave, the level number unchanged until the level complete screen moves it on one |

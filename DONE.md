@@ -132,6 +132,63 @@ Completed items moved from TODO.md, under the same headings.
 
 ## Performance
 
+- (Done 2026-11-09: occlusion in pitched views, `OCC_PITCHED` (zpolice.asm),
+  up to `OCC_PMAX` (18). Measured first (TODO "Front to back"): in pitched
+  views, which had no occlusion, buildings that end up wholly overdrawn
+  took 15-56% of the frame. The cover rule holds pitched except that a
+  building's vertical edges lean on screen, so it now covers only the
+  columns of both its top and bottom corners; occ_pretest has bounds of
+  its own when pitched (Z and Y from the cell centre over the building's
+  height and circle, a margin for rounding). Over 124 random pitched views:
+  pixel-identical, frame time -7.7%, median frame 14.9 -> 16.7 fps (by view
+  -45% to +18%; past pitch 18 it lost, so it's off there). test_render.py's
+  test_pitched_occlusion checks 16 views against the painter's path. See
+  README "When it runs".)
+
+- (Done 2026-11-09: fewer cells reaching the transform, all three
+  pixel-identical, 2.8% off the frame in all (1,750,943 -> 1,701,843 T a
+  frame over the 10 render-test views). Before: the walk tried all 289
+  cells of the 17x17 square every frame, 69% of them out of view, and
+  occ_pretest was 2,828 T a call.
+  - A leaner occ_pretest (city2.asm), 0.5%: the near Z normalised once
+    (oz_norm), the far Z the first time it's needed (oz_far), the
+    components by oz_sc / oz_sx (vproj's VP_SCALE), no zpatch or
+    scale_comp: 2,828 -> 2,504 T a call. The old occ_sx called zpatch
+    with A = X's high byte, so for X 0-255 and Z < 256 it took Z as 1 (a
+    bound at the screen's edge: safe, but fewer rejections); oz_norm
+    always uses Z.
+  - The walk's own cull (WALK_TRY, zpolice.asm), 1.25%: draw_row and
+    occ_row skip try_cell for a cell whose centre is surely out of view,
+    from the walk's registers (level |X| - Z1 >= WALK_R, 320; pitched
+    Z1 < -WALK_R). Every cell still stepped. try_cell calls 2,822 -> 1,207.
+    320 rather than BLD_R's 256 for figures at a street cell's edge: over
+    2,816 figures drawn by zombies at the view's edges, the furthest
+    cell was at 141. 280 level and 80 pitched views with zombies at the
+    edges are the same with it off (WALK_R 12000).
+  - Whole rows skipped (row_cull, city.asm), 1.1%: row_skip, worked out
+    once a frame (9,300 T) from the rows' end cells against the left,
+    right and behind edges (they're linear along a row), with a margin
+    (ROW_M) for rounding; it skips exactly the 39 rows of 170 with no
+    cell in view, and their row_start calls with them (340 -> 262).)
+
+- (Done 2026-11-09: a leaner projection for building corners, `vproj` and
+  `vproj_y` (city.asm), pixel-identical: the same arithmetic as
+  `vtx_proj` / `project` / `zpatch` / `scale_comp`, step for step, in one
+  routine, with Z's shift chosen by a branch rather than patched in, X and
+  Y made positive and shifted as they're read, the reciprocal kept in BC
+  for both, the rounding added first so the 17-bit sum's top bit is the
+  carry, and no calls, push / pop or self-patching. Measured in the
+  emulator over one frame of each of the 10 render-test views:
+  - A corner's projection 1,096 T -> 703 T (-36%), 944 of them over the
+    10 frames.
+  - The level-flight shortcut (screen y only) 311 T -> 462 T, 198 calls:
+    it used to share `scale_comp`'s patched reciprocal with the corner
+    below; it now works out Z's shift and reciprocal again (cheaper than
+    saving them on every corner).
+  - The frame 1,786,178 T -> 1,750,943 T (-2.0%), about +0.3 fps at 16.
+  - tests/test_project.py checks 4,064 corners (every shift of Z and the
+    frustum's edges) give the same screen x and y as before.)
+
 - (Done 2026-11-03: city drawing 15.5% faster over the ten reference views,
   pixel-identical (level flight 15.0 → 18.2 fps, pitched 11.6 → 13.5): the
   street dots only at corners whose four cells are all road (a building's
@@ -147,6 +204,22 @@ Completed items moved from TODO.md, under the same headings.
   first in draw_bld, and a coarse cover buffer for the occlusion test.
   5.0% off the frame in all, 3-9% at street level. See README
   "Performance".)
+- (Done 2026-11-09: No real benefit in testing. A cache of building
+  corners by grid point, `GRID_CACHE`, built, measured and removed: each
+  grid point's outcode and screen x, y, kept for the frame (top corners by
+  their height too) in 256 slots, i + 16 j, and reused by the neighbouring
+  buildings. Measured in the emulator over the 10 render-test views:
+  - It found what was expected: 352 of 1,554 outcodes (23%) and 272 of
+    1,142 projections, ~355,000 T of work saved.
+  - But its lookups and stores cost ~460,000 T, ~300 T a corner (every
+    corner looked up, every miss kept), so the frame was 0.8% slower
+    (1,750,943 -> 1,765,598 T a frame). Even with free lookups, keeping
+    every miss would leave under 1%.
+  - Not pixel-identical either: the same grid point comes out a unit
+    apart in camera space from two neighbours in 46% of repeats (each
+    building's corners are made from its own walked centre), and 15
+    corners a pixel apart, so views 4, 5 and 9 changed (6-152 bytes).
+  The code was deleted.)
 - (Measured 2026-11-01, not worth doing: a per-frame cache of projected
   corners, about 0-1% (only 10-24 corners a frame match their row
   neighbour's exactly, and the corners would have to be kept between

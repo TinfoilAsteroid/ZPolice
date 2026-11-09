@@ -86,6 +86,14 @@
 ; Command line: -DOCCLUSION_CULL
         DEFINE OCCLUSION_CULL
 
+; OCC_PITCHED: OCCLUSION_CULL pitched too, up to OCC_PMAX (18, city2.asm;
+; past it the plain way).  Pitched, occ_pretest has bounds of its own
+; (occ_pretest.pit), and a building covers only the columns of both its top
+; and bottom corners (its vertical edges lean).  Pixel-identical (124 random
+; pitched views; test_render.py checks 16 against the painter's path).
+; Comment it out for level flight only.  Command line: -DOCC_PITCHED
+        DEFINE OCC_PITCHED
+
 ; LEVEL_FAST_PATH: while pitch is 0 (level flight) a building's top corners
 ; have the same camera X and Z as the bottom corners below them, so each top
 ; corner reuses its bottom corner's screen x and 1/Z and only works out its
@@ -672,6 +680,94 @@ OP_BSLA         equ $28             ; bsla de,b
 OP_BSRL         equ $2A             ; bsrl de,b
 
 ; HL = HL * GRID  (a map row offset)
+; DE = -DE (vproj)
+        MACRO NEG_DE
+        xor a
+        sub e
+        ld e,a
+        sbc a,a
+        sub d
+        ld d,a
+        ENDM
+
+; HL = n (>= 0), BC = R (zpatch's reciprocal for Z) -> A = round(n * 128 /
+; Z) as scale_comp, after its shift: n over 511 clamped; P = n_lo R / 256 +
+; 256 (the rounding, first: at most 65535), plus R if bit 8 of n is set (the
+; carry bit 16); A = bits 9-16 of P.  Uses DE.  (vproj)
+        MACRO VP_SCALE
+        ld a,h
+        cp 2
+        jr c,$+5
+        ld hl,511
+        ld d,l
+        ld e,c
+        mul d,e                         ; n_lo Rl
+        ld a,d
+        ld d,l
+        ld e,b
+        mul d,e                         ; n_lo Rh
+        add a,e
+        ld e,a
+        ld a,d
+        adc a,1
+        ld d,a                          ; DE = n_lo R / 256 + 256, carry 0
+        bit 0,h
+        jr z,$+5
+        ex de,hl
+        add hl,bc                       ; + 256 n_hi R / 256: carry = bit 16
+        ex de,hl
+        ld a,d
+        rra
+        ENDM
+
+; The cell walks' call of try_cell (draw_row, occ_row), skipped for a cell
+; whose centre (the walk's yaw-space X, Z1 in HL', DE') is surely out of
+; view: in level flight |X| - Z1 >= WALK_R (outside the left or right
+; edge), pitched Z1 < -WALK_R (behind: no multiply by draw_bld's cull_c).
+; WALK_R is over draw_bld's BLD_R, so every building it skips draw_bld
+; would reject, and the 64 over leaves room for a figure standing at a
+; street cell's edge (an off-screen figure draws nothing and notes
+; nothing: fig_draw returns before fig_seen).  The walk still steps every
+; cell, so the cells drawn have the same positions.  Uses A, BC'.
+WALK_R          equ 320
+        MACRO WALK_TRY
+        exx
+        ld a,(pitch)
+        or a
+        jr nz,.pt
+        ld b,h
+        ld c,l
+        bit 7,b
+        jr z,.ap
+        xor a
+        sub c
+        ld c,a
+        sbc a,a
+        sub b
+        ld b,a                          ; |X|
+.ap:    ld a,c
+        sub e
+        ld c,a
+        ld a,b
+        sbc a,d
+        ld b,a                          ; |X| - Z1
+        ld a,c
+        sub low WALK_R
+        ld a,b
+        sbc a,high WALK_R
+        exx
+        jp p,.out                       ; |X| - Z1 >= WALK_R
+        jr .try
+.pt:    ld a,e
+        add a,low WALK_R
+        ld a,d
+        adc a,high WALK_R
+        exx
+        jp m,.out                       ; Z1 + WALK_R < 0
+.try:   call try_cell
+.out:
+        ENDM
+
         MACRO ROWOFS
         add hl,hl
         add hl,hl

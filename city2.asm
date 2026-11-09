@@ -817,7 +817,8 @@ draw_reticule:
 
     IFDEF OCCLUSION_CULL
 ;==============================================================================
-; Occlusion culling (OCCLUSION_CULL, level flight only)
+; Occlusion culling (OCCLUSION_CULL; pitched too with OCC_PITCHED, up to
+; OCC_PMAX: then the columns are tilted, see occ_test and occ_pretest.pit)
 ;
 ; In level flight every screen column is a vertical slice of the world through
 ; the camera.  The cells are walked in exactly the reverse of the painter's
@@ -860,14 +861,36 @@ OR_N            equ 7           ;   bld_cut
 ; its city_col address ($6000-$6FFF) or a cell with zombies as its city_map
 ; address ($7000-$7FFF).
 
-; Start of the city: occlusion on only in level flight
+; Start of the city: occlusion on in level flight (and with OCC_PITCHED
+; up to OCC_PMAX)
 occ_begin:
         xor a
         ld (occ_on),a
         ld (occ_full),a
+    IFNDEF OCC_PITCHED
         ld a,(pitch)
         or a
         ret nz
+    ELSE
+        ld a,(pitch)                    ; pitched past OCC_PMAX: the plain way
+        bit 7,a                         ; (the sides lean too far, the bounds
+        jr z,.pp                        ; are loose: it costs more than it
+        neg                             ; saves)
+.pp:    cp OCC_PMAX+1
+        ret nc
+        ld hl,2*OCC_R                   ; occ_pretest's pitched bounds
+        ld de,(cos_p)
+        call fmul
+        ld (o_kc),hl                    ; 2R cosP
+        ld hl,2*OCC_R
+        ld de,(sin_p)
+        call fmul
+        bit 7,h
+        jr nz,.ks
+        ld hl,0
+.ks:    ld (o_ks),hl                    ; min(0, 2R sinP)
+        xor a
+    ENDIF
         inc a
         ld (occ_on),a
         ld hl,OCC_LIST
@@ -921,6 +944,16 @@ occ_row:
         ld a,(cell_j)
         cp GRID
         ret nc
+        ld hl,cz                        ; a row wholly out of view (row_cull):
+        sub (hl)                        ; nothing in it to try
+        ld hl,view_r
+        add a,(hl)
+        ld hl,row_skip
+        add hl,a
+        ld a,(hl)
+        or a
+        ret nz
+        ld a,(cell_j)
         call row_base
         ; right half, as draw_row: start at cx+R, back R cells to cx
         ld a,(cx)
@@ -946,7 +979,7 @@ occ_row:
         add hl,bc
         ex de,hl
         exx
-        call try_cell                   ; then cx+1 .. cx+R
+        WALK_TRY                        ; then cx+1 .. cx+R
         pop bc
         djnz .r
         ; left half, as draw_row: start at cx-R, on R-1 cells to cx-1
@@ -961,7 +994,7 @@ occ_row:
         ld a,(cx)
         dec a
         ld (cell_i),a
-        call try_cell                   ; then cx-1 .. cx-R
+        WALK_TRY                        ; then cx-1 .. cx-R
         ld a,(view_r)
         dec a
         ld b,a
@@ -978,7 +1011,7 @@ occ_row:
         sbc hl,bc
         ex de,hl
         exx
-        call try_cell
+        WALK_TRY
         pop bc
         djnz .l
         ret
@@ -1073,9 +1106,17 @@ occ_record:
         xor a
         ld (o_xmax),a
         ld (o_tcov),a
+    IFDEF OCC_PITCHED
+        ld (o_bx1),a
+        ld (o_tx1),a
+    ENDIF
         dec a
         ld (o_xmin),a
         ld (o_ymin),a
+    IFDEF OCC_PITCHED
+        ld (o_bx0),a
+        ld (o_tx0),a
+    ENDIF
         ld a,(bld_used0)
         ld (o_used),a
         ld ix,vtx
@@ -1106,7 +1147,26 @@ occ_record:
         ld (hl),a
 .y1:    pop bc
         push bc
+    IFDEF OCC_PITCHED
+        ; the bottom corners' columns and the top corners' (pitched, the
+        ; sides lean: only columns in both are covered from the top down)
+        ld hl,o_bx0
         ld a,b
+        cp 5
+        jr nc,.bt
+        ld hl,o_tx0
+.bt:    ld a,(ix+7)
+        cp (hl)
+        jr nc,.b1
+        ld (hl),a
+.b1:    inc hl
+        cp (hl)
+        jr c,.b2
+        ld (hl),a
+.b2:    ld a,b
+    ELSE
+        ld a,b
+    ENDIF
         cp 5
         jr nc,.nx                       ; corners 0-3 are the bottom ones
         ld a,(ix+6)
@@ -1184,10 +1244,17 @@ occ_dma_n   equ $ - occ_dma
 ; around it and its height, each widened by a pixel for rounding.
 ; Carry set if those bounds are already hidden.
 OCC_R           equ 188             ; half the cell diagonal (181) + rounding
+OP_M            equ 8               ; pitched bounds' margin (occ_pretest.pit)
+OCC_PMAX        equ 18              ; OCC_PITCHED: occlusion up to this |pitch|
 occ_pretest:
         ld a,(occ_full)
         or a
         ret nz                          ; not keeping any more: no point
+    IFDEF OCC_PITCHED
+        ld a,(pitch)
+        or a
+        jp nz,.pit                      ; pitched: bounds of its own
+    ENDIF
         ld hl,(t_z1)
         ld de,-OCC_R-NEAR
         add hl,de
@@ -1199,16 +1266,20 @@ occ_pretest:
         ld (o_zmin),hl
         ld de,2*OCC_R
         add hl,de
-        ld (o_zmax),hl
+        ld (o_zmax),hl                  ; (for oz_far)
+        ld hl,(o_zmin)
+.zs:    ld de,oz_min
+        call oz_norm                    ; the near Z: always needed
+        xor a
+        ld (oz_maxok),a                 ; the far Z: when first needed
         ; left edge: X-R, over the far Z if positive, the near Z if negative
         ld hl,(t_x)
         ld de,-OCC_R
         add hl,de
-        ld de,(o_zmax)
+        ld de,oz_min
         bit 7,h
-        jr z,.l1
-        ld de,(o_zmin)
-.l1:    call occ_sx
+        call z,oz_far
+        call oz_sx
         or a
         jr z,.l2
         dec a
@@ -1217,38 +1288,39 @@ occ_pretest:
         ld hl,(t_x)
         ld de,OCC_R
         add hl,de
-        ld de,(o_zmin)
+        ld de,oz_min
         bit 7,h
-        jr z,.r1
-        ld de,(o_zmax)
-.r1:    call occ_sx
+        call nz,oz_far
+        call oz_sx
         inc a
         jr nz,.r2
         dec a
 .r2:    ld (o_xmax),a
         ; top: height above the eye over the near Z, or below it over the far Z
+    IFDEF OCC_PITCHED
+        ld a,(pitch)
+        or a
+        jr z,.lvt
+        ld hl,(o_ytop)                  ; pitched: the most Y (.pit)
+        jr .tp
+.lvt:
+    ENDIF
         ld hl,(bld_h)
         ld de,(cam_y)
         or a
         sbc hl,de
-        jr c,.below
-        push hl                         ; (zpatch uses DE)
-        ld hl,(o_zmin)
-        call zpatch
-        pop hl
-        call scale_comp                 ; A = 128 * (h - camY) / Zmin
+.tp:    bit 7,h
+        jr nz,.below
+        ld de,oz_min
+        call oz_sc                      ; A = 128 * (h - camY) / Zmin
         ld c,a
         ld a,VIEW_CY-1
         sub c
         jr nc,.ty
         xor a
         jr .ty
-.below: call neg_hl                     ; camY - h
-        push hl
-        ld hl,(o_zmax)
-        call zpatch
-        pop hl
-        call scale_comp                 ; A = 128 * (camY - h) / Zmax
+.below: call oz_far                     ; (keeps HL)
+        call oz_sc                      ; A = 128 * (camY - h) / Zmax
         add a,VIEW_CY-1
         jr nc,.ty
         ld a,255
@@ -1256,29 +1328,198 @@ occ_pretest:
         jp occ_hidden
 .no:    or a
         ret
-
-; HL = X, DE = Z -> A = screen x, clamped to 0..255
-occ_sx:
-        ld a,h
-        push af
+    IFDEF OCC_PITCHED
+; Pitched: the building's camera-space bounds from its yaw-space ones, the
+; circle round its centre (Z1 = t_z1 -/+ OCC_R, X = t_x -/+ OCC_R) and its
+; height above the eye (Yw = -camY .. h - camY):
+;   Z = Yw sinP + Z1 cosP:  Zmin = min(Yw sinP) + (t_z1 - R) cosP - OP_M,
+;                           Zmax = max(Yw sinP) + (t_z1 - R) cosP + 2R cosP + OP_M
+;   Y = Yw cosP - Z1 sinP:  Ymax = (h - camY) cosP - min(Z1 sinP) + OP_M
+; (cosP > 0; 2R cosP and min(0, 2R sinP) once a frame, occ_begin).  OP_M
+; covers fmul's rounding and the transform's.  Then as in level flight,
+; with Ymax for the top.
+.pit:   ld hl,(cam_y)
+        call neg_hl
+        ld de,(sin_p)
+        call fmul
+        push hl                         ; -camY sinP
+        ld hl,(bld_h)
+        ld de,(cam_y)
+        or a
+        sbc hl,de
+        ld (o_ytop),hl                  ; (h - camY, for Ymax)
+        ld de,(sin_p)
+        call fmul                       ; (h - camY) sinP
+        pop de
         push hl
-        ex de,hl
-        call zpatch
+        or a
+        sbc hl,de
         pop hl
-        call scale_comp
-        ld c,a
-        pop af
-        rla
-        jr c,.n
-        ld a,128
-        add a,c
+        jp p,.mm                        ; HL >= DE: HL the most, DE the least
+        ex de,hl
+.mm:    push hl                         ; max(Yw sinP)
+        push de                         ; min(Yw sinP)
+        ld hl,(t_z1)
+        ld de,-OCC_R
+        add hl,de
+        push hl
+        ld de,(cos_p)
+        call fmul                       ; (t_z1 - R) cosP
+        ex de,hl
+        pop hl                          ; t_z1 - R
+        ex (sp),hl                      ; HL = min(Yw sinP), stack t_z1 - R
+        add hl,de
+        ld bc,-OP_M
+        add hl,bc                       ; Zmin
+        ld (o_zmin),hl
+        ld bc,-NEAR
+        add hl,bc
+        bit 7,h
+        jr nz,.pno                      ; may reach the near plane
+        pop bc                          ; t_z1 - R
+        pop hl                          ; max(Yw sinP)
+        add hl,de
+        ld de,(o_kc)
+        add hl,de
+        ld de,OP_M
+        add hl,de
+        ld (o_zmax),hl                  ; Zmax
+        ld h,b
+        ld l,c
+        ld de,(sin_p)
+        call fmul                       ; (t_z1 - R) sinP
+        ld de,(o_ks)
+        add hl,de                       ; min(Z1 sinP)
+        push hl
+        ld hl,(o_ytop)
+        ld de,(cos_p)
+        call fmul                       ; (h - camY) cosP
+        pop de
+        or a
+        sbc hl,de
+        ld de,OP_M
+        add hl,de
+        ld (o_ytop),hl                  ; Ymax
+        ld hl,(o_zmin)
+        jp .zs
+.pno:   pop bc
+        pop bc
+        or a
+        ret
+    ENDIF
+
+; occ_pretest's projections: as zpatch / scale_comp (and its old occ_sx),
+; the same arithmetic step for step, but each Z normalised once (oz_norm)
+; into a state (shift count, 0 right / 1 left, reciprocal) that oz_sc reads,
+; the product by VP_SCALE, and no self-patching.
+
+; DE = oz_max, the far Z's state (o_zmax), normalised the first
+; time it's needed in a pretest (oz_maxok).  Keeps HL.
+oz_far:
+        ld de,oz_max
+        ld a,(oz_maxok)
+        or a
+        ret nz
+        inc a
+        ld (oz_maxok),a
+        push hl
+        ld hl,(o_zmax)
+        ld de,oz_max
+        push de
+        call oz_norm
+        pop de
+        pop hl
+        ret
+
+; HL = Z (>= NEAR), DE -> a state: its zpatch shift (count, direction) and
+; reciprocal (rtab, from Zn - 256)
+oz_norm:
+        ld a,h
+        ld bc,0                         ; right by 0: as it is
+        cp 2
+        jr nc,.r
+        or a
+        jr nz,.n
+        push de                         ; Z < 256: left by 8 - log2(L)
+        ld e,l
+        ld d,high lgtab
+        ld a,(de)
+        sub 8
+        neg
+        ld b,a
+        ex de,hl
+        bsla de,b
+        ex de,hl
+        pop de
+        inc c
+        jr .n
+.r:     push de                         ; Z >= 512: right by log2(H)
+        ld e,a
+        ld d,high lgtab
+        ld a,(de)
+        ld b,a
+        ex de,hl
+        bsrl de,b
+        ex de,hl
+        pop de
+.n:     ex de,hl                        ; L(E) = Zn - 256
+        ld (hl),b
+        inc hl
+        ld (hl),c
+        inc hl
+        ld d,high rtab_lo
+        ld a,(de)
+        ld (hl),a
+        inc hl
+        inc d
+        ld a,(de)
+        ld (hl),a
+        ret
+
+; HL = X, DE -> a Z's state -> A = screen x (128 + 128 X / Z), clamped to
+; 0..255
+oz_sx:
+        bit 7,h
+        jr nz,.n
+        call oz_sc
+        add a,128
         ret nc
         ld a,255
         ret
-.n:     ld a,128
+.n:     call oz_sc
+        ld c,a
+        ld a,128
         sub c
         ret nc
         xor a
+        ret
+
+; HL = a signed component, DE -> a Z's state -> A = round(|HL| * 128 / Z),
+; as scale_comp after zpatch for that Z
+oz_sc:
+        bit 7,h
+        jr z,.p
+        xor a
+        sub l
+        ld l,a
+        sbc a,a
+        sub h
+        ld h,a
+.p:     ex de,hl                        ; DE = |component|, HL -> the state
+        ld b,(hl)
+        inc hl
+        ld a,(hl)
+        inc hl
+        or a
+        jr nz,.l
+        bsrl de,b
+        jr .s
+.l:     bsla de,b
+.s:     ld c,(hl)
+        inc hl
+        ld b,(hl)                       ; BC = R
+        ex de,hl
+        VP_SCALE
         ret
 
 ; Bounds o_xmin/o_xmax/o_ymin against the cover buffer: carry set if hidden
@@ -1286,6 +1527,35 @@ occ_sx:
 occ_test:
         call occ_hidden
         ret c
+    IFDEF OCC_PITCHED
+        ; pitched: the vertical edges lean on screen, so a building's
+        ; outermost columns are only partly covered.  Only the columns of
+        ; both its top and its bottom corners are covered from its lowest
+        ; top corner down (its outline is convex).  Level flight: the same
+        ; columns as its corners (each vertical edge is one column).
+        ld a,(pitch)
+        or a
+        jr z,.lv
+        ld a,(o_bx0)
+        ld hl,o_tx0
+        cp (hl)
+        jr nc,.c0
+        ld a,(hl)                       ; the larger first column
+.c0:    ld e,a
+        ld (o_xmin),a
+        ld a,(o_bx1)
+        ld hl,o_tx1
+        cp (hl)
+        jr c,.c1
+        ld a,(hl)                       ; the smaller last column
+.c1:    ld (o_xmax),a
+        sub e
+        jr c,.none                      ; no column in both: no cover
+        inc a
+        ld b,a                          ; columns (0 = all 256)
+        ld h,high OCC_YBUF
+.lv:
+    ENDIF
         ld a,(o_tcov)
         cp VIEW_H
         jr nc,.none                     ; covers nothing

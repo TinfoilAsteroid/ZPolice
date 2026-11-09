@@ -91,10 +91,40 @@ Items marked "(also below)" repeat an open point further down this file.
   new builds, Layer 2 compared byte for byte).
   - Still to look at, if anything: scale_comp itself (3-4% of a frame in
     corner projections), and occ_record (5-11% in level flight).
-  - Measure overdraw (writes per pixel, in the emulator). If it's high,
-    draw front to back, keeping per screen column how far down it is
-    already filled (for boxes standing on flat ground, the same picture as
-    the painter's order). A big rewrite: only if overdraw justifies it.
+  - (Done 2026-11-09: front to back looked at, occlusion pitched on;
+    closed, it looks fine in play. See DONE.md.) Front to back, measured
+    in the emulator over the 10 render-test views: every write to the
+    view's pixels counted, by what wrote it.
+    - Level flight is already nearly there: the occlusion pass and the cut
+      rows leave an overdraw of only 1.00-1.32 (face writes / pixels
+      kept). Drawing the faces' visible runs only (an ideal span buffer,
+      60 T a row) would save 0-1.3% of a frame: not worth a rewrite.
+    - Pitched views have no occlusion (OCCLUSION_CULL is level flight
+      only): overdraw 1.3-1.9, and buildings that end up wholly overdrawn
+      take 15-56% of the frame (view 8, pitch -20: 40 of 47 buildings,
+      56%).
+    - The clear: only 33% of its pixels survive, but clearing just the
+      gaps would cost about what the one DMA fill does.
+    - Tried: occlusion at any pitch (`OCC_PITCHED`, zpolice.asm, off).
+      The cover rule still holds pitched (no roll, camera above the
+      ground), except that the vertical edges lean, so only the columns
+      of both a building's top and bottom corners are covered from its
+      top down (the first try, the whole span, changed 50 of 124 views).
+      With that: pixel-identical over 124 random pitched views (and the
+      render test's 4), frame time -5.4% (median -3.4%; -31.6% to +9.6%
+      by view). It drops 74% of the wholly overdrawn buildings, but
+      every one is still transformed (occ_pretest's bounds are level
+      flight only, so it's skipped when pitched) and recorded: in view 8
+      it saves 424K T of faces and spends ~420K T more on the pass.
+    - (Done 2026-11-09: a pitch-aware occ_pretest, and `OCC_PITCHED` on up
+      to `OCC_PMAX` (18): -7.7% over the 124 pitched views, pixel-identical.
+      See DONE.md.)
+    - Possible later (not needed): the pitched pre-test is 3,600-4,500 T a building (5
+      fmuls on top of the level one's work), and it costs where little is
+      hidden (low, steep views: up to +18%; render views 4 and 5 +5% and
+      +13%). Per-frame tables of the height terms (h sinP, h cosP for the
+      15 heights) would take 2 of the 5 fmuls off each. Choosing per view
+      (the better of on and off) would add only ~1% more.
   - Not to do: keeping SP borrowed for a whole polygon (saves the per-span
     SP restore and DI / EI, ~3%) would hold interrupts off long enough to
     miss some (the engines' sound); and clamping x instead of clipping the
@@ -140,28 +170,24 @@ corners 522 for 405 (22%), outcodes 1,554 for 1,192 (23%). The level
 shortcut (only Y for a top corner) did 198 of 720 top corners: it needs
 level flight and the bottom corner on screen, so pitched views get none.
 
-To do, roughly 6-8% of a frame together (estimates):
-1. A leaner projection (~2-3%): vtx_proj / project / scale_comp as one
-   routine for building corners, in registers, Z's reciprocal set up once
-   for both coordinates, no self-patching, calls or push / pop. Perhaps
-   30-40% off a projection.
-2. A projection cache for grid corners (~2.5%): each lattice point's
-   outcode and screen position, the first time in a frame, reused by its
-   neighbours and by roofs of the same height (a small table round the
-   camera, marked with the frame). The street dots (draw_dots, 4.2% of a
-   frame) project grid points too, but likely can't share it with the
-   buildings: a dot is only worked out for a corner with no building next
+To do, roughly 6-8% of a frame together (estimates; item 1 done, 2.0%;
+item 2 done, no benefit; item 4 done, 2.8%):
+1. (Done 2026-11-09: a leaner projection, `vproj`: 36% off a corner's
+   projection, 2.0% off the frame. See DONE.md.)
+2. (Done 2026-11-09: No real benefit in testing. See DONE.md.)
+   The street dots (draw_dots, 4.2% of a
+   frame) project grid points too, but likely couldn't have shared it
+   with the buildings: a dot is only worked out for a corner with no building next
    to it, when drawing a floor tile, so the two sets of points barely
-   meet. The dots can share among the floor tiles, though: a dot already
-   cached for the frame when a tile gets ready to project it means that
+   meet. A cache of the dots' own among the floor tiles is still open: a
+   dot already cached for the frame when a tile gets ready to project it means that
    dot is already drawn, so the tile can skip it (no second projection,
    no second draw).
 3. Outcode and projection in one pass (~1-1.5%): the corner read once, the
    outcode worked out on the way into the projection.
-4. Fewer buildings reaching the transform: the cull and the occlusion
-   pre-test cost 6.7% themselves, so a cheaper rejection of cells that
-   are plainly hidden or out of view helps every frame. The least
-   certain of the four.
+4. (Done 2026-11-09: fewer cells reaching the transform, a leaner
+   occ_pretest, the walk's own cull and whole rows skipped: 2.8% off the
+   frame, pixel-identical. See DONE.md.)
 - A larger gain (2-3x) would need drawing front to back, skipping hidden
   buildings before any corner work (the overdraw item under Performance:
   measure overdraw first).

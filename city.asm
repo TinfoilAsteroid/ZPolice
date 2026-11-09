@@ -1724,6 +1724,7 @@ clear_screen:
 ;==============================================================================
 draw_city:
         call walk_patch                 ; this frame's cell steps
+        call row_cull                   ; and the rows wholly out of view
     IFDEF OCCLUSION_CULL
         call occ_begin
         ld a,(occ_on)
@@ -1773,6 +1774,16 @@ draw_row:
         ld a,(cell_j)
         cp GRID
         ret nc
+        ld hl,cz                        ; a row wholly out of view (row_cull):
+        sub (hl)                        ; nothing in it to try
+        ld hl,view_r
+        add a,(hl)
+        ld hl,row_skip
+        add hl,a
+        ld a,(hl)
+        or a
+        ret nz
+        ld a,(cell_j)
         call row_base
         ld a,(cx)
         ld hl,view_r
@@ -1783,7 +1794,7 @@ draw_row:
         ld hl,cx
         cp (hl)
         jr z,.r
-        call try_cell
+        WALK_TRY
         ld hl,cell_i
         inc (hl)
         exx                             ; one cell +x: (X,Z1) += (cosY,sinY)
@@ -1804,7 +1815,7 @@ draw_row:
         ld hl,cx
         cp (hl)
         jp z,try_cell                   ; camera column last
-        call try_cell
+        WALK_TRY
         ld hl,cell_i
         dec (hl)
         exx                             ; one cell -x
@@ -1818,6 +1829,186 @@ draw_row:
         ex de,hl
         exx
         jr .r2
+
+; The rows the cell walks can skip this frame: row_skip[j - cz + view_r] not
+; 0 if every cell in row j would be skipped by WALK_TRY.  Its tests are
+; linear along a row (X and Z1 are), so a row is out if both its end cells
+; (cx -/+ view_r, the walk's starts) are past the same edge: right, X - Z1 >=
+; WALK_R; left, -X - Z1 >= WALK_R; behind, -Z1 >= WALK_R (pitched: only
+; behind, as WALK_TRY).  So the camera column's cell, which the walks try
+; without WALK_TRY, is out too.  X = dx cosY - dz sinY, Z1 = dx sinY + dz
+; cosY, by fmul as row_start's rot_yaw, the dz terms stepped by sinY and
+; cosY a row (fmul(256, f) is f exactly); ROW_M covers the rounding (each
+; of these and the walk's own within 2).
+ROW_M           equ 8
+row_cull:
+        ld hl,16383                     ; (|v| < 16384: rc_min's v - word fits)
+        ld (rc_m),hl
+        ld (rc_m+2),hl
+        ld (rc_m+4),hl
+        ld a,(view_r)
+        ld b,a
+        ld a,(cx)
+        sub b
+        call rc_end                     ; the left end, cell cx - R
+        ld a,(view_r)
+        ld b,a
+        ld a,(cx)
+        add a,b
+        call rc_end                     ; the right end, cx + R
+        ; the first row, cz - R: s = dz sinY, r = dz cosY
+        ld a,(view_r)
+        ld b,a
+        ld a,(cz)
+        sub b
+        ld h,a
+        ld l,128
+        ld de,(cam_z+1)
+        or a
+        sbc hl,de                       ; dz
+        push hl
+        ld de,(sin_y)
+        call fmul
+        ld (rc_s),hl
+        pop hl
+        ld de,(cos_y)
+        call fmul                       ; r
+        ; d = t - (WALK_R + ROW_M - m) for each edge, t its row part:
+        ; right t = -(s + r), left t = s - r, behind t = -r
+        push hl
+        call neg_hl
+        ld de,(rc_s)
+        or a
+        sbc hl,de
+        ld de,(rc_m)
+        call rc_d
+        ld (rc_d0),hl                   ; right
+        pop de
+        push de
+        ld hl,(rc_s)
+        or a
+        sbc hl,de
+        ld de,(rc_m+2)
+        call rc_d
+        ld (rc_d0+2),hl                 ; left
+        pop hl
+        call neg_hl
+        ld de,(rc_m+4)
+        call rc_d
+        ld (rc_d0+4),hl                 ; behind
+        ; each row on: right - (sinY + cosY), left + (sinY - cosY), behind
+        ; - cosY
+        ld hl,(sin_y)
+        ld de,(cos_y)
+        add hl,de
+        call neg_hl
+        ld (rc_st),hl
+        ld hl,(sin_y)
+        or a
+        sbc hl,de
+        ld (rc_st+2),hl
+        ex de,hl
+        call neg_hl
+        ld (rc_st+4),hl
+        ld a,(pitch)
+        ld c,a                          ; 0: level, all three edges
+        ld a,(view_r)
+        add a,a
+        inc a
+        ld b,a                          ; 2R + 1 rows
+        push ix
+        ld ix,row_skip
+.row:   xor a
+        ld hl,rc_d0+5
+        bit 7,(hl)
+        jr z,.out                       ; behind
+        inc c
+        dec c
+        jr nz,.in                       ; pitched: behind only
+        ld hl,rc_d0+1
+        bit 7,(hl)
+        jr z,.out                       ; right
+        ld hl,rc_d0+3
+        bit 7,(hl)
+        jr nz,.in                       ; left
+.out:   inc a
+.in:    ld (ix+0),a
+        inc ix
+        ld hl,(rc_d0)
+        ld de,(rc_st)
+        add hl,de
+        ld (rc_d0),hl
+        ld hl,(rc_d0+2)
+        ld de,(rc_st+2)
+        add hl,de
+        ld (rc_d0+2),hl
+        ld hl,(rc_d0+4)
+        ld de,(rc_st+4)
+        add hl,de
+        ld (rc_d0+4),hl
+        djnz .row
+        pop ix
+        ret
+        ASSERT WALK_R + ROW_M < 16384   ; (no overflow in the d's)
+
+; A = an end cell's i: p = dx cosY, q = dx sinY; rc_m's minimums of each
+; edge's end part: right p - q, left -(p + q), behind -q
+rc_end:
+        ld h,a
+        ld l,128
+        ld de,(cam_x+1)
+        or a
+        sbc hl,de                       ; dx
+        push hl
+        ld de,(cos_y)
+        call fmul
+        ld (rc_s),hl                    ; p (rc_s: scratch until the row)
+        pop hl
+        ld de,(sin_y)
+        call fmul                       ; q
+        push hl
+        ex de,hl
+        ld hl,(rc_s)
+        or a
+        sbc hl,de
+        ld de,rc_m
+        call rc_min                     ; right: p - q
+        pop de
+        push de
+        ld hl,(rc_s)
+        add hl,de
+        call neg_hl
+        ld de,rc_m+2
+        call rc_min                     ; left: -(p + q)
+        pop hl
+        call neg_hl
+        ld de,rc_m+4
+                                        ; behind: -q
+; HL = v, DE -> a word: the word = min(word, v), signed (|v| < 16384)
+rc_min:
+        push hl
+        ex de,hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)                       ; DE = the word, HL -> its high byte
+        ex (sp),hl                      ; HL = v
+        push hl
+        or a
+        sbc hl,de                       ; v - word (no overflow)
+        pop de                          ; DE = v
+        pop hl                          ; HL -> the high byte
+        ret p                           ; v >= word
+        ld (hl),d
+        dec hl
+        ld (hl),e
+        ret
+
+; HL = t, DE = m -> HL = t - (WALK_R + ROW_M - m) = t + m - WALK_R - ROW_M
+rc_d:
+        add hl,de
+        ld de,-(WALK_R+ROW_M)
+        add hl,de
+        ret
 
 ; This frame's (cosY, sinY) into the cell walks' steps (draw_row, occ_row)
 walk_patch:
@@ -1959,6 +2150,7 @@ draw_cell:
 
 ; The building in the cell at HL (C = its map byte)
 BLD_R           equ 256             ; cull radius: 181 (half diagonal) * sqrt2
+        ASSERT WALK_R >= BLD_R          ; (the walk's cull: WALK_TRY)
 draw_bld:
         ; Horizontal frustum cull, valid at any pitch: a visible point has
         ; |X|*c <= Z1 with c = cosP - 0.5|sinP|.  Reject the bounding circle
@@ -2177,7 +2369,7 @@ draw_bld:
         call vtx_oc
         ld (bot_oc),a
         or a
-        call z,vtx_proj
+        call z,vproj
 .top:   ld de,64
         add ix,de
         ld a,(bld_used)
@@ -2192,17 +2384,12 @@ draw_bld:
         or (hl)
         jr nz,.full                     ; pitched, or bottom not projected
         ; Level flight: the top corner has the bottom corner's X and Z, so
-        ; it shares its screen x and its 1/Z (still patched into
-        ; scale_comp); only the screen y is new.
-        ld l,(ix+2)
-        ld h,(ix+3)
-        call proj_y
-        ld (ix+7),a                     ; sx
-        ld (ix+8),c                     ; sy
+        ; it shares its screen x; only the screen y is new.
+        call vproj_y
         jr .nt
 .full:
     ENDIF
-        call vtx_proj
+        call vproj
 .nt:    ld de,16-64
         add ix,de
         pop bc
@@ -2365,6 +2552,167 @@ vtx_proj:
         ld (ix+8),c
         ret
 
+; IX -> a building corner whose outcode is 0 -> its screen x and y in (ix+7)
+; and (ix+8).  The same arithmetic as vtx_proj (project, zpatch and
+; scale_comp, step for step), so the same pixels, in one routine: Z's shift
+; chosen by a branch (three ways) rather than patched in, X and Y made
+; positive and shifted as they're read, the reciprocal kept in BC for both,
+; no calls or self-patching.  Outcode 0 means Z >= NEAR (so not zpatch's
+; Z <= 0 guard), |X| <= Z and |Y| <= Z/2.  Leaves scale_comp as it was.
+vproj:
+        ld l,(ix+4)
+        ld h,(ix+5)                     ; HL = Z
+        ld a,h
+        cp 2
+        jr nc,.zr
+        or a
+        jr z,.zl
+        ; Z 256..511: no shift (zpatch's right by 0)
+        ld e,(ix+2)
+        ld d,(ix+3)                     ; Y
+        bit 7,d
+        jr z,.ny
+        NEG_DE
+.ny:    push de
+        ld e,(ix+0)
+        ld d,(ix+1)                     ; X
+        bit 7,d
+        jr z,vp_xy
+        NEG_DE
+        jr vp_xy
+.zr:    ld e,a                          ; Z >= 512: right by log2(H)
+        ld d,high lgtab
+        ld a,(de)
+        ld b,a
+        ex de,hl
+        bsrl de,b
+        ex de,hl                        ; L = Zn - 256
+        ld e,(ix+2)
+        ld d,(ix+3)
+        bit 7,d
+        jr z,.ry
+        NEG_DE
+.ry:    bsrl de,b
+        push de
+        ld e,(ix+0)
+        ld d,(ix+1)
+        bit 7,d
+        jr z,.rx
+        NEG_DE
+.rx:    bsrl de,b
+        jr vp_xy
+.zl:    ld e,l                          ; Z < 256: left by 8-log2(L)
+        ld d,high lgtab
+        ld a,(de)
+        sub 8
+        neg
+        ld b,a
+        ex de,hl
+        bsla de,b
+        ex de,hl
+        ld e,(ix+2)
+        ld d,(ix+3)
+        bit 7,d
+        jr z,.ly
+        NEG_DE
+.ly:    bsla de,b
+        push de
+        ld e,(ix+0)
+        ld d,(ix+1)
+        bit 7,d
+        jr z,.lx
+        NEG_DE
+.lx:    bsla de,b
+        ; fall through
+; DE = |X| and the stack |Y|, both shifted as Z; L = Zn - 256
+vp_xy:  ld h,high rtab_lo
+        ld c,(hl)
+        inc h
+        ld b,(hl)                       ; BC = R, the reciprocal
+        ex de,hl
+        VP_SCALE                        ; A = round(|X| * 128 / Z)
+        bit 7,(ix+1)
+        jr nz,.xn
+        add a,128
+        jr nc,.xd
+        ld a,255
+        jr .xd
+.xn:    ld e,a
+        ld a,128
+        sub e
+        jr nc,.xd
+        xor a
+.xd:    ld (ix+7),a
+        pop hl
+        ; fall through
+; HL = |Y| shifted as Z, BC = R -> the screen y in (ix+8)
+vp_y:   VP_SCALE                        ; A = round(|Y| * 128 / Z)
+        bit 7,(ix+3)
+        jr nz,.yn
+        ld e,a
+        ld a,VIEW_CY
+        sub e
+        jr nc,.yd
+        xor a
+        ld (ix+8),a
+        ret
+.yn:    add a,VIEW_CY
+        jr c,.yc
+        cp VIEW_H
+        jr c,.yd
+.yc:    ld a,VIEW_H-1
+.yd:    ld (ix+8),a
+        ret
+
+; IX -> a top corner straight above the one at IX-64, already projected
+; (level flight: the same X and Z) -> its screen x copied, its screen y
+; worked out as vproj's
+vproj_y:
+        ld a,(ix+7-64)
+        ld (ix+7),a
+        ld l,(ix+4)
+        ld h,(ix+5)                     ; HL = Z
+        ld e,(ix+2)
+        ld d,(ix+3)                     ; Y
+        bit 7,d
+        jr z,.p
+        NEG_DE
+.p:     ld a,h
+        cp 2
+        jr nc,.r
+        or a
+        jr nz,.y                        ; 256..511: no shift
+        push de
+        ld e,l                          ; < 256: left
+        ld d,high lgtab
+        ld a,(de)
+        sub 8
+        neg
+        ld b,a
+        ex de,hl
+        bsla de,b
+        ex de,hl
+        pop de
+        bsla de,b
+        jr .y
+.r:     push de                         ; >= 512: right
+        ld e,a
+        ld d,high lgtab
+        ld a,(de)
+        ld b,a
+        ex de,hl
+        bsrl de,b
+        ex de,hl
+        pop de
+        bsrl de,b
+.y:     ld h,high rtab_lo               ; L = Zn - 256
+        ld c,(hl)
+        inc h
+        ld b,(hl)
+        ex de,hl
+        jp vp_y
+        ASSERT high rtab_hi == high rtab_lo + 1
+
 ; B = i, A = j of a neighbouring cell (may be off the map) -> carry set if
 ; it holds a building at least as tall as this one (bld_h).  Keeps C.
 nb_cover:
@@ -2498,8 +2846,27 @@ o_xmin:     db 0
 o_xmax:     db 0
 o_ymin:     db 0
 o_tcov:     db 0
+    IFDEF OCC_PITCHED
+o_bx0:      db 0                        ; occ_record, pitched: the bottom
+o_bx1:      db 0                        ;   corners' first and last column,
+o_tx0:      db 0                        ;   and the top corners'
+o_tx1:      db 0
+    ENDIF
 o_zmin:     dw 0
-o_zmax:     dw 0
+o_zmax:     dw 0                        ; occ_pretest's far Z (oz_far)
+    IFDEF OCC_PITCHED
+o_ytop:     dw 0                        ; pitched: the most Y,
+o_kc:       dw 0                        ;   2R cosP and min(0, 2R sinP)
+o_ks:       dw 0                        ;   (occ_begin)
+    ENDIF
+oz_min:     ds 4                        ; occ_pretest: the near and far Z's
+oz_max:     ds 4                        ;   shift and reciprocal (oz_norm),
+oz_maxok:   db 0                        ;   the far one's set yet
+row_skip:   ds 2*VIEW_R+1               ; row_cull: the rows wholly out of view
+rc_m:       ds 6                        ;   each edge's end minimum,
+rc_d0:      ds 6                        ;   the row's distance past it,
+rc_st:      ds 6                        ;   its step a row,
+rc_s:       dw 0                        ;   and scratch
     ENDIF
 rk_pt:      ds 6                        ; draw_rocket: a point behind it
 rk_d:       db 0

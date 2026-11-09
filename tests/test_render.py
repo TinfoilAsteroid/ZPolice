@@ -67,5 +67,49 @@ def test_views():
     zp.check(not bad, "differ from the reference: " + ", ".join(bad))
 
 
+def test_pitched_occlusion():
+    """OCC_PITCHED: pitched views drawn with the occlusion pass are the same,
+    byte for byte, as the painter's path (occ_begin patched to return before
+    turning it on), up to OCC_PMAX and at the steepest (where it's off)."""
+    import random
+    rnd = random.Random(9)
+    views = [v for v in VIEWS if v[4]]
+    pmax = sym["OCC_PMAX"]
+    while len(views) < 16:
+        views.append((rnd.randint(3, 60), rnd.randint(3, 60), rnd.choice((20, 50, 80, 120, 170)),
+                      rnd.randint(0, 255), rnd.choice((-pmax, -12, -6, 6, 12, pmax, 24))))
+    occ_ret = sym["occ_begin"] + 7          # after xor a / ld (occ_on),a / ld (occ_full),a
+
+    def frames(painter):
+        out = []
+        with zp.SD() as sd:
+            cpu = zp.machine(sd)
+            zp.start_game(cpu)
+            page = cpu.page(sym["PAGE_CITY2"])
+            zp.check(page[occ_ret - 0x8000 - 7] == 0xAF, "occ_begin doesn't start xor a")
+            if painter:
+                page[occ_ret - 0x8000] = 0xC9   # ret: occlusion never on
+            flips = []
+            cpu.on_flip = lambda b: flips.append(1)
+            for x, z, h, yaw, pitch in views:
+                zp.set_camera(cpu, x << 16 | 0x8000, z << 16 | 0x8000, h, yaw, pitch)
+                f0 = len(flips)
+                t0 = None
+                while len(flips) < f0 + 2:
+                    if t0 is None and len(flips) == f0 + 1:
+                        t0 = cpu.t
+                    cpu.step()
+                shown = cpu.nextreg.get(0x12, 0) * 2
+                out.append((cpu.t - t0, b"".join(bytes(cpu.page(shown + i)) for i in range(4))))
+        return out
+
+    occ, plain = frames(False), frames(True)
+    bad = [views[i] for i in range(len(views)) if occ[i][1] != plain[i][1]]
+    to, tp = sum(t for t, _ in occ), sum(t for t, _ in plain)
+    zp.note(f"{len(views)} pitched views: frame time {tp:,} -> {to:,} T with occlusion "
+            f"({100 * (to - tp) / tp:+.1f}%)")
+    zp.check(not bad, f"pitched occlusion changed {len(bad)} views: {bad[:4]}")
+
+
 if __name__ == "__main__":
     zp.main(globals())
