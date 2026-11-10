@@ -8,10 +8,14 @@
 ; the ULA.  This page has everything they draw with:
 ;   l320_mode320 / l320_mode256   switch the display to 320x256 / back to the
 ;                                 game's 256x192
+;   l320_screen                   a screen's start: cleared, framed, shown
+;                                 (screen320, text.asm, calls it)
 ;   l320_cls                      clear the screen to a colour (by DMA)
 ;   l320_at, l320_pos             set the text position (character / pixel)
 ;   l320_char, l320_print,        text: one character, a string (with colour
-;   l320_print_list                 and position codes), a table of strings
+;   l320_print_at,                  and position codes), a string at a row
+;   l320_print_list                 and column (menu_print's registers), a
+;                                   table of strings
 ;   l320_recolour, l320_swap      change colours already drawn: a run of
 ;                                 text cells (highlighting), or one colour in
 ;                                 a box
@@ -74,10 +78,53 @@ L320_CYAN       equ $1F
 L320_MAGENTA    equ $E2             ; ($E3 is the transparency colour)
 L320_NOPAPER    equ $E3             ; paper: leave the background
 
+; The screens' colours (l320_screen; the screen pages print in these)
+SCR_BG          equ L320_DKBLUE     ; background (the paper)
+SCR_FRAME       equ L320_GREY       ; the frame round the screen
+SCR_FRAME2      equ L320_DKGREY
+SCR_TEXT        equ L320_WHITE
+SCR_TITLE       equ L320_YELLOW
+SCR_OK          equ L320_GREEN      ; highlighted / done
+SCR_BAD         equ L320_RED        ; can't / failed
+SCR_HELP        equ L320_CYAN       ; the keys' help line
+
 ; Codes in l320_print's text
 L320_C_INK      equ 1               ; 1, colour: the ink from here on
 L320_C_PAPER    equ 2               ; 2, colour: the paper
 L320_C_AT       equ 3               ; 3, row, column: the text position
+L320_C_FONT     equ 4               ; 4, font: the font (L320_F8 / L320_F12)
+L320_LIST_FONT  equ $FE             ; in l320_print_list's table: $FE, font
+
+; Fonts (l320_font): the 8x8 one (font8, text.asm) on a 40 x 32 grid, or the
+; large one (12x10 cells, ZPDATA/FONT12.ZPF, loaded at start-up: f12_load)
+; on a 26 x 25 grid from (F12_X0, F12_Y0), inside the screens' frame.  The
+; large one is drawn in a gradient for its colour (one row colour each).
+; Without the file the large grid is kept, with the 8x8 glyphs in each cell.
+L320_F8         equ 0
+L320_F12        equ 1
+F12_W           equ 12              ; the cell
+F12_H           equ 10
+F12_COLS        equ 26
+F12_ROWS        equ 25
+F12_X0          equ 4
+F12_Y0          equ 3
+        ASSERT F12_X0 + F12_COLS*F12_W <= L320_W-4 && F12_Y0 + F12_ROWS*F12_H <= L320_H-3
+F12_FIRST       equ 32              ; the file (tools/fontfile.py): space to Z,
+F12_COUNT       equ 59
+F12_BPR         equ 2               ;   2 bytes a row
+F12_HEADER      equ 12
+F12_GRAD_MAX    equ 8
+F12_GLYPHS      equ F12_COUNT*F12_H*F12_BPR
+F12_SIZE_MAX    equ F12_HEADER + F12_GLYPHS + F12_GRAD_MAX*(1+F12_H)
+; The 8x8 font's file, ZPDATA/FONT8.ZPF: its glyphs go over the built-in
+; font8 (text.asm, resident: the ULA screens and the HUD use them too), its
+; gradients stay here (the 320x256 screens draw it in them)
+F8_H            equ 8
+F8_FIRST        equ 32              ; space to _
+F8_COUNT        equ 64
+F8_BPR          equ 1
+F8_GLYPHS       equ F8_COUNT*F8_H*F8_BPR
+F8_SIZE_MAX     equ F12_HEADER + F8_GLYPHS + F12_GRAD_MAX*(1+F8_H)
 
 ;------------------------------------------------------------------------------
 ; Switching
@@ -146,6 +193,33 @@ l320_mode256:
         nextreg $15,a
         ret
 
+; A screen's start: cleared to SCR_BG with a frame (SCR_FRAME, SCR_FRAME2)
+; round the edge, the text colours SCR_TEXT on SCR_BG in the large font,
+; and shown at 320x256.  (screen320, text.asm, calls it with this page
+; mapped.)
+l320_screen:
+        ld a,SCR_BG
+        call l320_cls
+        ld hl,0
+        ld c,0
+        ld de,L320_W
+        ld b,0                          ; (256)
+        ld a,SCR_FRAME
+        call l320_box
+        ld hl,2
+        ld c,2
+        ld de,L320_W-4
+        ld b,L320_H-4
+        ld a,SCR_FRAME2
+        call l320_box
+        ld a,SCR_TEXT
+        ld (l320_ink),a
+        ld a,SCR_BG
+        ld (l320_paper),a
+        ld a,L320_F12
+        ld (l320_font),a
+        jp l320_mode320
+
 ;------------------------------------------------------------------------------
 ; Clearing
 ;------------------------------------------------------------------------------
@@ -171,9 +245,33 @@ l320_cls:
 ; Text
 ;------------------------------------------------------------------------------
 
-; D = row (0-31), E = column (0-39): the text position
+; D = row, E = column: the text position, on the font's grid (8x8: 0-31,
+; 0-39; large: 0-24, 0-25)
 l320_at:
-        ld a,d
+        ld a,(l320_font)
+        or a
+        jr z,.f8
+        ld a,d                          ; large: y = F12_Y0 + row*10
+        add a,a
+        ld d,a
+        add a,a
+        add a,a
+        add a,d
+        add a,F12_Y0
+        ld (l320_cy),a
+        ld l,e                          ; x = F12_X0 + column*12
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,de
+        ld de,F12_X0
+        add hl,de
+        ld (l320_cx),hl
+        ret
+.f8:    ld a,d
         add a,a
         add a,a
         add a,a
@@ -194,11 +292,18 @@ l320_pos:
         ret
 
 ; A = ASCII: one character at the text position, in l320_ink on
-; l320_paper, and the position on 8.  Lower case is drawn as upper case,
-; anything else not in the font as a space.  Columns past the right edge
-; are left off.
+; l320_paper, in the font (l320_font), and the position on (8 or 12).
+; Lower case is drawn as upper case, anything else not in the font as a
+; space.  Columns past the right edge are left off.
 l320_char:
+        ld c,a
+        ld a,(l320_font)
+        or a
+        ld a,c
+        jp nz,l320_char12
+l320_char8:
         push ix
+        push iy
         cp 'a'
         jr c,.uc
         cp 'z'+1
@@ -216,8 +321,7 @@ l320_char:
         ld de,font8
         add hl,de
         ld (l320_fp),hl                 ; -> its 8 bytes
-        ld a,(l320_ink)
-        ld ixh,a
+        call l320_grad8                 ; f12_gp -> the row colours
         ld a,(l320_paper)
         ld ixl,a
         call l320_nopg
@@ -231,11 +335,12 @@ l320_char:
         ld e,a
         call l320_addr                  ; HL -> the column's top pixel
         ld de,(l320_fp)
+        ld iy,(f12_gp)
         ld b,8
 .row:   ld a,(de)
         and c
         jr z,.pap
-        ld a,ixh
+        ld a,(iy+0)
         ld (hl),a
         jr .nx
 .pap:   ld a,ixl
@@ -243,6 +348,7 @@ l320_char:
         jr z,.nx
         ld (hl),a
 .nx:    inc de
+        inc iy
         inc l
         djnz .row
         pop bc
@@ -254,13 +360,15 @@ l320_char:
         ld de,8
         add hl,de
         ld (l320_cx),hl
+        pop iy
         pop ix
         ret
 
 ; HL -> text ending 0: printed from the text position.  HL ends past the 0.
 ; In the text: L320_C_INK, colour and L320_C_PAPER, colour change the
 ; colours (and they stay changed); L320_C_AT, row, column moves the
-; position.  Other codes below 32 are skipped.
+; position; L320_C_FONT, font changes the font (from the next position).
+; Other codes below 32 are skipped.
 l320_print:
 .ch:    ld a,(hl)
         inc hl
@@ -273,8 +381,14 @@ l320_print:
         dec a
         jr z,.pap
         dec a
+        jr z,.at
+        dec a
         jr nz,.ch
-        ld d,(hl)                       ; L320_C_AT
+        ld a,(hl)                       ; L320_C_FONT
+        inc hl
+        ld (l320_font),a
+        jr .ch
+.at:    ld d,(hl)                       ; L320_C_AT
         inc hl
         ld e,(hl)
         inc hl
@@ -295,15 +409,33 @@ l320_print:
         pop hl
         jr .ch
 
+; D = row, E = column, C = ink, HL -> text ending 0: printed there on the
+; current paper (l320_print).  HL ends past the 0.  (menu_print's
+; registers, text.asm, with a colour for the attribute.)
+l320_print_at:
+        ld a,c
+        ld (l320_ink),a
+        push hl
+        call l320_at
+        pop hl
+        jp l320_print
+
 ; HL -> a table of strings: row, column, ink, text ending 0 for each, then
-; $FF.  Each is printed (l320_print) on the current paper.  HL ends past the
-; $FF.
+; $FF.  Each is printed (l320_print) on the current paper, row and column
+; on the current font's grid; L320_LIST_FONT, font in place of a string
+; changes the font.  HL ends past the $FF.
 l320_print_list:
 .rec:   ld a,(hl)
         inc hl
         cp $FF
         ret z
-        ld d,a
+        cp L320_LIST_FONT
+        jr nz,.str
+        ld a,(hl)
+        inc hl
+        ld (l320_font),a
+        jr .rec
+.str:   ld d,a
         ld e,(hl)
         inc hl
         ld a,(hl)
@@ -314,6 +446,377 @@ l320_print_list:
         pop hl
         call l320_print
         jr .rec
+
+;------------------------------------------------------------------------------
+; The large font
+;------------------------------------------------------------------------------
+
+; A = ASCII: one character in the large font (l320_char, with l320_font
+; L320_F12): its 12x10 cell at the text position, the ink rows in the
+; gradient for l320_ink (l320_grad), the rest l320_paper; the position on
+; 12.  Without the font file, the 8x8 glyph in the cell.
+l320_char12:
+        ld c,a
+        ld a,(f12_ok)
+        or a
+        jr nz,.ok
+        ld hl,(l320_cx)                 ; no font: the 8x8 glyph, in the cell
+        push hl
+        inc hl
+        inc hl
+        ld (l320_cx),hl
+        ld hl,l320_cy
+        inc (hl)
+        ld a,c
+        call l320_char8
+        ld hl,l320_cy
+        dec (hl)
+        pop hl
+        jp .next
+.ok:    push ix
+        push iy
+        ld a,c
+        cp 'a'
+        jr c,.uc
+        cp 'z'+1
+        jr nc,.uc
+        sub 'a'-'A'
+.uc:    sub F12_FIRST
+        cp F12_COUNT
+        jr c,.inf
+        xor a                           ; (not in the font: a space)
+.inf:   ld l,a                          ; HL = the glyph: char * 20
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,hl
+        add hl,de
+        ld de,f12_buf+F12_HEADER
+        add hl,de
+        ld (l320_fp),hl
+        call l320_grad
+        call l320_nopg
+        xor a
+        ld (f12_fb),a                   ; the glyph's byte: 0, then 1
+        ld a,F12_W
+        ld (f12_n),a
+        ld c,%10000000                  ; the column's bit
+        ld hl,(l320_cx)
+.col:   call l320_xok
+        jr nc,.done                     ; off the right edge
+        push hl
+        push bc
+        ld a,(l320_cy)
+        ld e,a
+        call l320_addr                  ; HL -> the column's top pixel
+        ld de,(l320_fp)
+        ld a,(f12_fb)
+        add de,a
+        ld iy,(f12_gp)
+        ld b,F12_H
+.row:   ld a,(de)
+        and c
+        jr z,.pap
+        ld a,(iy+0)
+        ld (hl),a
+        jr .nx
+.pap:   ld a,(l320_paper)
+        cp L320_NOPAPER
+        jr z,.nx
+        ld (hl),a
+.nx:    inc de
+        inc de
+        inc iy
+        inc l
+        djnz .row
+        pop bc
+        pop hl
+        inc hl
+        rrc c
+        jr nc,.same
+        ld a,1                          ; past the first byte's 8 columns
+        ld (f12_fb),a
+.same:  ld a,(f12_n)
+        dec a
+        ld (f12_n),a
+        jr nz,.col
+.done:  pop iy
+        pop ix
+        ld hl,(l320_cx)
+.next:  ld de,F12_W
+        add hl,de
+        ld (l320_cx),hl
+        ret
+
+; f12_gp -> the row colours for l320_ink in the large font (l320_grad) or
+; the 8x8 one (l320_grad8): its gradient in the font file, or f12_flat
+; filled with it (none for it, or no file)
+l320_grad:
+        ld a,(f12_buf+10)               ; gradients
+        ld b,a
+        ld hl,f12_buf+F12_HEADER+F12_GLYPHS
+        ld c,F12_H
+        jr l320_gradin
+l320_grad8:
+        ld a,(f8_ok)
+        or a
+        ld b,a                          ; (none without the file)
+        jr z,l320_gradin
+        ld a,(f8_buf+10)
+        ld b,a
+        ld hl,f8_buf+F12_HEADER+F8_GLYPHS
+        ld c,F8_H
+; HL -> the gradients, B = how many, C = rows each
+l320_gradin:
+        ld a,(l320_ink)
+        inc b
+        dec b
+        jr z,.flat
+        ld e,c
+        ld d,0
+.f:     cp (hl)
+        inc hl
+        jr z,.got
+        add hl,de
+        djnz .f
+.flat:  ld hl,f12_flat              ; none: flat
+        ld b,F12_H
+.fl:    ld (hl),a
+        inc hl
+        djnz .fl
+        ld hl,f12_flat
+.got:   ld (f12_gp),hl
+        ret
+
+; At start-up (this page in slot 2, after the random seed is read): the
+; fonts' files (tools/fontfile.py), each if it is there and fits this game
+; (its size, magic, cell, characters, and 1 to F12_GRAD_MAX gradients):
+; FONT8.ZPF's glyphs over the built-in font8 (f8_ok 1: its gradients here),
+; FONT12.ZPF (f12_ok 1; else the screens put the 8x8 glyphs in the large
+; cells).  Leaves the input page in slot 7.
+fonts_load:
+        call f8_load
+        call f12_load
+        ld hl,f8_buf+F12_HEADER         ; the 8x8 glyphs over the built-in
+        ld de,font8                     ; ones (text.asm, resident)
+        ld bc,F8_GLYPHS
+        ld a,(f8_ok)
+        or a
+        ret z
+        ldir
+        ret
+
+; Load file name to buf (at most size bytes); ok := 1 if its header is head
+; (10 bytes), its gradients 1..F12_GRAD_MAX of rows+1 bytes each, and its
+; size the header, glyphs bytes and the gradients'
+    MACRO FONT_LOAD FLNAME, FLBUF, FLSIZE, FLHEAD, FLGLYPHS, FLROWS, FLOK
+        xor a
+        ld (FLOK),a
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,FLNAME
+        ld de,FLBUF
+        ld bc,FLSIZE+1                  ; (one more: a longer file isn't one)
+        call fh_load
+        nextreg CODE_MMU,PAGE_INPUT
+        ret c                           ; none
+        ld (f12_len),bc                 ; (the bytes read)
+        ld hl,FLBUF                     ; the header
+        ld de,FLHEAD
+        ld b,10
+.h:     ld a,(de)
+        cp (hl)
+        ret nz
+        inc hl
+        inc de
+        djnz .h
+        ld a,(hl)                       ; gradients: 1..F12_GRAD_MAX
+        or a
+        ret z
+        cp F12_GRAD_MAX+1
+        ret nc
+        ld e,a                          ; the size: header, glyphs, gradients
+        ld d,1+FLROWS
+        mul d,e
+        ld hl,F12_HEADER+FLGLYPHS
+        add hl,de
+        ld bc,(f12_len)
+        or a
+        sbc hl,bc
+        ret nz
+        ld a,1
+        ld (FLOK),a
+        ret
+    ENDM
+
+f8_load:    FONT_LOAD f8_name, f8_buf, F8_SIZE_MAX, f8_head, F8_GLYPHS, F8_H, f8_ok
+f12_load:   FONT_LOAD f12_name, f12_buf, F12_SIZE_MAX, f12_head, F12_GLYPHS, F12_H, f12_ok
+
+f8_name:    db "ZPDATA/FONT8.ZPF", 0
+f8_head:    db "ZPFN", 1, 8, F8_H, F8_FIRST, F8_COUNT, F8_BPR
+f12_name:   db "ZPDATA/FONT12.ZPF", 0
+f12_head:   db "ZPFN", 1, F12_W, F12_H, F12_FIRST, F12_COUNT, F12_BPR
+
+;------------------------------------------------------------------------------
+; Images from the SD card
+;------------------------------------------------------------------------------
+; An image file (ZPDATA/*.ZPI, tools/imagefile.py; made with
+; tools/screen_editor.py): "ZPIM", a version, the box it covers on the
+; screen (x word, y byte, width word, height word), then its pixels column
+; by column, each column top to bottom: the screen's own order.  $E3
+; (L320_NOPAPER, the transparency colour) leaves the screen as it is.  It is
+; read IMG_BUF bytes (whole columns) at a time into img_buf and copied to
+; the screen, so a screen loads its image when it opens.
+IMG_HEADER      equ 16
+IMG_BUF         equ 2048
+
+; HL -> the file's name (in $4000-$DFFF: not slot 7): the image drawn.
+; Carry set if it couldn't be (no file, not an image, or not on the screen:
+; then nothing, or part of it, is drawn).  Pages the file handler into slot
+; 7 and the input page back after.
+l320_image:
+        nextreg CODE_MMU,PAGE_FILE
+        ld b,FA_READ|FA_OPEN_EX
+        call fh_open
+        jp c,.out
+        ld (img_fh),a
+        ld hl,img_buf                   ; the header
+        ld bc,IMG_HEADER
+        call fh_read
+        jp c,.close
+        ld hl,IMG_HEADER
+        call .short                     ; (all of it read?)
+        jp c,.close
+        ld hl,img_buf                   ; "ZPIM", the version
+        ld de,img_magic
+        ld b,5
+.m:     ld a,(de)
+        cp (hl)
+        jp nz,.bad
+        inc hl
+        inc de
+        djnz .m
+        ld e,(hl)                       ; x
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (img_x),de
+        ld a,(hl)                       ; y
+        inc hl
+        ld (img_y),a
+        ld e,(hl)                       ; width
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (img_left),de
+        ld c,(hl)                       ; height
+        inc hl
+        ld b,(hl)
+        ld (img_h),bc
+        ld a,d                          ; width 1..320, x + width <= 320
+        or e
+        jp z,.bad
+        ld hl,(img_x)
+        add hl,de
+        ld de,L320_W+1
+        or a
+        sbc hl,de
+        jp nc,.bad
+        ld a,b                          ; height 1..256, y + height <= 256
+        or c
+        jp z,.bad
+        ld a,(img_y)
+        ld l,a
+        ld h,0
+        add hl,bc
+        ld de,L320_H+1
+        or a
+        sbc hl,de
+        jp nc,.bad
+        ld hl,IMG_BUF                   ; columns a read: IMG_BUF / height
+        ld de,0
+.n:     or a
+        sbc hl,bc
+        jr c,.nd
+        inc de
+        jr .n
+.nd:    ld (img_n),de
+.read:  ld hl,(img_left)                ; columns this time: the most a read,
+        ld de,(img_n)                   ; or the rest
+        or a
+        sbc hl,de
+        jr nc,.full
+        ld de,(img_left)
+.full:  ld (img_cols),de
+        ld hl,0                         ; bytes: columns * height
+        ld bc,(img_h)
+.mul:   ld a,d
+        or e
+        jr z,.md
+        add hl,bc
+        dec de
+        jr .mul
+.md:    ld (img_bytes),hl
+        ld b,h
+        ld c,l
+        ld a,(img_fh)
+        ld hl,img_buf
+        call fh_read
+        jr c,.close
+        ld hl,(img_bytes)
+        call .short
+        jr c,.close
+        call l320_nopg
+        ld de,img_buf                   ; the columns to the screen
+.col:   push de
+        ld a,(img_y)
+        ld e,a
+        ld hl,(img_x)
+        call l320_addr                  ; HL -> the column's top pixel
+        pop de
+        ld a,(img_h)                    ; (256: 0, so 256 rows)
+        ld b,a
+.px:    ld a,(de)
+        cp L320_NOPAPER
+        jr z,.skip
+        ld (hl),a
+.skip:  inc de
+        inc l
+        djnz .px
+        ld hl,(img_x)
+        inc hl
+        ld (img_x),hl
+        ld hl,(img_left)
+        dec hl
+        ld (img_left),hl
+        ld hl,(img_cols)
+        dec hl
+        ld (img_cols),hl
+        ld a,h
+        or l
+        jr nz,.col
+        ld hl,(img_left)
+        ld a,h
+        or l
+        jr nz,.read
+.close: push af                         ; (carry: failed)
+        ld a,(img_fh)
+        call fh_close
+        pop af
+.out:   nextreg CODE_MMU,PAGE_INPUT
+        ret
+.bad:   scf
+        jr .close
+; carry set if BC (bytes read) isn't HL
+.short: or a
+        sbc hl,bc
+        ret z
+        scf
+        ret
+
+img_magic:  db "ZPIM", 1
 
 ;------------------------------------------------------------------------------
 ; Changing colours already drawn
@@ -645,6 +1148,25 @@ l320_addr:
 ; Variables
 ;------------------------------------------------------------------------------
 l320_on:    db 0                        ; 1 while the display is 320x256
+l320_font:  db L320_F8                  ; the font (L320_F8, L320_F12)
+f12_ok:     db 0                        ; 1: the large font is loaded
+f8_ok:      db 0                        ; 1: the 8x8 font's file is loaded
+f12_len:    dw 0                        ; f12_load: the bytes read
+f12_fb:     db 0                        ; l320_char12: the glyph's byte (0, 1),
+f12_n:      db 0                        ;   columns left,
+f12_gp:     dw 0                        ;   -> the row colours
+f12_flat:   ds F12_H                    ; a colour with no gradient
+f12_buf:    ds F12_SIZE_MAX             ; the large font's file (f12_load)
+f8_buf:     ds F8_SIZE_MAX              ; the 8x8 font's file (f8_load)
+img_fh:     db 0                        ; l320_image: the file,
+img_x:      dw 0                        ;   the next column's x,
+img_y:      db 0                        ;   the top row,
+img_h:      dw 0                        ;   the height (1..256),
+img_left:   dw 0                        ;   columns still to draw,
+img_n:      dw 0                        ;   the most a read,
+img_cols:   dw 0                        ;   this read's,
+img_bytes:  dw 0                        ;   and its bytes
+img_buf:    ds IMG_BUF                  ;   the columns read
 l320_nr15:  db %00001011                ; the game's layer priority (NextReg $15)
 l320_pg:    db $FF                      ; the page in slot 0 ($FF: unknown)
 l320_ink:   db L320_WHITE               ; text colours

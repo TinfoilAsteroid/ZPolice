@@ -98,8 +98,9 @@ def run_until(cpu, cond, what, limit=400_000_000):
 
 
 def at_scan(cpu, page):
-    """At kbd_scan with page (PAGE_MENU, PAGE_LOADOUT, ...) in slot 6."""
-    return cpu.pc == sym["kbd_scan"] and cpu.mmu[6] == page
+    """At kbd_scan with page (PAGE_MAINMENU, PAGE_LOADOUT, ...) in slot 6."""
+    return (cpu.pc == sym["kbd_scan"] and cpu.mmu[6] == page
+            and cpu.mmu[7] == sym["PAGE_INPUT"])     # ($E000: every slot 7 page)
 
 
 def start_game(cpu, level=None):
@@ -108,11 +109,13 @@ def start_game(cpu, level=None):
     cpu.keys = {"1"}
     n = 0
     while cpu.pc != sym["main_loop"]:
+        if cpu.keys == {"1"} and cpu.mmu[6] == sym["PAGE_LOADOUT"]:
+            cpu.keys = set()                # (1 let go as the load-out opens)
         if at_scan(cpu, sym["PAGE_LOADOUT"]):
             n += 1
-            if n == 2 and level is not None:
+            if n == 1 and level is not None:
                 cpu.wr(sym["level"], level)
-            cpu.keys = {"0"} if n == 4 else set()
+            cpu.keys = {"0"} if n == 3 else set()
         cpu.stepi()
         if cpu.t > 2_000_000_000:
             raise AssertionError(f"the game didn't start: pc {cpu.pc:04X}, slot 6 page {cpu.mmu[6]}")

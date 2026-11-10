@@ -900,6 +900,9 @@ start:
         ld l,a                          ; the menu stirs it every frame
         ld h,$A5
         ld (zseed),hl
+        nextreg L320_MMU,PAGE_L320      ; the fonts' files, if any (layer2-
+        call fonts_load                 ; 320x256.asm; after the seed: R
+        nextreg OCC_MMU,PAGE_OCC0       ; counts the code before it)
         nextreg CODE_MMU,PAGE_INPUT     ; the extended keys only in their own
         call kbd_double_on              ; banks (BREAK, the pause key, not
                                         ; also CAPS SHIFT + SPACE, fire)
@@ -909,10 +912,9 @@ start:
         call sprites_init               ; (sprites.asm) on, all hidden
         nextreg CODE_MMU,PAGE_SPR0      ; sprite bank 0: the human status
         call spr_load_bank              ; sprites (sprite_data.asm)
-        nextreg LOGIC_MMU,PAGE_MENU     ; (the menu pages the keys in)
         ei                              ; interrupts on, from now on (the
                                         ; engines' sound: interrupts.asm)
-        jp main_menu                    ; (menu.asm) -> newGame
+        jp menu_go                      ; the main menu -> newGame
 
 ;==============================================================================
 ; New game: start level 1.  Start-up has set the hardware (speed, layers,
@@ -1105,8 +1107,8 @@ main_loop:
 .play:  ld a,(level_done)
         or a
         jr z,.go
-        nextreg LOGIC_MMU,PAGE_MENU     ; the last wave wiped out: level
-        jp level_complete_screen        ; complete (menu.asm) -> next_level
+        nextreg LOGIC_MMU,PAGE_LEVELEND ; the last wave wiped out: level
+        jp level_complete_screen        ; complete (levelend.asm) -> next_level
 .go:
         call map_shadow
     IFDEF DRAW_FPS
@@ -1388,21 +1390,28 @@ wpn_fits:
         ret
 
 ;------------------------------------------------------------------------------
-; From the LEVEL COMPLETE screen (menu.asm, slot 6): page the load-out screen
+; From the LEVEL COMPLETE screen (levelend.asm, slot 6): page the load-out screen
 ; into slot 6 (from here, resident) and show it; it goes on to next_level
 ;------------------------------------------------------------------------------
 loadout_go:
         nextreg LOGIC_MMU,PAGE_LOADOUT
         jp loadout_screen
 
-; From the main menu (menu.asm, slot 6): the redefine keys screen
+; From LEVEL COMPLETE after the last level (levelend.asm, slot 6): the game
+; complete screen (menu.asm)
+game_done_go:
+        nextreg LOGIC_MMU,PAGE_MENU
+        jp game_complete_screen
+
+; From the main menu (mainmenu.asm, slot 6): the redefine keys screen
 keydef_go:
         nextreg LOGIC_MMU,PAGE_KEYDEF
         jp keydef_screen
 
-; Back to the main menu, from another slot 6 page (the redefine keys screen)
+; The main menu (its own page, mainmenu.asm), from start-up and from another
+; slot 6 page (the redefine keys and end screens), or the pause
 menu_go:
-        nextreg LOGIC_MMU,PAGE_MENU
+        nextreg LOGIC_MMU,PAGE_MAINMENU
         jp main_menu
 
 ;------------------------------------------------------------------------------
@@ -1467,9 +1476,8 @@ game_pause:
         jp menu_print
 .save:  call save_game                  ; (pages the file handler in)
         jr c,.fail
-.quit:  nextreg LOGIC_MMU,PAGE_MENU     ; saved, or quit: the main menu
-        ld sp,stack_top
-        jp main_menu
+.quit:  ld sp,stack_top                  ; saved, or quit: the main menu
+        jp menu_go
 .fail:  nextreg CODE_MMU,PAGE_INPUT     ; couldn't: say so, still paused
         ld hl,txt_save_fail
         ld de,PAUSE_ROW2<<8 | PAUSE_COL2
@@ -2192,6 +2200,16 @@ stack_top:
         ORG LOGIC_ADDR
         INCLUDE "menu.asm"
         DISPLAY "Menu end:  ",/A,$
+
+        MMU LOGIC_SLOT e, PAGE_MAINMENU, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "mainmenu.asm"
+        DISPLAY "Main menu end:",/A,$
+
+        MMU LOGIC_SLOT e, PAGE_LEVELEND, LOGIC_ADDR
+        ORG LOGIC_ADDR
+        INCLUDE "levelend.asm"
+        DISPLAY "Level end screen end:",/A,$
 
         MMU LOGIC_SLOT e, PAGE_LEVEL, LOGIC_ADDR
         ORG LOGIC_ADDR

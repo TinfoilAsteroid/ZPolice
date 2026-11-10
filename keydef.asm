@@ -17,7 +17,10 @@
 ;          they changed (kd_save; "KEYS NOT SAVED" for a second if they
 ;          couldn't be)
 ; These keys are fixed (key_code_pressed), whatever the controls are set to.
-; Uses the resident text routines (text.asm) and the input page in slot 7.
+; Drawn on Layer 2 at 320x256 (screen320, text.asm; layer2-320x256.asm in
+; slot 2), with the input page in slot 7: the title, messages and help in
+; the large font (26 x 25 grid), the headings and the list in the 8x8 one
+; (40 x 32 grid: they need the columns).
 ;
 ; The definitions are kept on the SD card as ZPDATA/KEYS.ZPK (beside the level
 ; files): "ZPKY", KF_VERSION, K_ACTIONS, then key_defs and joy_defs (2 bytes
@@ -25,36 +28,29 @@
 ; file is there and fits this game: else the defaults.
 ;==============================================================================
 
-KD_ROW0         equ 1               ; first row of the list (under the title)
-KD_NAME_COL     equ 1               ; control names,
-KD_KEY_COL      equ 16              ; their keys,
+KD_TITLE_ROW    equ 1               ; (large font)
+KD_HEAD_ROW     equ 3               ; the columns' headings (8x8)
+KD_ROW0         equ 4               ; first row of the list (8x8)
+KD_NAME_COL     equ 2               ; control names,
+KD_KEY_COL      equ 18              ; their keys,
 KD_KEY_LEN      equ 7               ;   (key names at most this long)
-KD_JOY_COL      equ 24              ; their joystick inputs
+KD_JOY_COL      equ 28              ; their joystick inputs
 KD_JOY_LEN      equ 8               ;   (joystick names at most this long)
-        ASSERT KD_KEY_COL + KD_KEY_LEN < KD_JOY_COL && KD_JOY_COL + KD_JOY_LEN <= 32
-KD_MSG_ROW      equ 22              ; messages
-KD_HELP_ROW     equ 23              ; the keys' help, one line
+        ASSERT KD_KEY_COL + KD_KEY_LEN < KD_JOY_COL && KD_JOY_COL + KD_JOY_LEN <= L320_COLS-1
+KD_MSG_ROW      equ 22              ; messages (large font)
+KD_HELP_ROW     equ 23              ; the keys' help, two lines (large)
 KD_PAUSE        equ 50              ; a second of 50 Hz frames
-KD_VIS          equ KD_MSG_ROW - KD_ROW0    ; controls shown at once: the list
-        ASSERT KD_VIS <= K_ACTIONS  ;   scrolls (kd_top) to keep kd_cur in view
+KD_VIS          equ K_ACTIONS       ; controls shown at once: all of them.
+        ASSERT (KD_ROW0 + KD_VIS)*8 <= F12_Y0 + KD_MSG_ROW*F12_H  ; (more than
+        ASSERT KD_HEAD_ROW*8 >= F12_Y0 + (KD_TITLE_ROW+1)*F12_H   ; fit: the list
+        ASSERT KD_VIS <= K_ACTIONS  ;   scrolls, kd_top, to keep kd_cur in view)
 
 keydef_screen:
         ld sp,stack_top
-        nextreg CODE_MMU,PAGE_INPUT     ; the input page at $E000
-        call menu_clear
+        call screen320                  ; (text.asm) the input page in slot 7
         ld hl,kd_text                   ; title and help
-.txt:   ld a,(hl)
-        cp $FF
-        jr z,.go
-        ld d,a
-        inc hl
-        ld e,(hl)
-        inc hl
-        ld c,(hl)
-        inc hl
-        call menu_print
-        jr .txt
-.go:    xor a
+        call l320_print_list
+        xor a
         ld (kd_cur),a
         ld (kd_top),a
         ld (kd_dirty),a                 ; (nothing changed yet)
@@ -81,7 +77,7 @@ keydef_screen:
         call kd_save
         jp nc,menu_go
         ld hl,txt_kd_nosave             ; couldn't be: say so, for a second
-        ld c,MENU_BAD
+        ld c,SCR_BAD
         call kd_msg
         ld b,KD_PAUSE
 .ns:    push bc
@@ -130,7 +126,7 @@ keydef_screen:
 ; joystick's), if no other control uses it
 kd_change:
         ld hl,txt_kd_select
-        ld c,MENU_TITLE
+        ld c,SCR_TITLE
         call kd_msg
         ld b,KD_PAUSE                   ; a second (keys still read, so one
 .p:     push bc                         ; held now isn't new after it)
@@ -179,10 +175,10 @@ kd_change:
         ld a,1
         ld (kd_dirty),a
         ld hl,txt_kd_blank              ; (the message gone)
-        ld c,MENU_ATTR
+        ld c,SCR_TEXT
         jp kd_msg
 .used:  ld hl,txt_kd_used               ; already a control's key: no change
-        ld c,MENU_BAD
+        ld c,SCR_BAD
         call kd_msg
         ld b,KD_PAUSE
 .q:     push bc
@@ -191,7 +187,7 @@ kd_change:
         pop bc
         djnz .q
         ld hl,txt_kd_blank
-        ld c,MENU_ATTR
+        ld c,SCR_TEXT
         jp kd_msg
 
 ; NZ if an input (a key or a joystick's) went down since the last scan: DE =
@@ -222,16 +218,18 @@ kd_new_key:
 
 ; HL -> message, C = attribute: shown on the message row (cleared first)
 kd_msg:
+        ld a,L320_F12                   ; (large)
+        ld (l320_font),a
         push hl
         push bc
         ld hl,txt_kd_blank
-        ld c,MENU_ATTR
-        ld de,KD_MSG_ROW<<8 | 1
-        call menu_print
+        ld c,SCR_TEXT
+        ld de,KD_MSG_ROW<<8 | 0
+        call l320_print_at
         pop bc
         pop hl
-        ld de,KD_MSG_ROW<<8 | 1
-        jp menu_print
+        ld de,KD_MSG_ROW<<8 | 0
+        jp l320_print_at
 
 ;------------------------------------------------------------------------------
 ; The list: KD_VIS controls from kd_top, each its name, key and joystick
@@ -240,14 +238,16 @@ kd_msg:
 kd_draw:
         xor a
         ld (kd_row),a
+        ld (l320_font),a                ; (8x8: L320_F8)
+        ASSERT L320_F8 == 0
 .lp:    ld hl,kd_top
         add a,(hl)
         ld (kd_i),a                     ; the control on this row
-        ld c,MENU_ATTR
+        ld c,SCR_TEXT
         ld hl,kd_cur
         cp (hl)
         jr nz,.c
-        ld c,MENU_OK                    ; highlighted: green
+        ld c,SCR_OK                    ; highlighted: green
 .c:     ld a,c
         ld (kd_attr),a
         ld a,(kd_row)                   ; its name, the field cleared first
@@ -258,7 +258,7 @@ kd_draw:
         ld a,(kd_attr)
         ld c,a
         push de
-        call menu_print
+        call l320_print_at
         pop de
         ld a,(kd_i)
         add a,a
@@ -270,7 +270,7 @@ kd_draw:
         ld l,a
         ld a,(kd_attr)
         ld c,a
-        call menu_print
+        call l320_print_at
         ld a,(kd_i)                     ; its key
         add a,a
         ld hl,key_defs
@@ -304,7 +304,7 @@ kd_field:
         ld l,c
         ld a,(kd_attr)
         ld c,a
-        call menu_print                 ; the field cleared
+        call l320_print_at                 ; the field cleared
         pop hl
         ld e,(hl)
         inc hl
@@ -313,7 +313,7 @@ kd_field:
         ld de,(kd_at)
         ld a,(kd_attr)
         ld c,a
-        jp menu_print
+        jp l320_print_at
 
 ; DE = an input's code (bank D, bit mask E) -> HL -> its name ("-" if none,
 ; "?" if unknown)
@@ -443,21 +443,27 @@ kd_dirty:   db 0                        ; 1: changed since the screen opened
 ; Redefine keys page data
 ;------------------------------------------------------------------------------
 kd_text:
-        db 0, KD_NAME_COL, MENU_TITLE   ; the title, over the controls'
-        db "REDEFINE KEYS", 0           ; names, and the columns' headings
-        db 0, KD_KEY_COL, MENU_TITLE
+        db KD_TITLE_ROW, (F12_COLS-13)/2, SCR_TITLE
+        db "REDEFINE KEYS", 0
+        db KD_HELP_ROW, 2, SCR_HELP
+        db "Q A:MOVE    SPACE:SET", 0
+        db KD_HELP_ROW+1, 2, SCR_HELP
+        db "0:DEFAULTS  1:SAVE", 0
+        db L320_LIST_FONT, L320_F8
+        db KD_HEAD_ROW, KD_NAME_COL, SCR_HELP   ; the columns' headings
+        db "CONTROL", 0
+        db KD_HEAD_ROW, KD_KEY_COL, SCR_HELP
         db "KEY", 0
-        db 0, KD_JOY_COL, MENU_TITLE
+        db KD_HEAD_ROW, KD_JOY_COL, SCR_HELP
         db "JOYSTICK", 0
-        db KD_HELP_ROW, 0, MENU_ATTR    ; (one line: the list takes the rest)
-        db "QA:MOVE SPC:SET 0:DEFAULT 1:SAVE", 0
         db $FF
 
 txt_kd_select:  db "PRESS A KEY OR JOYSTICK", 0
 txt_kd_used:    db "KEY ALREADY IN USE", 0
 txt_kd_nosave:  db "KEYS NOT SAVED (SD CARD?)", 0
-txt_kd_blank:   db "                              ", 0
-txt_kd_nameblank: db "              ", 0
+txt_kd_blank:   db "                          ", 0
+        ASSERT $ - txt_kd_blank == F12_COLS + 1
+txt_kd_nameblank: db "               ", 0
         ASSERT $ - txt_kd_nameblank == KD_KEY_COL - KD_NAME_COL - 1 + 1
 txt_kd_keyblank: db "       ", 0
         ASSERT $ - txt_kd_keyblank == KD_KEY_LEN + 1

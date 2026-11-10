@@ -1,9 +1,20 @@
 """The 320x256 Layer 2 graphics (layer2-320x256.asm, PAGE_L320 in slot 2):
 each routine run on its own and the screen compared with what it should
 draw, pixel for pixel; the display switched to 320x256 and back."""
+import os
 import random
+import sys
 import zptest as zp
 from zptest import sym
+
+sys.path.insert(0, os.path.join(zp.ROOT, "tools"))
+import fontfile as ff  # noqa: E402
+import imagefile as imf  # noqa: E402
+import vtol_schematic as vs  # noqa: E402
+
+FONT = ff.Font.load(ff.F12.PATH, ff.F12)    # ZPDATA/FONT12.ZPF
+FONT8 = ff.Font.load(ff.F8.PATH, ff.F8)     # ZPDATA/FONT8.ZPF
+GRAD8 = [dict((b, cols) for b, cols in FONT8.grads)]    # (none: [{}])
 
 RET = 0x0000                            # a return address no routine uses
 W, H = 320, 256
@@ -14,8 +25,10 @@ def machine():
     sd = zp.SD()
     cpu = zp.machine(sd)
     cpu.keys = set()
-    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MENU"]), "the main menu")
+    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+    call(cpu, "l2_game_mode")           # (the menu is at 320x256: the game's set-up)
     cpu.set_nextreg(sym["L320_MMU"], sym["PAGE_L320"])
+    cpu.wr(sym["l320_font"], sym["L320_F8"])    # (the menu left the large one)
     return sd, cpu
 
 
@@ -59,6 +72,8 @@ def font(cpu):
 
 
 def put_char(m, fnt, ch, x, y, ink, paper):
+    """The 8x8 glyph, in ink's gradient in FONT8.ZPF (GRAD8[0]) or flat"""
+    grad = GRAD8[0].get(ink, [ink] * 8)
     c = ord(ch)
     if ord("a") <= c <= ord("z"):
         c -= 32
@@ -70,7 +85,7 @@ def put_char(m, fnt, ch, x, y, ink, paper):
             if x + i >= W:
                 continue
             if fnt[c][r] & (0x80 >> i):
-                m[(y + r) & 255][x + i] = ink
+                m[(y + r) & 255][x + i] = grad[r]
             elif paper != sym["L320_NOPAPER"]:
                 m[(y + r) & 255][x + i] = paper
 
@@ -289,6 +304,356 @@ def test_page_kept():
         call(cpu, "l2_game_mode")
         zp.check(cpu.mmu[2] == sym["PAGE_OCC0"], f"slot 2 has page {cpu.mmu[2]}, not the occlusion page")
         zp.check(cpu.nextreg[0x70] == 0, "l2_game_mode didn't go back to 256x192")
+
+
+def colours_in_rows(cpu, row0, row1):
+    """The colours in character rows row0..row1"""
+    scr = screen(cpu)
+    return {c for y in range(row0 * 8, row1 * 8 + 8) for c in scr[y]}
+
+
+def big_has(cpu, row0, row1, base):
+    """Text in colour base (its gradient's colours, or flat) in the large
+    font's rows row0..row1"""
+    grad = dict((b, cols) for b, cols in FONT.grads).get(base, [base])
+    scr = screen(cpu)
+    y0 = sym["F12_Y0"] + row0 * sym["F12_H"]
+    seen = {c for y in range(y0, y0 + (row1 - row0 + 1) * sym["F12_H"]) for c in scr[y]}
+    return bool(seen & set(grad))
+
+
+def shown_320(cpu, what):
+    zp.check(cpu.nextreg.get(0x70) == 0x10, f"{what}: not 320x256")
+    zp.check(cpu.mmu[2] == sym["PAGE_L320"], f"{what}: the 320x256 page not in slot 2")
+
+
+def test_screens():
+    """The main menu and redefine keys are drawn at 320x256; the game, and
+    the ULA end screens, are back at 256x192 with the occlusion page"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+        shown_320(cpu, "main menu")
+        zp.check(cpu.page(sym["PAGE_L320"])[sym["f12_ok"] - 0x4000] == 1, "the large font not loaded")
+        zp.check(big_has(cpu, 3, 3, sym["SCR_TITLE"]), "main menu: no title")
+        zp.check(big_has(cpu, 9, 13, sym["SCR_TEXT"]), "main menu: no options")
+        cpu.keys = {"9"}
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_KEYDEF"]), "redefine keys")
+        cpu.keys = set()
+        for _ in range(3):                  # (drawn, and a few scans on)
+            cpu.stepi()
+            zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_KEYDEF"]), "redefine keys")
+        shown_320(cpu, "redefine keys")
+        r0 = sym["KD_ROW0"]
+        zp.check(sym["SCR_OK"] in colours_in_rows(cpu, r0, r0), "redefine keys: first control not highlighted")
+        zp.check(sym["SCR_OK"] not in colours_in_rows(cpu, r0 + 1, r0 + sym["KD_VIS"] - 1),
+                 "redefine keys: more than one highlighted")
+        zp.check(sym["SCR_TEXT"] in colours_in_rows(cpu, r0 + sym["KD_VIS"] - 1, r0 + sym["KD_VIS"] - 1),
+                 "redefine keys: the last control not shown")
+        cpu.keys = {"1"}                    # back
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu again")
+        shown_320(cpu, "main menu again")
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.start_game(cpu)
+        zp.check(cpu.nextreg.get(0x70) == 0, "the game isn't at 256x192")
+        zp.check(cpu.mmu[2] == sym["PAGE_OCC0"], "the game hasn't the occlusion page in slot 2")
+        zp.check(not cpu.nextreg.get(0x43, 0) & 4, "the game is on Layer 2's second palette")
+        zp.check(cpu.l2clip == [0, 255, 0, 191], f"the game's clip window {cpu.l2clip}")
+        cpu.pc = sym["level_complete_screen"]   # LEVEL COMPLETE, then the load-out
+        cpu.set_nextreg(0x56, sym["PAGE_LEVELEND"])
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LEVELEND"]), "LEVEL COMPLETE")
+        shown_320(cpu, "level complete")
+        zp.check(big_has(cpu, sym["LE_TITLE_ROW"], sym["LE_TITLE_ROW"], sym["SCR_TITLE"]),
+                 "level complete: no title")
+        zp.check(big_has(cpu, sym["LE_SAVED_ROW"], sym["LE_REARM_ROW"], sym["SCR_TEXT"]),
+                 "level complete: no salvage lines")
+        zp.check(big_has(cpu, sym["LE_PROMPT_ROW"], sym["LE_PROMPT_ROW"], sym["SCR_HELP"]),
+                 "level complete: no PRESS SPACE")
+        cpu.keys = {" "}
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        cpu.keys = set()
+        for _ in range(2):
+            cpu.stepi()
+            zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        shown_320(cpu, "load-out")
+        r0 = sym["LO_ROW0"]
+        zp.check(sym["SCR_TITLE"] in colours_in_rows(cpu, r0, r0 + 2 * 4), "load-out: no selected slot")
+        zp.check(big_has(cpu, sym["LO_START_ROW"], sym["LO_START_ROW"], sym["SCR_TEXT"]),
+                 "load-out: no START LEVEL")
+        cpu.keys = {"0"}                    # and on into the game: 256x192 again
+        zp.run_until(cpu, lambda: cpu.pc == sym["main_loop"], "the next level")
+        cpu.keys = set()
+        zp.check(cpu.nextreg.get(0x70) == 0 and cpu.mmu[2] == sym["PAGE_OCC0"], "the next level isn't on the game's set-up")
+        cpu.pc = sym["game_over_screen"]    # a ULA screen
+        cpu.set_nextreg(0x56, sym["PAGE_MENU"])
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MENU"]), "GAME OVER")
+        zp.check(cpu.nextreg.get(0x70) == 0 and cpu.mmu[2] == sym["PAGE_OCC0"], "GAME OVER not on the ULA set-up")
+
+
+def put_char12(m, ch, x, y, ink, paper):
+    c = ch.upper()
+    if not FONT.glyphs.get(c):
+        c = " "
+    grad = dict((b, cols) for b, cols in FONT.grads).get(ink, [ink] * ff.H)
+    for row in range(ff.H):
+        for col in range(ff.W):
+            if x + col >= W:
+                continue
+            if FONT.glyphs[c][row][col]:
+                m[(y + row) & 255][x + col] = grad[row]
+            elif paper != sym["L320_NOPAPER"]:
+                m[(y + row) & 255][x + col] = paper
+
+
+def test_font_file():
+    """ZPDATA/FONT8.ZPF and FONT12.ZPF are ones the game takes, and fontfile
+    reads and writes them unchanged; the game's idea of the format is
+    fontfile's; the built-in font8 (tables_font.inc) is FONT8.ZPF's"""
+    for sp in (ff.F8, ff.F12):
+        data = open(sp.PATH, "rb").read()
+        ff.check(data, sp)
+        zp.check(ff.Font.from_bytes(data).to_bytes() == data, f"fontfile doesn't write back {sp.PATH}")
+    for k, v in (("F8_H", ff.F8.H), ("F8_FIRST", ff.F8.FIRST), ("F8_COUNT", ff.F8.COUNT),
+                 ("F8_BPR", ff.F8.BPR), ("F8_SIZE_MAX", ff.F8.SIZE_MAX)):
+        zp.check(sym[k] == v, f"{k} {sym[k]} in the game, {v} in fontfile.py")
+    with zp.SD() as sd:                 # (not loaded yet: the built-in one)
+        cpu = zp.machine(sd)
+        main = cpu.page(sym["PAGE_MAIN"])     # (slot 5 not mapped yet)
+        built = bytes(main[sym["font8"] - 0xA000 + i] for i in range(64 * 8))
+    zp.check(built == ff.font8_rows(), "the built-in font8 isn't FONT8.ZPF's: rebuild")
+    for k, v in (("F12_W", ff.W), ("F12_H", ff.H), ("F12_FIRST", ff.FIRST), ("F12_COUNT", ff.COUNT),
+                 ("F12_BPR", ff.BPR), ("F12_HEADER", ff.HEADER), ("F12_GRAD_MAX", ff.GRAD_MAX),
+                 ("F12_SIZE_MAX", ff.SIZE_MAX)):
+        zp.check(sym[k] == v, f"{k} {sym[k]} in the game, {v} in fontfile.py")
+
+
+def test_large_font():
+    """l320_char12: each character's cell in its colour's gradient (or flat),
+    pixel for pixel; the position on 12; l320_at on the large grid"""
+    sd, cpu = machine()
+    with sd:
+        zp.check(cpu.page(sym["PAGE_L320"])[sym["f12_ok"] - 0x4000] == 1, "the large font not loaded")
+        call(cpu, "l320_cls", a=0)
+        cpu.wr(sym["l320_font"], sym["L320_F12"])
+        m = blank()
+        rnd = random.Random(12)
+        chars = [chr(c) for c in range(32, 91)] + list("az{~")
+        inks = [b for b, _ in FONT.grads] + [0x49, 0x92]
+        for k in range(120):
+            ch = rnd.choice(chars)
+            ink = rnd.choice(inks)
+            paper = rnd.choice((0x12, sym["L320_NOPAPER"]))
+            if k % 2:
+                row, col = rnd.randint(0, 24), rnd.randint(0, 25)
+                call(cpu, "l320_at", d=row, e=col)
+                x, y = sym["F12_X0"] + col * 12, sym["F12_Y0"] + row * 10
+            else:
+                x, y = rnd.randint(0, 319), rnd.randint(0, 246)
+                call(cpu, "l320_pos", hl=x, c=y)
+            cpu.wr(sym["l320_ink"], ink)
+            cpu.wr(sym["l320_paper"], paper)
+            t = call(cpu, "l320_char", a=ord(ch))
+            put_char12(m, ch, x, y, ink, paper)
+            zp.check(cpu.rd16(sym["l320_cx"]) == x + 12, "l320_char (large) didn't move on 12")
+        diff(screen(cpu), m, "l320_char (large font)")
+        zp.note(f"l320_char (large font): about {t:,} T a character")
+
+
+def test_no_font_file():
+    """Without FONT12.ZPF (or with a bad one) the large grid keeps its
+    places, each cell with the 8x8 glyph"""
+    for drop, bad in ((("FONT12.ZPF",), None), ((), b"ZPFN" + bytes(20))):
+        sd = zp.SD(drop=drop)
+        if bad is not None:
+            with open(sd.path("FONT12.ZPF"), "wb") as fh:
+                fh.write(bad)
+        with sd:
+            cpu = zp.machine(sd)
+            zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+            zp.check(cpu.page(sym["PAGE_L320"])[sym["f12_ok"] - 0x4000] == 0,
+                     "a missing or bad font file taken")
+            call(cpu, "l2_game_mode")
+            cpu.set_nextreg(sym["L320_MMU"], sym["PAGE_L320"])
+            fnt = font(cpu)
+            call(cpu, "l320_cls", a=0)
+            cpu.wr(sym["l320_font"], sym["L320_F12"])
+            cpu.wr(sym["l320_ink"], 0xFF)
+            cpu.wr(sym["l320_paper"], 0)
+            m = blank()
+            for i, ch in enumerate("Z-POLICE"):
+                call(cpu, "l320_at", d=4, e=3 + i)
+                call(cpu, "l320_char", a=ord(ch))
+                put_char(m, fnt, ch, sym["F12_X0"] + (3 + i) * 12 + 2, sym["F12_Y0"] + 40 + 1, 0xFF, 0)
+                zp.check(cpu.rd16(sym["l320_cx"]) == sym["F12_X0"] + (4 + i) * 12, "not on 12")
+            diff(screen(cpu), m, "the 8x8 glyphs in the large cells")
+
+
+def test_font8_file():
+    """FONT8.ZPF's glyphs go over the built-in font8 at start-up (the ULA
+    screens use them too), and its gradients colour the 8x8 text on the
+    320x256 screens; without it (or with a bad one) the built-in font, flat"""
+    edited = ff.Font.load(ff.F8.PATH, ff.F8)
+    edited.glyphs["A"] = [[x == y for x in range(8)] for y in range(8)]   # (a mark)
+    for case in ("edited", "none", "bad"):
+        sd = zp.SD(drop=("FONT8.ZPF",) if case == "none" else ())
+        if case == "edited":
+            edited.save(sd.path("FONT8.ZPF"))
+        if case == "bad":
+            with open(sd.path("FONT8.ZPF"), "wb") as fh:
+                fh.write(edited.to_bytes()[:-1])
+        with sd:
+            cpu = zp.machine(sd)
+            zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+            ok = cpu.page(sym["PAGE_L320"])[sym["f8_ok"] - 0x4000]
+            zp.check(ok == (case == "edited"), f"{case}: f8_ok {ok}")
+            got = bytes(cpu.rd(sym["font8"] + i) for i in range(64 * 8))
+            want = (edited.to_bytes()[12:12 + 512] if case == "edited" else ff.font8_rows())
+            zp.check(got == want, f"{case}: font8 isn't the {'file' if case == 'edited' else 'built-in'} one")
+            call(cpu, "l2_game_mode")
+            cpu.set_nextreg(sym["L320_MMU"], sym["PAGE_L320"])
+            cpu.wr(sym["l320_font"], sym["L320_F8"])
+            call(cpu, "l320_cls", a=0)
+            cpu.wr(sym["l320_paper"], 0)
+            fnt = font(cpu)
+            GRAD8[0] = dict((b, cols) for b, cols in edited.grads) if case == "edited" else {}
+            try:
+                m = blank()
+                for i, (ch, ink) in enumerate(zip("AZ09:", (0xFF, 0xFC, 0x1C, 0x49, 0xE0))):
+                    cpu.wr(sym["l320_ink"], ink)
+                    call(cpu, "l320_at", d=3, e=2 + i)
+                    call(cpu, "l320_char", a=ord(ch))
+                    put_char(m, fnt, ch, (2 + i) * 8, 24, ink, 0)
+                diff(screen(cpu), m, f"{case}: the 8x8 text in its gradients")
+            finally:
+                GRAD8[0] = dict((b, cols) for b, cols in FONT8.grads)
+
+
+def image_bytes(x, y, w, h, rnd):
+    """A random image (some pixels clear) in the box, as a file"""
+    im = imf.Image()
+    for cx in range(x, x + w):
+        for cy in range(y, y + h):
+            v = rnd.randint(0, 255)
+            im.set(cx, cy, imf.CLEAR if v < 60 else v)
+    im.set(x, y, 0x11)                      # (the corners drawn: the box is it)
+    im.set(x + w - 1, y + h - 1, 0x22)
+    return im, im.to_bytes()
+
+
+def test_image():
+    """l320_image: an image file from the SD card drawn at its place, pixel
+    for pixel, its clear pixels leaving the screen; read in strips (many
+    columns a read, or one when 256 high); carry set, and nothing drawn,
+    without the file or with a bad one"""
+    rnd = random.Random(21)
+    cases = [(100, 20, 60, 40), (0, 0, 7, 256), (250, 200, 70, 56), (3, 9, 317, 23)]
+    with zp.SD() as sd:
+        for i, (x, y, w, h) in enumerate(cases):
+            im, data = image_bytes(x, y, w, h, rnd)
+            with open(sd.path(f"T{i}.ZPI"), "wb") as fh:
+                fh.write(data)
+        over = bytearray(image_bytes(300, 0, 20, 10, rnd)[1])
+        over[5:7] = (310).to_bytes(2, "little")             # off the right edge
+        with open(sd.path("OVER.ZPI"), "wb") as fh:
+            fh.write(over)
+        _, short = image_bytes(10, 10, 30, 30, rnd)
+        with open(sd.path("SHORT.ZPI"), "wb") as fh:
+            fh.write(short[:-5])
+        with open(sd.path("BAD1.ZPI"), "wb") as fh:
+            fh.write(b"ZPIX" + bytes(12))
+        cpu = zp.machine(sd)
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+        call(cpu, "l2_game_mode")
+        cpu.set_nextreg(sym["L320_MMU"], sym["PAGE_L320"])
+        name = sym["sg_buf"]
+
+        def draw(fname):
+            for k, ch in enumerate(f"ZPDATA/{fname}".encode() + bytes(1)):
+                cpu.wr(name + k, ch)
+            t = call(cpu, "l320_image", hl=name, limit=200_000_000)
+            zp.check(cpu.mmu[7] == sym["PAGE_INPUT"], "the input page not back in slot 7")
+            return cpu.r[REGS.index("F")] & 1, t
+
+        rnd2 = random.Random(5)
+        for i, (x, y, w, h) in enumerate(cases):
+            back = rnd2.randint(1, 255)
+            call(cpu, "l320_cls", a=back)
+            m = blank(back)
+            im = imf.Image.load(sd.path(f"T{i}.ZPI"))
+            for cy in range(256):
+                for cx in range(W):
+                    v = im.get(cx, cy)
+                    if v != imf.CLEAR:
+                        m[cy][cx] = v
+            cf, t = draw(f"T{i}.ZPI")
+            zp.check(not cf, f"T{i}.ZPI: carry set")
+            diff(screen(cpu), m, f"image {i} ({x}, {y}) {w} x {h}")
+            zp.note(f"l320_image {w} x {h}: {t:,} T (with the emulator's file calls)")
+        for bad in ("NOPE.ZPI", "BAD1.ZPI", "OVER.ZPI"):
+            call(cpu, "l320_cls", a=0x33)
+            cf, _ = draw(bad)
+            zp.check(cf, f"{bad}: carry clear")
+            diff(screen(cpu), blank(0x33), f"{bad}: drew something")
+        cf, _ = draw("SHORT.ZPI")
+        zp.check(cf, "SHORT.ZPI (cut short): carry clear")
+
+
+def test_vtol_image():
+    """ZPDATA/VTOL.ZPI is an image the game takes, imagefile writes back what
+    it reads, and the load-out's hardpoints (lo_hp) are tools/vtol_schematic's"""
+    data = open(vs.PATH, "rb").read()
+    imf.check(data)
+    zp.check(imf.Image.from_bytes(data).to_bytes() == data, "imagefile doesn't write back VTOL.ZPI")
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        page = cpu.page(sym["PAGE_LOADOUT"])
+        at = sym["lo_hp"] - 0xC000
+        n = sym["LO_HP_SIZE"]
+        for slot in range(1, 6):
+            e = page[at + n * (slot - 1):at + n * slot]
+            hp = (e[0] | e[1] << 8, e[2])
+            lb = (e[3] | e[4] << 8, e[5])
+            bx = (e[6], e[7])
+            zp.check(hp == vs.HARDPOINTS[slot], f"slot {slot}: lo_hp {hp}, vtol_schematic {vs.HARDPOINTS[slot]}")
+            zp.check(lb == vs.LABELS[slot], f"slot {slot}: label {lb}, vtol_schematic {vs.LABELS[slot]}")
+            zp.check(bx == vs.BOXES[slot], f"slot {slot}: box {bx}, vtol_schematic {vs.BOXES[slot]}")
+
+
+def test_loadout_vtol():
+    """The load-out shows VTOL.ZPI where it goes, and a box at each slot's
+    hardpoint: the selected slot's yellow"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        cpu.keys = {"1"}
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        for keys in (set(), {"3"}, set()):
+            cpu.keys = keys
+            cpu.stepi()
+            zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        scr = screen(cpu)
+        im = imf.Image.load(vs.PATH)
+        x, y, w, h = im.box()
+        boxes = set()                       # each box's outline (centred: x - w/2)
+        for slot, (hx, hy) in vs.HARDPOINTS.items():
+            w, h = vs.BOXES[slot]
+            x0, y0 = hx - w // 2, hy - h // 2
+            for k in range(w):
+                boxes |= {(x0 + k, y0), (x0 + k, y0 + h - 1)}
+            for k in range(h):
+                boxes |= {(x0, y0 + k), (x0 + w - 1, y0 + k)}
+        labels = {(lx + i, ly + j) for lx, ly in vs.LABELS.values() for i in range(8) for j in range(8)}
+        same = sum(1 for cy in range(y, y + h) for cx in range(x, x + w)
+                   if im.get(cx, cy) != imf.CLEAR and (cx, cy) not in boxes | labels
+                   and scr[cy][cx] == im.get(cx, cy))
+        drawn = sum(1 for cy in range(y, y + h) for cx in range(x, x + w)
+                    if im.get(cx, cy) != imf.CLEAR and (cx, cy) not in boxes | labels)
+        zp.check(same == drawn, f"the VTOL: {drawn - same} of {drawn} pixels not the image's")
+        for slot, (hx, hy) in vs.HARDPOINTS.items():
+            w, h = vs.BOXES[slot]
+            want = sym["SCR_TITLE"] if slot == 3 else sym["SCR_FRAME2"]
+            for x, y in ((hx, hy - h // 2), (hx, hy - h // 2 + h - 1), (hx - w // 2, hy), (hx - w // 2 + w - 1, hy)):
+                zp.check(scr[y][x] == want, f"slot {slot}'s box at ({x}, {y}): {scr[y][x]:02X}, not {want:02X}")
 
 
 if __name__ == "__main__":

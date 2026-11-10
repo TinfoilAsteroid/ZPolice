@@ -193,7 +193,10 @@ each with its own crosshair. One runs dry and the other fires on alone.
 THE LOAD-OUT SCREEN
 -------------------
 
-The store is on the left, and your five slots on the right.
+The store is on the left, and your five slots on the right: a plan of the
+VTOL's underside shows where each one is (1 the centre gun, 2 and 3 the
+outer wing pods, 4 and 5 the inner ones), the selected slot in yellow, with
+what is fitted in each listed below it.
 
   1-5    select a slot
   Q / A  move up and down the store. Green means the weapon fits that slot.

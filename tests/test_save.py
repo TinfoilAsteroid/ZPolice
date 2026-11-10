@@ -27,7 +27,7 @@ def menu_scans(cpu, n, keys_at):
     k = [0]
 
     def count():
-        if zp.at_scan(cpu, sym["PAGE_MENU"]):
+        if zp.at_scan(cpu, sym["PAGE_MAINMENU"]):
             k[0] += 1
             cpu.keys = set(keys_at.get(k[0], ""))
         return k[0] >= n
@@ -38,7 +38,7 @@ def test_continue_without_save():
     with zp.SD() as sd:
         cpu = zp.machine(sd)
         menu_scans(cpu, 6, {3: "2"})
-        zp.check(cpu.mmu[6] == sym["PAGE_MENU"], "CONTINUE without a save game left the main menu")
+        zp.check(cpu.mmu[6] == sym["PAGE_MAINMENU"], "CONTINUE without a save game left the main menu")
 
 
 def test_save_and_continue():
@@ -63,7 +63,7 @@ def test_save_and_continue():
                 k[0] += 1
                 cpu.nextreg[0xB1] = 0x20 if k[0] == 1 else 0     # BREAK: pause
                 cpu.keys = {"S"} if k[0] == 5 else set()
-            return cpu.pc == sym["main_menu"] and cpu.mmu[6] == sym["PAGE_MENU"]
+            return cpu.pc == sym["main_menu"] and cpu.mmu[6] == sym["PAGE_MAINMENU"]
         zp.run_until(cpu, pause_then_s, "the main menu after S")
         p = sd.path("SAVEGAME.ZPS")
         zp.check(os.path.exists(p), "SAVEGAME.ZPS not written")

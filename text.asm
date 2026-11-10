@@ -1,8 +1,10 @@
 ;==============================================================================
-; Z-POLICE - text screens (resident): the ULA routines the menu screens
+; Z-POLICE - text screens (resident): the ULA routines the end screens
 ; (menu.asm) and the load-out screen (loadout.asm) share, from whichever
 ; page is in slot 6.  Layer 2 hidden, the ULA screen with opaque paper,
 ; 8x8 characters (font8, ASCII 32-95) by row and column with an attribute.
+; And screen320, the start of a Layer 2 320x256 screen (the main menu and
+; redefine keys: layer2-320x256.asm draws them).
 ;==============================================================================
 
 MENU_ATTR       equ P_PANEL<<3 | 7          ; white on the panel colour
@@ -10,15 +12,31 @@ MENU_TITLE      equ P_PANEL<<3 | C_YEL      ; yellow
 MENU_OK         equ P_PANEL<<3 | C_OK       ; green
 MENU_BAD        equ P_PANEL<<3 | C_WARN     ; red
 
-; Hide Layer 2, silence the AY chips, and blank the ULA screen with opaque
-; paper
-menu_clear:
-        nextreg CODE_MMU,PAGE_SPRITES   ; no HUD sprites over the menu
+; A Layer 2 320x256 screen (the main menu, redefine keys): sprites hidden,
+; the AY chips silent, the keys in slot 7, the 320x256 page in slot 2 (and
+; left there: the screen draws with it), cleared with a frame and shown
+; (l320_screen, layer2-320x256.asm)
+screen320:
+        call menu_quiet
+        nextreg L320_MMU,PAGE_L320
+        jp l320_screen
+
+; No HUD sprites, silence (the engines off), and the input page in slot 7
+; (the screens read the keys)
+menu_quiet:
+        nextreg CODE_MMU,PAGE_SPRITES
         call spr_hide_all
         call spr_update
-        nextreg CODE_MMU,PAGE_AUDIO     ; and silence: the engines off
+        nextreg CODE_MMU,PAGE_AUDIO
         call init_audio                 ; (audio.asm)
-        nextreg CODE_MMU,PAGE_INPUT     ; (the menu reads the keys)
+        nextreg CODE_MMU,PAGE_INPUT
+        ret
+
+; A ULA screen: hide Layer 2 (at 256x192 again, if a 320x256 screen had it),
+; silence the AY chips, and blank the ULA screen with opaque paper
+menu_clear:
+        call menu_quiet
+        call l2_game_mode               ; (zpolice.asm)
         ld bc,$123B
         xor a
         out (c),a
@@ -132,4 +150,6 @@ menu_line:
         cp 192
         ret
 
-        INCLUDE "tables_font.inc"       ; font8: ASCII 32-95
+        INCLUDE "tables_font.inc"       ; font8: ASCII 32-95 (ZPDATA/FONT8.ZPF's,
+                                        ; at build time and again at start-up:
+                                        ; fonts_load)

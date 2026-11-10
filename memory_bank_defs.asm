@@ -20,7 +20,7 @@
 ;   slot 4 $8000  ULA screen (page 10, the first half of bank 5)
 ;   slot 5 $A000  resident main code, variables, stack (page 11, the unused
 ;                 second half of bank 5)
-;   slot 6 $C000  game logic pages, swapped: player, weapons, menu, level
+;   slot 6 $C000  game logic pages, swapped: player, weapons, menus, level
 ;                 loading
 ;   slot 7 $E000  core function pages, swapped: city (Layer 2 drawing), HUD,
 ;                 keys, sprites; a sprite bank while it is loaded; the
@@ -151,7 +151,8 @@ PAGE_OCC0               equ 6           ; occlusion buffer, draw list and
                                         ; building records (slot 2)
 PAGE_OCC1               equ 7           ; the city bank: city_col and
                                         ; city_map (slot 3, always)
-PAGE_MENU               equ 8           ; menu.asm: main menu (slot 6)
+PAGE_MENU               equ 8           ; menu.asm: game over, game complete,
+                                        ; the load error (slot 6)
 PAGE_SPR0               equ 9           ; sprite_data.asm: sprite pattern
                                         ; bank 0 (slot 7 while loading);
                                         ; more banks: the next free pages
@@ -178,7 +179,9 @@ PAGE_CITY2              equ 34          ; city2.asm: more Layer 2 drawing
                                         ; (slot 4, with the city page)
 PAGE_L320               equ 35          ; layer2-320x256.asm: Layer 2 320x256
                                         ; graphics for the menu screens (slot 2)
-PAGE_GFX0               equ 36          ; the figures' graphics (from page 36,
+PAGE_MAINMENU           equ 36          ; mainmenu.asm: the main menu (slot 6)
+PAGE_LEVELEND           equ 37          ; levelend.asm: level complete (slot 6)
+PAGE_GFX0               equ 38          ; the figures' graphics (from page 38,
                                         ; GFX_PAGES_MAX at most), loaded from
                                         ; ZPDATA/SPRITES.ZPG at start-up; each
                                         ; mapped at $C000 (slot 6) to draw

@@ -23,7 +23,7 @@ def over(keys):
 
     def watch():
         step()
-        cpu.left = cpu.left or cpu.pc == sym["main_menu"]
+        cpu.left = cpu.left or (cpu.pc == sym["main_menu"] and cpu.mmu[6] == sym["PAGE_MAINMENU"])
     cpu.stepi = watch
     return sd, cpu
 

@@ -159,21 +159,33 @@ Each screen, in place of `menu_clear` / `menu_print`:
   `l320_recolour`, or by printing again in the new colour.
 - Panels and frames with `l320_box` / `l320_fill`.
 
-1. Main menu (`main_menu`, menu.asm), and its NO SAVED GAME message.
+1. (Done 2026-11-10) Main menu: its own page now (`mainmenu.asm`,
+   `PAGE_MAINMENU`, page 36), and its NO SAVED GAME message.
 2. Game over (`game_over_screen`, menu.asm).
-3. Level complete and game complete (`level_complete_screen`,
-   `game_complete_screen`, menu.asm), and `space_prompt`.
+3. (Done 2026-11-10) Level complete: its own page now (`levelend.asm`,
+   `PAGE_LEVELEND`, page 37), with the salvage and its rewards and its own
+   PRESS SPACE (`le_space`). Still to do: game complete
+   (`game_complete_screen`, menu.asm).
 4. Load error (`load_error_screen`, menu.asm).
-5. VTOL load-out (`loadout_screen`, loadout.asm): the store list, the 5
-   slots, the selected slot and the highlighted weapon (green / red / white).
-6. Redefine keys (`keydef_screen`, keydef.asm).
+5. (Done 2026-11-10) VTOL load-out (`loadout_screen`, loadout.asm). Since:
+   a schematic of the VTOL's underside with the slots' hardpoints
+   (ZPDATA/VTOL.ZPI, read when the screen opens; tools/screen_editor.py,
+   tools/vtol_schematic.py). Red
+   (`SCR_BAD`, a weapon that can't go in the slot) is hard to read on the
+   dark blue: maybe a lighter red.
+6. (Done 2026-11-10) Redefine keys (`keydef_screen`, keydef.asm): all 23
+   controls show at once now (no scrolling).
 7. Then: check that nothing still uses `menu_clear` / `menu_print` /
    `menu_char` (the pause screen, in flight, stays on the ULA) and remove
    what isn't used from the resident page. test_gameover.py reads the ULA
    screen (page 10) to see the game over screen: it would read Layer 2
    instead.
-8. Maybe: a double-size font for titles, and a title picture (see Graphics
-   above).
+8. (Done 2026-11-10) A large font for these screens: 12x10 cells in
+   colour gradients, ZPDATA/FONT12.ZPF, loaded at start-up, edited with
+   tools/font_editor.py. The 8x8 font in the same style too, FONT8.ZPF
+   (every text screen and the HUD). Maybe still: a title picture (see Graphics above),
+   and lower case / more punctuation in the font (59 characters now:
+   space to Z).
 
 ## Projection optimisation (2026-11-07, to review)
 

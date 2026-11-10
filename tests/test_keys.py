@@ -15,7 +15,7 @@ KB_Q, KB_M = 0x0201, 0x0704                # SPEED UP's default, and M
 
 def boot(sd):
     cpu = zp.machine(sd, interrupts=True)
-    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MENU"]), "the main menu")
+    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
     return cpu
 
 
@@ -50,7 +50,7 @@ def redefine_speed_up(cpu):
     scans(cpu, "", 3)
     zp.check(defs(cpu)[0] == KB_M, f"SPEED UP is {defs(cpu)[0]:04X} after pressing M, not {KB_M:04X}")
     scans(cpu, "1", 2)
-    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MENU"]), "the main menu again")
+    zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu again")
 
 
 def test_defaults_without_file():
@@ -89,7 +89,7 @@ def test_pause_quit():
         cpu.pc = sym["game_pause"]
         scans(cpu, "", 3)
         scans(cpu, "X", 2)
-        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MENU"]), "the main menu after X",
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu after X",
                      limit=100_000_000)
         zp.check(not os.path.exists(sd.path("SAVEGAME.ZPS")), "X saved the game")
 

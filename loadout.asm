@@ -5,7 +5,10 @@
 ; (loadout_go pages it in).  On the
 ; left, the store: every weapon type unlocked (wpn_unlocked) with the number
 ; in store (wpn_stock), even 0 when the only one is fitted.  On the right,
-; the VTOL's 5 weapon slots and what is fitted in each.
+; the VTOL's 5 weapon slots: a schematic of its underside (ZPDATA/VTOL.ZPI,
+; read from the SD card as the screen opens: l320_image) with a box and the
+; number at each slot's hardpoint (lo_hp), and below it the list of what is
+; fitted in each.
 ;   1-5    select a slot (yellow)
 ;   Q / A  move the highlight up / down the store list.  The highlighted
 ;          weapon is green if it can be fitted in the selected slot (the
@@ -18,33 +21,42 @@
 ;          slot EMPTY (lo_unload)
 ;   0      done: start the level (next_level), only with a weapon in slot 1
 ;          (the centre slot); while it is empty 0: START LEVEL is red
-; Uses the resident text routines (text.asm) and the keys page in slot 7.
+; Drawn on Layer 2 at 320x256 (screen320, text.asm; layer2-320x256.asm in
+; slot 2), with the keys page in slot 7: the title, help and START LEVEL in
+; the large font (26 x 25 grid), the headings and lists in the 8x8 one (40
+; x 32 grid: they need the columns).
 ;==============================================================================
 
-LO_ROW0         equ 5               ; first row of the lists
-LO_NAME_COL     equ 1               ; store: names,
-LO_CNT_COL      equ 13              ;   numbers in store
-LO_SLOT_COL     equ 18              ; slots: number, then the weapon
+LO_TITLE_ROW    equ 1               ; (large font)
+LO_HEAD_ROW     equ 4               ; STORE, SLOTS (8x8)
+LO_ROW0         equ 6               ; first row of the lists (8x8)
+LO_NAME_COL     equ 3               ; store: names,
+LO_CNT_COL      equ 16              ;   numbers in store
+LO_SLOT_COL     equ 21              ; slots: number, then the weapon (8x8)
+LO_SROW0        equ 17              ;   from this row (under the VTOL)
+LO_HELP_ROW     equ 19              ; the keys' help, two lines (large)
+LO_START_ROW    equ 22              ; 0: START LEVEL (large)
+LO_HP_BOX       equ 17              ; the centre slot hard point box (lo_hp)
+LO_HP_BOX_H     equ 24              ; the wing hardpoint (lo_hp)
+LO_HP_BOX_W     equ 6               ; the wing hardpoint (lo_hp)
+LO_HP_X         equ 0               ; lo_hp's entries: the hardpoint (word),
+LO_HP_Y         equ 2
+LO_HP_LX        equ 3               ;   its number's top-left (x a word),
+LO_HP_LY        equ 5
+LO_HP_W         equ 6               ;   the box's width and height
+LO_HP_H         equ 7
+LO_HP_SIZE      equ 8
 LO_NAME_LEN     equ 11              ; names are at most this long
-LO_SLOT_STEP    equ 2               ; rows between the slots
+LO_SLOT_STEP    equ 1               ; rows between the slots
 
 loadout_screen:
         ld sp,stack_top
-        nextreg CODE_MMU,PAGE_INPUT     ; the input page at $E000
-        call menu_clear
+        call screen320                  ; (text.asm) the input page in slot 7
         ld hl,lo_text                   ; titles and help
-.txt:   ld a,(hl)
-        cp $FF
-        jr z,.list
-        ld d,a
-        inc hl
-        ld e,(hl)
-        inc hl
-        ld c,(hl)
-        inc hl
-        call menu_print
-        jr .txt
-.list:  ld hl,lo_list               ; the store list: types unlocked, in
+        call l320_print_list
+        ld hl,lo_img                    ; the VTOL (none without the file:
+        call l320_image                 ; the boxes and numbers still show)
+        ld hl,lo_list               ; the store list: types unlocked, in
         ld c,0                          ; type order
         ld b,1                          ; (from the first weapon type)
 .ul:    ld a,b
@@ -236,6 +248,8 @@ lo_cur_type:
 ; white) and the slots (the selected one yellow)
 lo_draw:
         xor a
+        ld (l320_font),a                ; (8x8: L320_F8)
+        ASSERT L320_F8 == 0
 .st:    ld (lo_i),a
         ld hl,lo_n
         cp (hl)
@@ -244,16 +258,16 @@ lo_draw:
         add hl,a
         ld a,(hl)
         ld (lo_t),a
-        ld c,MENU_ATTR                  ; white
+        ld c,SCR_TEXT                  ; white
         ld a,(lo_cur)
         ld hl,lo_i
         cp (hl)
         jr nz,.col
         ld a,(lo_t)                     ; highlighted: can it go there?
         call lo_ok
-        ld c,MENU_OK
+        ld c,SCR_OK
         jr c,.col
-        ld c,MENU_BAD
+        ld c,SCR_BAD
 .col:   ld a,c
         ld (lo_attr),a
         ld a,(lo_i)
@@ -276,16 +290,16 @@ lo_draw:
         jr .st
 .slots: xor a                           ; the slots
 .sl:    ld (lo_i),a
-        ld c,MENU_ATTR
+        ld c,SCR_TEXT
         ld hl,lo_slot
         cp (hl)
         jr nz,.sc
-        ld c,MENU_TITLE                 ; the selected one: yellow
+        ld c,SCR_TITLE                 ; the selected one: yellow
 .sc:    ld a,c
         ld (lo_attr),a
-        ld a,(lo_i)                     ; row LO_ROW0 + slot * LO_SLOT_STEP
-        add a,a
-        add a,LO_ROW0
+        ld a,(lo_i)                     ; row LO_SROW0 + slot * LO_SLOT_STEP
+        ASSERT LO_SLOT_STEP == 1
+        add a,LO_SROW0
         ld d,a
         ld e,LO_SLOT_COL
         ld a,(lo_attr)
@@ -293,7 +307,12 @@ lo_draw:
         ld a,(lo_i)
         add a,'1'
         push de
-        call menu_char                  ; its number (key)
+        push af
+        ld a,c
+        ld (l320_ink),a
+        call l320_at
+        pop af
+        call l320_char                  ; its number (key)
         pop de
         ld e,LO_SLOT_COL+2
         ld a,(lo_i)
@@ -302,20 +321,76 @@ lo_draw:
         add hl,a
         ld a,(hl)                       ; what is fitted
         call lo_name
+        call lo_hpdraw                  ; and on the VTOL
         ld a,(lo_i)
         inc a
         cp WPN_SLOTS
         jr nz,.sl
-        ld c,MENU_ATTR                  ; 0: START LEVEL, red while slot 1
+        ld c,SCR_TEXT                  ; 0: START LEVEL, red while slot 1
         ld a,(wpn_slots)                ; is empty (0 does nothing then)
         or a
         jr nz,.go
-        ld c,MENU_BAD
-.go:    ld d,LO_START_ROW
-        ld e,1
+        ld c,SCR_BAD
+.go:    ld a,L320_F12                   ; (large)
+        ld (l320_font),a
+        ld d,LO_START_ROW
+        ld e,(F12_COLS-14)/2
         ld hl,lo_start
-        jp menu_print
-        ASSERT LO_ROW0 + (WPN_SLOTS-1)*LO_SLOT_STEP < 19
+        jp l320_print_at
+        ASSERT (LO_ROW0 + WPN_LAST)*8 <= F12_Y0 + LO_HELP_ROW*F12_H
+        ASSERT (LO_SROW0 + WPN_SLOTS)*8 <= F12_Y0 + LO_HELP_ROW*F12_H
+        ASSERT LO_HEAD_ROW*8 >= F12_Y0 + (LO_TITLE_ROW+1)*F12_H
+        ASSERT LO_SLOT_COL + 2 + LO_NAME_LEN <= L320_COLS-1
+
+; Slot lo_i's hardpoint on the VTOL (lo_hp): a box round it (its own width
+; and height, centred on the hardpoint), and its number beside it (8x8, over
+; the image), yellow if it is the selected slot, else grey and white.  Keeps
+; IX.
+lo_hpdraw:
+        push ix
+        ld a,(lo_i)                     ; IX -> its entry
+        ld e,a
+        ld d,LO_HP_SIZE
+        mul d,e
+        ld ix,lo_hp
+        add ix,de
+        ld a,(ix+LO_HP_W)               ; left: x - width/2
+        srl a
+        ld e,a
+        ld d,0
+        ld l,(ix+LO_HP_X)
+        ld h,(ix+LO_HP_X+1)
+        or a
+        sbc hl,de
+        ld a,(ix+LO_HP_H)               ; top: y - height/2
+        srl a
+        ld c,a
+        ld a,(ix+LO_HP_Y)
+        sub c
+        ld c,a
+        ld e,(ix+LO_HP_W)               ; DE = width, B = height
+        ld d,0
+        ld b,(ix+LO_HP_H)
+        ld a,(lo_attr)                  ; (yellow: selected)
+        cp SCR_TITLE
+        jr z,.bc
+        ld a,SCR_FRAME2
+.bc:    call l320_box
+        ld l,(ix+LO_HP_LX)              ; the number's place
+        ld h,(ix+LO_HP_LX+1)
+        ld c,(ix+LO_HP_LY)
+        pop ix
+        call l320_pos
+        ld a,(lo_attr)
+        ld (l320_ink),a
+        ld a,L320_NOPAPER               ; (over the image)
+        ld (l320_paper),a
+        ld a,(lo_i)
+        add a,'1'
+        call l320_char
+        ld a,SCR_BG
+        ld (l320_paper),a
+        ret
 
 ; A = weapon type, D = row, E = column: its name, in lo_attr, padded with
 ; spaces to LO_NAME_LEN (so a shorter name covers a longer one)
@@ -326,7 +401,7 @@ lo_name:
         push de
         push bc
         ld hl,lo_blank                  ; clear the field
-        call menu_print
+        call l320_print_at
         pop bc
         pop de
         ld a,(lo_nt)                    ; then the name
@@ -337,7 +412,7 @@ lo_name:
         inc hl
         ld h,(hl)
         ld l,a
-        jp menu_print
+        jp l320_print_at
 
 ; A = 0-255, D = row, E = column: 3 characters, right-aligned, in lo_attr
 lo_num:
@@ -361,7 +436,7 @@ lo_num:
 .pr:    ld a,(lo_attr)
         ld c,a
         ld hl,lo_nbuf
-        jp menu_print
+        jp l320_print_at
 .dig:   ld (hl),'0'                     ; A = A mod B, (HL) = the digit
 .ds:    cp b
         jr c,.dd
@@ -376,19 +451,39 @@ lo_num:
 ;------------------------------------------------------------------------------
 ; row, column, attribute, text, 0 ... $FF
 lo_text:
-        db 1, 12, MENU_TITLE
+        db LO_TITLE_ROW, (F12_COLS-8)/2, SCR_TITLE
         db "LOAD OUT", 0
-        db 3, LO_NAME_COL, MENU_TITLE
+        db LO_HELP_ROW, 2, SCR_HELP
+        db "Q A: CHOOSE  1-5: SLOT", 0
+        db LO_HELP_ROW+1, 2, SCR_HELP
+        db "SPACE: FIT   U: UNLOAD", 0
+        db L320_LIST_FONT, L320_F8
+        db LO_HEAD_ROW, LO_NAME_COL, SCR_HELP
         db "STORE", 0
-        db 3, LO_SLOT_COL, MENU_TITLE
+        db LO_HEAD_ROW, LO_SLOT_COL, SCR_HELP
         db "SLOTS", 0
-        db 19, 1, MENU_ATTR
-        db "Q A: CHOOSE     1-5: SLOT", 0
-        db 20, 1, MENU_ATTR
-        db "SPACE: FIT      U: UNLOAD", 0
         db $FF
 lo_start:   db "0: START LEVEL", 0      ; (lo_draw: red with slot 1 empty)
-LO_START_ROW    equ 21
+lo_img:     db "ZPDATA/VTOL.ZPI", 0     ; the VTOL (tools/vtol_schematic.py)
+
+; Each slot's hardpoint on the VTOL image (slot 1 first), LO_HP_SIZE bytes:
+; its x (word) and y, its number's top-left x (word) and y, and the width
+; and height of the box round it (centred on the hardpoint: x - width/2, y -
+; height/2).  tools/vtol_schematic.py (HARDPOINTS, LABELS, BOXES) has them
+; too: keep them alike (test_l320.py checks).
+    MACRO LO_HP_AT x, y, lx, ly, w, h
+        dw x
+        db y
+        dw lx
+        db ly
+        db w, h
+    ENDM
+lo_hp:  LO_HP_AT 240,  62, 238,  534, LO_HP_BOX, LO_HP_BOX   ; 1: the centre gun
+        LO_HP_AT 220,  89, 187, 105, LO_HP_BOX_W, LO_HP_BOX_H   ; 2: left outer pod
+        LO_HP_AT 260,  89, 287, 105, LO_HP_BOX_W, LO_HP_BOX_H    ; 3: right outer pod
+        LO_HP_AT 226,  89, 232, 120, LO_HP_BOX_W, LO_HP_BOX_H    ; 4: left inner pod
+        LO_HP_AT 254,  89, 26, 120, LO_HP_BOX_W, LO_HP_BOX_H     ; 5: right inner pod
+        ASSERT ($ - lo_hp) == WPN_SLOTS*LO_HP_SIZE
 
 ; Weapon names, by WPN_* (at most LO_NAME_LEN characters)
 lo_names:   dw lo_n_none, lo_n_gun, lo_n_laser, lo_n_chain

@@ -37,13 +37,13 @@ page.
 ## MMU 2: `$4000`–`$5FFF` (NextReg `$52`)
 
 `initialise.asm` maps the occlusion page in. The screens outside the game
-(menus, load-out, level complete, game over) may map the 320x256 graphics
-page over it; `l2_game_mode` puts the occlusion page back before the game.
+(the main menu, redefine keys, load-out and level complete now; later game
+over) map the 320x256 graphics page over it; `l2_game_mode` puts the occlusion page back before the game.
 
 | Page | Contents |
 |------|----------|
 | 6 `PAGE_OCC0` | Occlusion data, used by city.asm. Not assembled: it is filled each frame. |
-| 35 `PAGE_L320` | `layer2-320x256.asm`: Layer 2 320x256 graphics (switching, DMA clear, text, recolouring, lines, boxes) for the screens outside the game. The screen itself is banks 9–13 (pages 18–27: buffer A and part of B). |
+| 35 `PAGE_L320` | `layer2-320x256.asm`: Layer 2 320x256 graphics (switching, DMA clear, text in the 8x8 and large fonts, recolouring, lines, boxes) for the screens outside the game; the fonts' files (`ZPDATA/FONT8.ZPF`, up to 596 bytes, and `FONT12.ZPF`, up to 1,280) are loaded into `f8_buf` and `f12_buf` here at start-up (`fonts_load`; FONT8.ZPF's glyphs then go over `font8` in the main page); `img_buf` (2K): a screen image's columns as `l320_image` reads them. The screen itself is banks 9–13 (pages 18–27: buffer A and part of B). |
 
 The occlusion data is laid out as follows:
 - `OCC_YBUF` `$4000`: the cover row of each screen column.
@@ -109,15 +109,17 @@ for this slot.
 | 0 `PAGE_BOOT`      | entry stub `boot` (in `zpolice.asm`) | — |
 | 3 `PAGE_PLAYER`    | `player.asm`     | `$C2F2` |
 | 4 `PAGE_WEAPONS`   | `weapons.asm`    | `$CCF7` |
-| 8 `PAGE_MENU`      | `menu.asm`       | `$C4BB` |
+| 8 `PAGE_MENU`      | `menu.asm` (game over, game complete, load error) | `$C126` |
 | 30 `PAGE_LEVEL`    | `level_load.asm` | `$C536` |
 | 31 `PAGE_SPECIAL`  | `specials.asm`   | `$C75C` |
-| 32 `PAGE_LOADOUT`  | `loadout.asm`    | `$C2DF` |
-| 33 `PAGE_KEYDEF`   | `keydef.asm`     | `$C5C0` |
-| 36–65 `PAGE_GFX0` on (at most 60 pages, to 95) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
+| 32 `PAGE_LOADOUT`  | `loadout.asm`    | `$C368` |
+| 33 `PAGE_KEYDEF`   | `keydef.asm`     | `$C75C` |
+| 36 `PAGE_MAINMENU` | `mainmenu.asm`   | `$C09B` |
+| 37 `PAGE_LEVELEND` | `levelend.asm`   | `$C436` |
+| 38–67 `PAGE_GFX0` on (at most 58 pages, to 95) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
 
 The figures' graphics pages are mapped here only while the city is drawn
-(the game logic doesn't run then): `spr_lod` maps page 36 (the directory),
+(the game logic doesn't run then): `spr_lod` maps page 38 (the directory),
 then the frame's page (its table of sizes), `spr_draw` the page of the size
 it draws. `main_loop` maps the logic pages
 back before they run.
@@ -130,7 +132,7 @@ back before they run.
 | `ZPDATA/CITYnn.ZPC`: header and palette, the first 544 bytes | 30 | `ll_cbuf`, `$C317` | `load_level` |
 | `ZPDATA/LEVELnn.ZPP`: the level's own palette (only if it has one), 520 bytes | 30 | `ll_cbuf`, `$C317` (once the city's header is used) | `load_level` |
 | `ZPDATA/LEVELnn.ZPV`: the level's 4 vision palettes (normal, night vision green and monochrome, thermal), 2,056 bytes | 30 | `ll_vbuf` (kept there: `vis_cycle` swaps one into the Layer 2 palette in flight, with this page mapped) | `load_level` (`vis_load`) |
-| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–60 pages of 8K (30 now) | 36 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
+| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–58 pages of 8K (30 now) | 38 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
 
 `load_level` then sends the palette to the Layer 2 palette (NextReg `$44`).
 The rest of the city file goes to MMU 3.
@@ -170,7 +172,9 @@ The rest of the city file goes to MMU 3.
 | 32    | 6 $C000 | loadout.asm                                                                        |
 | 33    | 6 $C000 | keydef.asm                                                                         |
 | 0     | 6 $C000 | boot stub                                                                          |
-| 8     | 6 $C000 | menu.asm                                                                           |
+| 8     | 6 $C000 | menu.asm (game over, game complete, load error)                                    |
+| 37    | 6 $C000 | levelend.asm (level complete)                                                      |
+| 36    | 6 $C000 | mainmenu.asm                                                                       |
 | 3     | 6 $C000 | player.asm                                                                         |
 | 4     | 6 $C000 | weapons.asm                                                                        |
 | 1     | 7 $E000 | city.asm                                                                           |
