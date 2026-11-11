@@ -29,7 +29,7 @@ def game_files():
     need = [f"LEVEL{n:02d}.ZPL" for n in range(1, LEVELS + 1)]
     need += [f"LEVEL{n:02d}.ZPV" for n in range(1, LEVELS + 1)]
     need += [f"CITY{n:02d}.ZPC" for n in range(1, CITIES + 1)]
-    need += ["SPRITES.ZPG", "FONT8.ZPF", "FONT12.ZPF", "VTOL.ZPI"]
+    need += ["SPRITES.ZPG", "FONT8.ZPF", "FONT12.ZPF", "VTOL.ZPI", "MAINMENU.ZPI"]
     missing = [f for f in need if not os.path.exists(os.path.join(DATA, f))]
     if missing:
         raise SystemExit(f"ZPDATA: missing {', '.join(missing[:8])}")

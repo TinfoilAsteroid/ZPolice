@@ -303,8 +303,11 @@ would otherwise look like line 0 and end a frame early.
   redefine keys and end screens and the pause). It's drawn on Layer 2 at
   320x256 by the 320x256 page in slot 2 (`layer2-320x256.asm`):
   `screen320` (text.asm) clears it to dark blue with a grey frame and shows
-  it, then `l320_print_list` prints the title (yellow) and the options
-  (white) in the large font (below); NO SAVED GAME is red. The game start
+  it, `l320_image` draws its background picture (`ZPDATA/MAINMENU.ZPI`,
+  read from the SD card as the menu opens; edit it with
+  `tools/screen_editor.py ZPDATA/MAINMENU.ZPI`), then `l320_print_list`
+  prints the title (yellow) and the options (white) over it, with no paper,
+  in the large font (below); NO SAVED GAME is red. The game start
   switches back to 256x192 (`l2_game_mode`).
   Level complete (`levelend.asm`) and the load-out (`loadout.asm`) are at
   320x256 too. Game over, game complete and the load error (`menu.asm`,
@@ -970,10 +973,17 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
   * Rounds and the laser fired from slot 1 leave at the view's pitch plus
     the tilt (`spawn_round` takes sin and cos of it from `get_sin`). The
     wing pylons always fire straight ahead.
-  * The gunsight moves to show it: `sight_y` = the view's centre row −
-    128 × tan(tilt) (`tilt_rows`, the projection's scale), kept 6 rows
-    inside the view. Past about 24° down that's the bottom of the view,
-    so the sight stays there.
+  * The gunsight moves to show it, where the rounds are 50 m ahead
+    (`SIGHT_RANGE`, 640 units): `sight_y` = the view's centre row −
+    128 × tan(tilt) + 128 × 6 / (640 × cos(tilt)) (`sight_rows`, by tilt:
+    the projection's scale, and the muzzle 0.5 m below the camera, which
+    puts it a pixel below the centre when level, two at 45° down), kept 6
+    rows inside the view. Past about 24° down that's the bottom of the
+    view, so the sight stays there.
+  * Every crosshair is placed the same way, at 50 m: the pylons' and the
+    linked guns' rows are the centre row + `GUN_SIGHT_DY` (1); the linked
+    guns' columns `LINK_SIGHT_DX` (5: 128 × 26 / 640) either side of the
+    centre.
 * Limited ammo counts down one per round (`take_ammo`). (Key 0 no longer
   cycles the centre slot's weapon.)
 
@@ -1020,8 +1030,14 @@ once a frame (`aim_probe`, before the guns, for a round that never flies) and
 each round applies it (`aim_apply`). The view doesn't move, but the centre
 crosshair does, to where the rounds go (`sight_ax`, `sight_ay`: up to
 `AIM_DEV`/2 pixels each way), even before you fire. A chain gun's spread goes
-on top. The
-linked chain guns and the pylons aren't assisted. A stationary zombie, shots
+on top. The pylons aren't assisted.
+* **Linked chain guns:** each has its own assist, worked out from its own
+  muzzle, 2 m to its side (`aa_gun` with `round_side`), among the monsters
+  drawn within `AIM_COLS` of its own crosshair's column (`aa_col`). Each
+  keeps its own turn (`lk_aim`, applied by `lk_apply` as it fires) and its
+  crosshair moves to show it (`sight_lx`, `sight_ly`, `sight_rx`,
+  `sight_ry`). So a zombie just off one gun's line pulls that gun's rounds
+  and not the other's. A stationary zombie, shots
 across one heading step (`tests/test_aim.py` has the behaviour):
 
 | Range | 20 m | 40 m | 60 m | 80 m |
@@ -1072,12 +1088,13 @@ the rate of fire, with a random spread.
 * **Rate:** one round every `CHAIN_INTERVAL` (1) frame while SPACE is
   held, against the machine gun's one every 4.
 * **Spread:** each round's heading and climb are each turned by a random
-  −`CHAIN_DEV`…+`CHAIN_DEV` (9) steps of 1/256 rad, about ±2°.
+  −`CHAIN_DEV`…+`CHAIN_DEV` (4) steps of 1/256 rad, about ±0.9° (half
+  the ±2° of 9 steps it was, 2026-11-10: half of 9 isn't a whole step).
   * The heading is rotated by `(sin, cos) += d/256 · (cos, −sin)`, rounded
     (`dmul`). The climb adds `d` to the slope (tan).
-  * Measured over 200 rounds heading along an axis: −2.01°…+2.01° each way,
-    all 19 steps used. At a 45° heading the stored direction is coarser:
-    ±1.9° sideways, in 13 distinct values.
+  * Measured with 9 steps (±2°) over 200 rounds heading along an axis:
+    −2.01°…+2.01° each way, all 19 steps used. At a 45° heading the stored
+    direction is coarser: ±1.9° sideways, in 13 distinct values.
 * Everything else (500 m/s, collisions, drawing) is shared with the
   machine gun.
 
@@ -1103,7 +1120,7 @@ only slot 4 (`WPN_LINK_L`, just left of slot 1 on the HUD), R only slot 5
 (`WPN_LINK_R`, just right of it). The load-out screen calls them LINKED
 CG L and LINKED CG R.
 * **Stats:** as the chain gun (a round every frame, `CHAIN_DMG`, the same
-  ±2° spread), but each has its own `LINK_SHOTS` (200) rounds, taken from
+  ±0.9° spread), but each has its own `LINK_SHOTS` (200) rounds, taken from
   its own slot (`take_slot_ammo`). One run dry, the other fires on alone.
   They reload on the pad 1 round a frame (`LINK_RELOAD`), and every level
   end fills them.
@@ -1114,8 +1131,9 @@ CG L and LINKED CG R.
   linked gun fitted, both together when both are. With one fitted, only
   that one fires.
 * **Gunsight:** while one is selected, the centre crosshair is replaced by
-  a crosshair for each linked gun fitted, `LINK_SIGHT_DX` (8) pixels to
-  its side of the view's centre. `gun_aim` sets `sight_mask`
+  a crosshair for each linked gun fitted, where its rounds are 50 m ahead:
+  `LINK_SIGHT_DX` (5) pixels to its side of the view's centre and
+  `GUN_SIGHT_DY` (1) below, then moved by its own aim assist (above). `gun_aim` sets `sight_mask`
   (`SM_CENTRE`, `SM_LINK_L`, `SM_LINK_R`) and `draw_gunsight` (city2.asm)
   draws one crosshair (`gs_cross`) per bit.
 * Both share the 24 rounds in flight (`NBULLETS`) with every other gun, so
@@ -1710,6 +1728,7 @@ NextReg select alone, so this still works):
 | `ZPDATA/FONT12.ZPF` | the 320x256 screens' large font (12x10 cells, gradients), loaded at start-up (`fonts_load`). Edit with `tools/font_editor.py` |
 | `tools/fontfile.py` | the font files' format, checks, the starting designs and their gradients (shared by the editor, `gentables.py` and the tests); `--default` writes the starting designs |
 | `tools/font_editor.py` | the font editor (tkinter), both fonts |
+| `ZPDATA/MAINMENU.ZPI` | the main menu's background picture, read when the menu opens (`l320_image`). Edit with `tools/screen_editor.py` |
 | `ZPDATA/VTOL.ZPI` | the load-out screen's VTOL schematic, read when the screen opens (`l320_image`). Edit with `tools/screen_editor.py` |
 | `tools/imagefile.py` | the screen image files' format, checks and drawing operations (shared by the editor, the generators and the tests) |
 | `tools/screen_editor.py` | the screen image editor (tkinter): 320x256 images |
@@ -1958,7 +1977,9 @@ case.
 ## Screen images and the screen editor
 
 Pictures on the 320x256 screens are image files on the SD card, read when
-the screen opens: the load-out's VTOL (`ZPDATA/VTOL.ZPI`) so far.
+the screen opens: the load-out's VTOL (`ZPDATA/VTOL.ZPI`) and the main
+menu's background (`ZPDATA/MAINMENU.ZPI`: for now a copy of VTOL.ZPI, to be
+drawn by hand).
 
 * **The files** (`tools/imagefile.py` has the format): "ZPIM", a version,
   the box the image covers on the screen (x, y, width, height), then its
@@ -1986,9 +2007,22 @@ the screen opens: the load-out's VTOL (`ZPDATA/VTOL.ZPI`) so far.
   grey and white); `HARDPOINTS`, `LABELS` and `BOXES` in
   vtol_schematic.py must match `lo_hp` (test_l320.py checks).
   Without the file the boxes and numbers still show.
+* **Text over a picture:** the load-out draws VTOL.ZPI first (it covers
+  the whole screen now: the background), then prints all its text over it
+  with no paper (`L320_NOPAPER`). Once the picture is drawn the screen is
+  copied to pages 86–95 (`l320_bg_save`, `PAGE_L320_BG`: 80K, through
+  slot 4, the ULA screen's, put back after). A field whose text changes (a
+  store count, a slot's weapon) gets its box of the background back first
+  (`lo_clear` → `l320_restore`), so a shorter name leaves nothing of the
+  longer one. Text that only changes colour (the highlight) is printed
+  again over itself.
 * **The editor:** `python tools/screen_editor.py [file]` (tkinter;
   VTOL.ZPI by default): the whole 320x256 screen, enlarged (View: 1x–4x, 8x, 16x).
-  Tools: pencil, line, box, filled box, ellipse, filled ellipse, fill; a
+  Tools: pencil, line, box, filled box, ellipse, filled ellipse, fill,
+  select (then Ctrl+C copies the rectangle, Ctrl+V picks the copy up to
+  follow the mouse, each left click puts one down, right click or Esc
+  stops; clear pixels in it leave what's under them unless Edit > Paste
+  clear pixels too is ticked); a
   colour for each mouse button from the screens' 256 colours (the marked
   swatch is clear, to rub out); Ctrl+click picks up a colour; Ctrl+Z undo,
   Ctrl+S save. View: the 8x8 and large font grids, the screens' frame, and
@@ -2083,12 +2117,12 @@ suit their distance.
   and packs them into `ZPDATA/SPRITES.ZPG`.
   * A figure without a file is made from the original stick figures, in
     colour, at 4 levels (16, 12, 8 and 4 rows high).
-  * Up to 58 pages of 8K (`GFX_PAGES_MAX`, pages 38 to 95: all a 1 MB Next has):
+  * Up to 48 pages of 8K (`GFX_PAGES_MAX`, pages 38 to 85; 86-95 are the 320x256 screens' background copy, `PAGE_L320_BG`):
     the directory (per purpose its frames; per frame the page and address of
     its table), then per frame a table with each height's width, page and
     address, and the pixels, a row at a time: its first drawn pixel's column,
     a count, and each pixel's palette entry (0: transparent).
-  * The figures take 30 pages (240K) of the 58. Each walking figure (3
+  * The figures take 30 pages (240K) of the 48. Each walking figure (3
     purposes, 4 frames) is about 6 pages. The file grows with the cube of
     `GFX_MAX_H`. A size scaled up from the art looks blocky until it's
     drawn larger.
@@ -3059,7 +3093,7 @@ by playing doesn't change the results.
 | `test_save.py` | CONTINUE without a save game stays on the menu; S on the pause screen saves, and CONTINUE brings back the level, weapons, stock, hit points, salvage and booster |
 | `test_levels.py` | every `ZPDATA/LEVELnn.ZPL` starts and flies a few frames (the levels at the same time, a process each) |
 | `test_flight.py` | flying into a building stops the VTOL, costs hit points, shakes the screen and requests the crunch |
-| `test_aim.py` | a centre slot shot just off a zombie, either side, turns to it (at most `AIM_DEV`) and hits, and the centre crosshair moves to show where before it's fired; machine gun, chain gun (with its spread) and laser; not one outside the cone, far above the path or not drawn, nor a linked gun's; the zombie is drawn at its projected height, up to the largest, in proportion |
+| `test_aim.py` | a centre slot shot just off a zombie, either side, turns to it (at most `AIM_DEV`) and hits, and the centre crosshair moves to show where before it's fired; machine gun, chain gun (with its spread) and laser; not one outside the cone, far above the path or not drawn; each linked gun's own assist turns its rounds and crosshair, not the other's; the crosshairs (and `sight_rows`, by tilt) where the rounds are 50 m ahead; the zombie is drawn at its projected height, up to the largest, in proportion |
 | `test_project.py` | building corners projected by `vproj` and `vproj_y` land on the same screen x and y as `vtx_proj` and the level shortcut `proj_y`: 4,064 corners, every shift of Z, the frustum's edges; `occ_pretest`'s `oz_sc` / `oz_sx` give `scale_comp`'s and `occ_sx`'s results for 1,581 Z and components |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 50 hit points and 60 frames a shot in city 1, 75 and 50 in city 2, 275 and 10 in city 10; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |

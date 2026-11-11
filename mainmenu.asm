@@ -4,7 +4,9 @@
 ; Shown after start-up, after game over, a load error, and quitting from the
 ; pause (menu_go, zpolice.asm, pages it in).  Drawn on Layer 2 at 320x256
 ; (screen320, text.asm; layer2-320x256.asm in slot 2) in the large font
-; (26 x 25 characters).  Every frame it
+; (26 x 25 characters), over a picture: ZPDATA/MAINMENU.ZPI, read from the
+; SD card as the menu opens (l320_image; tools/screen_editor.py edits it),
+; drawn first as the background, the text printed over it with no paper.  Every frame it
 ; advances the random number generator (zrand), so the game doesn't start
 ; from the same seed each time (the wait for a key press varies), then reads
 ; the keys:
@@ -21,6 +23,10 @@ MM_NOSAVE_ROW   equ 18
 
 main_menu:
         call screen320                  ; (text.asm) the input page in slot 7
+        ld hl,mm_img                    ; the background picture (none
+        call l320_image                 ; without the file: the plain screen)
+        ld a,L320_NOPAPER               ; the text over it
+        ld (l320_paper),a
         ld hl,mm_text                   ; title and options
         call l320_print_list
 .loop:  call menu_frame                 ; one video frame
@@ -57,3 +63,4 @@ mm_text:
         db $FF
 txt_no_save:
         db "NO SAVED GAME", 0
+mm_img:     db "ZPDATA/MAINMENU.ZPI", 0 ; (tools/screen_editor.py)

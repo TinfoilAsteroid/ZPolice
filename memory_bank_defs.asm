@@ -181,6 +181,9 @@ PAGE_L320               equ 35          ; layer2-320x256.asm: Layer 2 320x256
                                         ; graphics for the menu screens (slot 2)
 PAGE_MAINMENU           equ 36          ; mainmenu.asm: the main menu (slot 6)
 PAGE_LEVELEND           equ 37          ; levelend.asm: level complete (slot 6)
+PAGE_L320_BG            equ 86          ; 86-95: a copy of a 320x256 screen's
+                                        ; background (l320_bg_save), to put back
+                                        ; under text that changes (l320_restore)
 PAGE_GFX0               equ 38          ; the figures' graphics (from page 38,
                                         ; GFX_PAGES_MAX at most), loaded from
                                         ; ZPDATA/SPRITES.ZPG at start-up; each

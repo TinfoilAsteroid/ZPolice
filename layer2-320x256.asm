@@ -819,6 +819,81 @@ l320_image:
 img_magic:  db "ZPIM", 1
 
 ;------------------------------------------------------------------------------
+; The background: a copy of the screen, to put back under text that changes
+;------------------------------------------------------------------------------
+; A screen with a picture behind its text (the load-out) saves the screen
+; once it is drawn (l320_bg_save: pages PAGE_L320_BG on, 80K) and prints its
+; text with no paper (L320_NOPAPER); before a field's text changes it puts
+; that box of the background back (l320_restore), then prints the new text.
+; Both go through slot 4 ($8000, the ULA screen's, unused on these screens:
+; put back after).
+        ASSERT PAGE_GFX0 + GFX_PAGES_MAX <= PAGE_L320_BG
+        ASSERT PAGE_L320_BG + L320_PAGES <= 96
+
+; The screen as it is now, into the background copy
+l320_bg_save:
+        ld b,0
+.pg:    ld a,b
+        add a,L320_PAGE0
+        nextreg L2SEC_MMU,a
+        ld a,b
+        add a,PAGE_L320_BG
+        nextreg ULA_MMU,a
+        push bc
+        ld hl,L2SEC_ADDR
+        ld de,ULA_ADDR
+        ld bc,MEMBANK_SIZE
+        ldir
+        pop bc
+        inc b
+        ld a,b
+        cp L320_PAGES
+        jr nz,.pg
+        nextreg ULA_MMU,PAGE_ULA0
+        jp l320_nopg
+
+; HL = x, C = y, DE = width, B = height (0 = 256; y + height <= 256): that
+; box of the background copy back on the screen
+l320_restore:
+        ld a,c
+        ld (l320_fy),a
+        ld a,b
+        ld (l320_fh),a
+        call l320_nopg
+.col:   ld a,d
+        or e
+        jr z,.done
+        call l320_xok
+        jr nc,.done
+        push de
+        push hl
+        ld a,(l320_fy)
+        ld e,a
+        call l320_addr                  ; HL -> the screen's pixel (slot 0)
+        ld a,(l320_pg)                  ; its copy: the same place in slot 4
+        sub L320_PAGE0
+        add a,PAGE_L320_BG
+        nextreg ULA_MMU,a
+        ex de,hl
+        ld hl,ULA_ADDR
+        add hl,de
+        ld a,(l320_fh)
+        ld c,a
+        ld b,0
+        or a
+        jr nz,.n
+        inc b                           ; (256)
+.n:     ldir
+        pop hl
+        pop de
+        inc hl
+        dec de
+        jr .col
+.done:  nextreg ULA_MMU,PAGE_ULA0
+        ret
+        ASSERT ULA_ADDR == $8000 && L2SEC_ADDR == 0
+
+;------------------------------------------------------------------------------
 ; Changing colours already drawn
 ;------------------------------------------------------------------------------
 

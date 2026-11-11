@@ -620,9 +620,18 @@ def test_vtol_image():
             zp.check(bx == vs.BOXES[slot], f"slot {slot}: box {bx}, vtol_schematic {vs.BOXES[slot]}")
 
 
+def bg_copy(cpu):
+    """The background copy (PAGE_L320_BG on) as rows of colours, [y][x]"""
+    p0 = sym["PAGE_L320_BG"]
+    pages = [bytes(cpu.page(p0 + i)) for i in range(10)]
+    return [[pages[x >> 5][(x & 31) * 256 + y] for x in range(W)] for y in range(H)]
+
+
 def test_loadout_vtol():
-    """The load-out shows VTOL.ZPI where it goes, and a box at each slot's
-    hardpoint: the selected slot's yellow"""
+    """The load-out draws VTOL.ZPI first, as the background, and keeps a copy
+    of it; its text is printed over the picture (no paper); a box at each
+    slot's hardpoint, the selected slot's yellow; a field that changes gets
+    the background back under it"""
     with zp.SD() as sd:
         cpu = zp.machine(sd)
         cpu.keys = {"1"}
@@ -631,29 +640,83 @@ def test_loadout_vtol():
             cpu.keys = keys
             cpu.stepi()
             zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
-        scr = screen(cpu)
+        bg = bg_copy(cpu)
+        m = blank(sym["SCR_BG"])            # the plain screen (l320_screen), the
+        for k, col in ((0, sym["SCR_FRAME"]), (2, sym["SCR_FRAME2"])):     # picture over it
+            for x in range(k, W - k):
+                m[k][x] = m[H - 1 - k][x] = col
+            for y in range(k, H - k):
+                m[y][k] = m[y][W - 1 - k] = col
         im = imf.Image.load(vs.PATH)
-        x, y, w, h = im.box()
-        boxes = set()                       # each box's outline (centred: x - w/2)
-        for slot, (hx, hy) in vs.HARDPOINTS.items():
-            w, h = vs.BOXES[slot]
-            x0, y0 = hx - w // 2, hy - h // 2
-            for k in range(w):
-                boxes |= {(x0 + k, y0), (x0 + k, y0 + h - 1)}
-            for k in range(h):
-                boxes |= {(x0, y0 + k), (x0 + w - 1, y0 + k)}
-        labels = {(lx + i, ly + j) for lx, ly in vs.LABELS.values() for i in range(8) for j in range(8)}
-        same = sum(1 for cy in range(y, y + h) for cx in range(x, x + w)
-                   if im.get(cx, cy) != imf.CLEAR and (cx, cy) not in boxes | labels
-                   and scr[cy][cx] == im.get(cx, cy))
-        drawn = sum(1 for cy in range(y, y + h) for cx in range(x, x + w)
-                    if im.get(cx, cy) != imf.CLEAR and (cx, cy) not in boxes | labels)
-        zp.check(same == drawn, f"the VTOL: {drawn - same} of {drawn} pixels not the image's")
+        for y in range(H):
+            for x in range(W):
+                if im.get(x, y) != imf.CLEAR:
+                    m[y][x] = im.get(x, y)
+        diff(bg, m, "the background copy")
+        scr = screen(cpu)
         for slot, (hx, hy) in vs.HARDPOINTS.items():
             w, h = vs.BOXES[slot]
             want = sym["SCR_TITLE"] if slot == 3 else sym["SCR_FRAME2"]
-            for x, y in ((hx, hy - h // 2), (hx, hy - h // 2 + h - 1), (hx - w // 2, hy), (hx - w // 2 + w - 1, hy)):
+            x0, y0 = hx - w // 2, hy - h // 2
+            for x, y in ((x0, y0), (x0 + w - 1, y0), (x0, y0 + h - 1), (x0 + w - 1, y0 + h - 1)):
                 zp.check(scr[y][x] == want, f"slot {slot}'s box at ({x}, {y}): {scr[y][x]:02X}, not {want:02X}")
+        title = set(dict((b_, cols) for b_, cols in FONT.grads)[sym["SCR_TITLE"]])
+        y0 = sym["F12_Y0"] + sym["LO_TITLE_ROW"] * sym["F12_H"]
+        cells = [(x, y) for y in range(y0, y0 + 10) for x in range(W)]
+        ink = [(x, y) for x, y in cells if scr[y][x] != bg[y][x]]
+        zp.check(ink and all(scr[y][x] in title for x, y in ink),
+                 "the title isn't printed over the picture (some paper, or none of it)")
+        cpu.keys = {"1"}                    # slot 1, then U: MACHINE GUN -> EMPTY
+        cpu.stepi()
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        cpu.keys = {"U"}
+        cpu.stepi()
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LOADOUT"]), "the load-out")
+        cpu.keys = set()
+        zp.check(cpu.rd(sym["wpn_slots"]) == 0, "slot 1 not unloaded")
+        scr = screen(cpu)
+        x0 = (sym["LO_SLOT_COL"] + 2 + 5) * 8   # past "EMPTY": the old name's end
+        y0 = sym["LO_SROW0"] * 8
+        left = [(x, y) for y in range(y0, y0 + 8) for x in range(x0, x0 + 6 * 8) if scr[y][x] != bg[y][x]]
+        zp.check(not left, f"the old name not cleared: {len(left)} pixels, first {left[:4]}")
+
+
+def plain_screen():
+    """l320_screen's: SCR_BG, the frame"""
+    m = blank(sym["SCR_BG"])
+    for k, col in ((0, sym["SCR_FRAME"]), (2, sym["SCR_FRAME2"])):
+        for x in range(k, W - k):
+            m[k][x] = m[H - 1 - k][x] = col
+        for y in range(k, H - k):
+            m[y][k] = m[y][W - 1 - k] = col
+    return m
+
+
+def test_mainmenu_image():
+    """The main menu draws ZPDATA/MAINMENU.ZPI first, then its text over it
+    (no paper): every pixel is the picture's (over the plain screen), but for
+    the text's own, in the text's rows"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+        m = plain_screen()
+        im = imf.Image.load(os.path.join(imf.DATA, "MAINMENU.ZPI"))
+        for y in range(H):
+            for x in range(W):
+                if im.get(x, y) != imf.CLEAR:
+                    m[y][x] = im.get(x, y)
+        scr = screen(cpu)
+        grads = dict((b, cols) for b, cols in FONT.grads)
+        text = set(grads[sym["SCR_TITLE"]]) | set(grads[sym["SCR_TEXT"]])
+        rows = set()
+        for r in (3, 9, 11, 13):            # mm_text's rows (large font)
+            y0 = sym["F12_Y0"] + r * sym["F12_H"]
+            rows |= set(range(y0, y0 + sym["F12_H"]))
+        bad = [(x, y) for y in range(H) for x in range(W)
+               if scr[y][x] != m[y][x] and not (y in rows and scr[y][x] in text)]
+        zp.check(not bad, f"{len(bad)} pixels neither the picture's nor the text's, first {bad[:4]}")
+        drawn = sum(1 for y in rows for x in range(W) if scr[y][x] != m[y][x])
+        zp.check(drawn > 200, f"the text not drawn over the picture ({drawn} pixels)")
 
 
 if __name__ == "__main__":

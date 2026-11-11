@@ -14,9 +14,17 @@ drawn, at its place on the screen.
     Ctrl+Z          undo                       Ctrl+S         save
 
 Tools: Pencil, Line, Box, Filled box, Ellipse, Filled ellipse, Fill (the
-area of the clicked colour, joined side to side).  Lines and shapes are
-dragged from corner to corner.  The palette is every colour the screens
-have (RRRGGGBB); the top-right swatch (marked) is CLEAR, to rub out.
+area of the clicked colour, joined side to side), Select.  Lines, shapes and
+selections are dragged from corner to corner.  The palette is every colour
+the screens have (RRRGGGBB); the top-right swatch (marked) is CLEAR, to rub
+out.
+
+Copy and paste (Edit menu): drag a rectangle with Select, Ctrl+C copies it;
+Ctrl+V picks it up, to follow the mouse (its top-left corner at the
+pointer), and each left click puts a copy down there; right click or Esc
+puts it away (so does choosing a tool).  CLEAR pixels in the copy leave
+what is under them, unless Edit > Paste clear pixels too is ticked.  Each
+paste can be undone.
 
 View: grids of the screens' text cells (8x8, the large font's 12x10 from
 (4, 3)) and the frame, and an underlay: a PNG of a screen (a screenshot of
@@ -33,7 +41,7 @@ import imagefile as imf  # noqa: E402
 
 SW, SH, CLEAR = imf.SW, imf.SH, imf.CLEAR
 BG = 0x02                               # the screens' background (SCR_BG)
-TOOLS = ("Pencil", "Line", "Box", "Filled box", "Ellipse", "Filled ellipse", "Fill")
+TOOLS = ("Pencil", "Line", "Box", "Filled box", "Ellipse", "Filled ellipse", "Fill", "Select")
 SW_Z = 14                               # a palette swatch
 ZOOMS = (1, 2, 3, 4, 8, 16)             # the view's enlargements
 
@@ -57,6 +65,10 @@ class Editor:
         self.undo = []
         self.dirty = False
         self.drag = None
+        self.sel = None                 # the selection: (x0, y0, x1, y1), inclusive
+        self.clip = None                # the copy: (width, height, pixels row by row)
+        self.pasting = None             # pasting: where the copy is ((x, y)), or None
+        self.paste_clear = tk.BooleanVar(value=False)
         self.build()
         self.redraw()
 
@@ -72,8 +84,16 @@ class Editor:
         fm.add_separator()
         fm.add_command(label="Quit", command=self.quit)
         menu.add_cascade(label="File", menu=fm)
+        cm = tk.Menu(menu, tearoff=0)
+        cm.add_command(label="Undo", accelerator="Ctrl+Z", command=self.do_undo)
+        cm.add_separator()
+        cm.add_command(label="Copy the selection", accelerator="Ctrl+C", command=self.copy)
+        cm.add_command(label="Paste", accelerator="Ctrl+V", command=self.paste)
+        cm.add_checkbutton(label="Paste clear pixels too", variable=self.paste_clear,
+                           command=self.paste_changed)
+        cm.add_command(label="Select none", accelerator="Esc", command=self.escape)
+        menu.add_cascade(label="Edit", menu=cm)
         em = tk.Menu(menu, tearoff=0)
-        em.add_command(label="Undo", accelerator="Ctrl+Z", command=self.do_undo)
         em.add_command(label="Clear all", command=self.clear_all)
         for t, d in (("Move left", (-1, 0)), ("Move right", (1, 0)), ("Move up", (0, -1)), ("Move down", (0, 1))):
             em.add_command(label=t, command=lambda d=d: self.move(*d))
@@ -95,7 +115,7 @@ class Editor:
         side.pack(side="left", fill="y", padx=6, pady=6)
         for t in TOOLS:
             tk.Radiobutton(side, text=t, variable=self.tool, value=t, indicatoron=False,
-                           width=14).pack(anchor="w")
+                           width=14, command=self.end_paste).pack(anchor="w")
         tk.Label(side, text="Left / right colour").pack(anchor="w", pady=(8, 0))
         self.lr = tk.Canvas(side, width=16 * SW_Z, height=26, highlightthickness=0)
         self.lr.pack(anchor="w")
@@ -132,6 +152,9 @@ class Editor:
         self.cv.bind("<Motion>", self.hover)
         r.bind("<Control-s>", lambda e: self.save())
         r.bind("<Control-z>", lambda e: self.do_undo())
+        r.bind("<Control-c>", lambda e: self.copy())
+        r.bind("<Control-v>", lambda e: self.paste())
+        r.bind("<Escape>", lambda e: self.escape())
         r.protocol("WM_DELETE_WINDOW", self.quit)
         r.geometry("1300x860")
 
@@ -172,8 +195,45 @@ class Editor:
             x, y, w, h = b
             self.cv.create_rectangle(x * z, y * z, (x + w) * z, (y + h) * z, outline="#ff60ff", dash=(3, 3))
         self.cv.config(scrollregion=(0, 0, SW * z, SH * z))
+        self.draw_sel()
+        self.draw_paste()
         self.draw_lr()
         self.root.title(f"Z-Police screen editor: {os.path.basename(self.path)}" + (" *" if self.dirty else ""))
+
+    def draw_sel(self):
+        self.cv.delete("sel")
+        if self.sel:
+            z = self.z
+            x0, y0, x1, y1 = self.sel
+            for col, dash in (("black", ()), ("white", (4, 4))):
+                self.cv.create_rectangle(x0 * z, y0 * z, (x1 + 1) * z, (y1 + 1) * z,
+                                         outline=col, dash=dash, tags="sel")
+
+    def paste_photo(self):
+        """The copy as an image at the view's size: CLEAR pixels see-through
+        (or the background, if they are pasted too)"""
+        w, h, px = self.clip
+        base = tk.PhotoImage(width=w, height=h)
+        opaque = self.paste_clear.get()
+        base.put(" ".join("{" + " ".join(imf.hexc(BG if px[y * w + x] == CLEAR else px[y * w + x])
+                                         for x in range(w)) + "}" for y in range(h)))
+        if not opaque:
+            for k, v in enumerate(px):
+                if v == CLEAR:
+                    base.transparency_set(k % w, k // w, True)
+        self.paste_img = base.zoom(self.z) if self.z > 1 else base
+
+    def draw_paste(self):
+        self.cv.delete("paste")
+        if self.pasting is None:
+            return
+        self.paste_photo()
+        z = self.z
+        x, y = self.pasting
+        w, h, _ = self.clip
+        self.cv.create_image(x * z, y * z, anchor="nw", image=self.paste_img, tags="paste")
+        self.cv.create_rectangle(x * z, y * z, (x + w) * z, (y + h) * z, outline="#ffff00",
+                                 dash=(2, 2), tags="paste")
 
     def put_px(self, x, y):
         z = self.z
@@ -196,6 +256,11 @@ class Editor:
 
     def hover(self, e):
         x, y = self.at(e)
+        if self.pasting is not None and (x, y) != self.pasting:
+            z = self.z
+            dx, dy = (x - self.pasting[0]) * z, (y - self.pasting[1]) * z
+            self.cv.move("paste", dx, dy)
+            self.pasting = (x, y)
         if 0 <= x < SW and 0 <= y < SH:
             c = self.im.get(x, y)
             b = self.im.box()
@@ -217,12 +282,21 @@ class Editor:
         x, y = self.at(e)
         if not (0 <= x < SW and 0 <= y < SH):
             return
+        if self.pasting is not None:    # pasting: left puts it down, right stops
+            if i == 0:
+                self.stamp(x, y)
+            else:
+                self.end_paste()
+            return
         if e.state & 0x4:               # Ctrl: pick up the colour
             self.cols[0] = self.im.get(x, y)
             self.draw_lr()
             return
-        self.snapshot()
         t = self.tool.get()
+        if t == "Select":
+            self.drag = (x, y)
+            return
+        self.snapshot()
         if t == "Fill":
             self.im.fill(x, y, self.cols[i])
             self.changed(full=True)
@@ -253,7 +327,11 @@ class Editor:
             self.cv.delete("rubber")
             z = self.z
             x0, y0 = self.drag
-            if t == "Line":
+            if t == "Select":
+                self.cv.create_rectangle(min(x0, x) * z, min(y0, y) * z, (max(x0, x) + 1) * z,
+                                         (max(y0, y) + 1) * z, outline="white", dash=(4, 4),
+                                         tags="rubber")
+            elif t == "Line":
                 self.cv.create_line(x0 * z + z // 2, y0 * z + z // 2, x * z + z // 2, y * z + z // 2,
                                     fill="white", tags="rubber")
             elif "box" in t.lower():
@@ -271,6 +349,11 @@ class Editor:
         x0, y0 = self.drag
         self.drag = None
         t, c = self.tool.get(), self.cols[i]
+        if t == "Select":
+            self.cv.delete("rubber")
+            self.sel = (min(x0, x), min(y0, y), max(x0, x), max(y0, y))
+            self.draw_sel()
+            return
         if t == "Pencil":
             self.changed(full=True)
             return
@@ -290,6 +373,54 @@ class Editor:
         self.dirty = True
         if full:
             self.redraw()
+
+    # --- copy and paste -----------------------------------------------------
+    def copy(self):
+        """The selection's pixels (CLEAR ones too) to the copy"""
+        if not self.sel:
+            self.root.bell()
+            return
+        x0, y0, x1, y1 = self.sel
+        w, h = x1 - x0 + 1, y1 - y0 + 1
+        self.clip = (w, h, bytes(self.im.get(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)))
+        self.status.config(text=f"copied {w} x {h} from ({x0}, {y0})")
+
+    def paste(self):
+        """Pick the copy up: it follows the mouse until put away"""
+        if self.clip is None:
+            self.root.bell()
+            return
+        self.pasting = self.sel[:2] if self.sel else (0, 0)
+        self.draw_paste()
+
+    def paste_changed(self):
+        if self.pasting is not None:
+            self.draw_paste()
+
+    def stamp(self, x, y):
+        """The copy put down with its top-left at (x, y)"""
+        w, h, px = self.clip
+        self.snapshot()
+        opaque = self.paste_clear.get()
+        for j in range(h):
+            for i in range(w):
+                v = px[j * w + i]
+                if v != CLEAR or opaque:
+                    self.im.set(x + i, y + j, v)
+        self.pasting = (x, y)
+        self.changed(full=True)
+
+    def end_paste(self):
+        if self.pasting is not None:
+            self.pasting = None
+            self.cv.delete("paste")
+
+    def escape(self):
+        if self.pasting is not None:
+            self.end_paste()
+        else:
+            self.sel = None
+            self.draw_sel()
 
     # --- commands -----------------------------------------------------------
     def do_undo(self):
@@ -352,6 +483,7 @@ class Editor:
             self.undo.clear()
             self.dirty = False
             self.path = os.path.join(imf.DATA, "NEW.ZPI")
+            self.sel = self.pasting = None
             self.redraw()
 
     def open(self):
@@ -368,6 +500,7 @@ class Editor:
         self.path = p
         self.undo.clear()
         self.dirty = False
+        self.sel = self.pasting = None
         self.redraw()
 
     def save(self):

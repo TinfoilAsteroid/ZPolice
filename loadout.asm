@@ -5,10 +5,12 @@
 ; (loadout_go pages it in).  On the
 ; left, the store: every weapon type unlocked (wpn_unlocked) with the number
 ; in store (wpn_stock), even 0 when the only one is fitted.  On the right,
-; the VTOL's 5 weapon slots: a schematic of its underside (ZPDATA/VTOL.ZPI,
-; read from the SD card as the screen opens: l320_image) with a box and the
-; number at each slot's hardpoint (lo_hp), and below it the list of what is
-; fitted in each.
+; the VTOL's 5 weapon slots: a picture of the VTOL (ZPDATA/VTOL.ZPI, read
+; from the SD card as the screen opens: l320_image) drawn first, as the
+; background, with a box and the number at each slot's hardpoint (lo_hp),
+; and the list of what is fitted in each.  The text is printed over the
+; picture (no paper); a field that changes gets its piece of the background
+; back first (l320_bg_save, l320_restore).
 ;   1-5    select a slot (yellow)
 ;   Q / A  move the highlight up / down the store list.  The highlighted
 ;          weapon is green if it can be fitted in the selected slot (the
@@ -52,10 +54,13 @@ LO_SLOT_STEP    equ 1               ; rows between the slots
 loadout_screen:
         ld sp,stack_top
         call screen320                  ; (text.asm) the input page in slot 7
+        ld hl,lo_img                    ; the VTOL, the background (none
+        call l320_image                 ; without the file: the plain screen)
+        call l320_bg_save               ; (kept, to put back under changes)
+        ld a,L320_NOPAPER               ; all the text over it
+        ld (l320_paper),a
         ld hl,lo_text                   ; titles and help
         call l320_print_list
-        ld hl,lo_img                    ; the VTOL (none without the file:
-        call l320_image                 ; the boxes and numbers still show)
         ld hl,lo_list               ; the store list: types unlocked, in
         ld c,0                          ; type order
         ld b,1                          ; (from the first weapon type)
@@ -383,27 +388,45 @@ lo_hpdraw:
         call l320_pos
         ld a,(lo_attr)
         ld (l320_ink),a
-        ld a,L320_NOPAPER               ; (over the image)
-        ld (l320_paper),a
         ld a,(lo_i)
         add a,'1'
-        call l320_char
-        ld a,SCR_BG
-        ld (l320_paper),a
+        jp l320_char
+
+; D = row, E = column, B = characters (8x8): the background back under
+; that field (l320_restore: a shorter name, a smaller number leaves none of
+; the old one).  Keeps DE.
+lo_clear:
+        push de
+        ld l,b                          ; width: characters * 8
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        push hl
+        ld l,e                          ; x: column * 8
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld a,d                          ; y: row * 8
+        add a,a
+        add a,a
+        add a,a
+        ld c,a
+        pop de
+        ld b,8
+        call l320_restore
+        pop de
         ret
 
-; A = weapon type, D = row, E = column: its name, in lo_attr, padded with
-; spaces to LO_NAME_LEN (so a shorter name covers a longer one)
+; A = weapon type, D = row, E = column: its name, in lo_attr, over the
+; background (the field's put back first)
 lo_name:
         ld (lo_nt),a
+        ld b,LO_NAME_LEN
+        call lo_clear
         ld a,(lo_attr)
         ld c,a
-        push de
-        push bc
-        ld hl,lo_blank                  ; clear the field
-        call l320_print_at
-        pop bc
-        pop de
         ld a,(lo_nt)                    ; then the name
         add a,a
         ld hl,lo_names
@@ -414,8 +437,13 @@ lo_name:
         ld l,a
         jp l320_print_at
 
-; A = 0-255, D = row, E = column: 3 characters, right-aligned, in lo_attr
+; A = 0-255, D = row, E = column: 3 characters, right-aligned, in lo_attr,
+; over the background (the field's put back first)
 lo_num:
+        push af
+        ld b,3
+        call lo_clear
+        pop af
         ld hl,lo_nbuf
         ld b,100
         call .dig
@@ -478,11 +506,11 @@ lo_img:     db "ZPDATA/VTOL.ZPI", 0     ; the VTOL (tools/vtol_schematic.py)
         db ly
         db w, h
     ENDM
-lo_hp:  LO_HP_AT 240,  62, 238,  534, LO_HP_BOX, LO_HP_BOX   ; 1: the centre gun
-        LO_HP_AT 220,  89, 187, 105, LO_HP_BOX_W, LO_HP_BOX_H   ; 2: left outer pod
-        LO_HP_AT 260,  89, 287, 105, LO_HP_BOX_W, LO_HP_BOX_H    ; 3: right outer pod
-        LO_HP_AT 226,  89, 232, 120, LO_HP_BOX_W, LO_HP_BOX_H    ; 4: left inner pod
-        LO_HP_AT 254,  89, 26, 120, LO_HP_BOX_W, LO_HP_BOX_H     ; 5: right inner pod
+lo_hp:  LO_HP_AT 240,  62, 238,  34, LO_HP_BOX, LO_HP_BOX   ; 1: the centre gun
+        LO_HP_AT 220,  89, 212, 108, LO_HP_BOX_W, LO_HP_BOX_H   ; 2: left outer pod
+        LO_HP_AT 260,  89, 261, 108, LO_HP_BOX_W, LO_HP_BOX_H    ; 3: right outer pod
+        LO_HP_AT 226,  89, 222,  64, LO_HP_BOX_W, LO_HP_BOX_H    ; 4: left inner pod
+        LO_HP_AT 254,  89, 252,  64, LO_HP_BOX_W, LO_HP_BOX_H     ; 5: right inner pod
         ASSERT ($ - lo_hp) == WPN_SLOTS*LO_HP_SIZE
 
 ; Weapon names, by WPN_* (at most LO_NAME_LEN characters)
@@ -501,8 +529,6 @@ lo_n_autocannon: db "AUTOCANNON", 0
 lo_n_prox:      db "PROXIMITY", 0
 lo_n_lchain_l:  db "LINKED CG L", 0         ; (linked chain guns: slot 4
 lo_n_lchain_r:  db "LINKED CG R", 0         ;   only, slot 5 only)
-lo_blank:       db "           ", 0
-        ASSERT $ - lo_blank == LO_NAME_LEN + 1
 
 lo_n:       db 0                        ; weapon types in the store list
 lo_cur:     db 0                        ; the highlighted one

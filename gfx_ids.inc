@@ -4,7 +4,7 @@
 SPR_PAL0        equ 192     ; Layer 2 entry of figure colour 0
 GFX_ANIMS       equ 19
 GFX_ENTRIES     equ 19     ; the directory: the purposes (the vision modes: by palette)
-GFX_PAGES_MAX   equ 58
+GFX_PAGES_MAX   equ 48
 GFX_MIN_H       equ 3      ; the sizes drawn, in rows
 GFX_MAX_H       equ 32
 GFX_DIR         equ $C000

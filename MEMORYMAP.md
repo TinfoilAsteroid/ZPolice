@@ -116,7 +116,8 @@ for this slot.
 | 33 `PAGE_KEYDEF`   | `keydef.asm`     | `$C75C` |
 | 36 `PAGE_MAINMENU` | `mainmenu.asm`   | `$C09B` |
 | 37 `PAGE_LEVELEND` | `levelend.asm`   | `$C436` |
-| 38–67 `PAGE_GFX0` on (at most 58 pages, to 95) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
+| 38–67 `PAGE_GFX0` on (at most 48 pages, to 85) | the figures' graphics: no code (`ZPDATA/SPRITES.ZPG`, made by `gengraphics.py`) | — |
+| 86–95 `PAGE_L320_BG` | the background copy of a 320x256 screen (`l320_bg_save`): the load-out's picture, put back under text that changes (`l320_restore`), through slot 4 | — |
 
 The figures' graphics pages are mapped here only while the city is drawn
 (the game logic doesn't run then): `spr_lod` maps page 38 (the directory),
@@ -132,7 +133,7 @@ back before they run.
 | `ZPDATA/CITYnn.ZPC`: header and palette, the first 544 bytes | 30 | `ll_cbuf`, `$C317` | `load_level` |
 | `ZPDATA/LEVELnn.ZPP`: the level's own palette (only if it has one), 520 bytes | 30 | `ll_cbuf`, `$C317` (once the city's header is used) | `load_level` |
 | `ZPDATA/LEVELnn.ZPV`: the level's 4 vision palettes (normal, night vision green and monochrome, thermal), 2,056 bytes | 30 | `ll_vbuf` (kept there: `vis_cycle` swaps one into the Layer 2 palette in flight, with this page mapped) | `load_level` (`vis_load`) |
-| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–58 pages of 8K (30 now) | 38 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
+| `ZPDATA/SPRITES.ZPG`: the figures' graphics (one set: the vision modes recolour them by palette), a 16-byte header then 1–48 pages of 8K (30 now) | 38 on (`PAGE_GFX0`) | each read at `$8000` (slot 4, the ULA screen's page put back after); used at `$C000` (slot 6) | `gfx_load`, at start-up (the header into `ll_cbuf`) |
 
 `load_level` then sends the palette to the Layer 2 palette (NextReg `$44`).
 The rest of the city file goes to MMU 3.

@@ -289,17 +289,27 @@ GUN_DY          equ -6          ; muzzle 0.5 m below the camera
 GUN_INTERVAL    equ 4           ; machine gun: frames between rounds
 ; Chain gun: 4x the machine gun's rate, one round every CHAIN_INTERVAL
 ; frames.  Each round's heading and climb are turned by a random
-; -CHAIN_DEV..+CHAIN_DEV steps of 1/256 rad (0.22 deg): +/-2 degrees.
+; -CHAIN_DEV..+CHAIN_DEV steps of 1/256 rad (0.22 deg): +/-0.9 degrees
+; (half the +/-2 it was, 9 steps, 2026-11-10: 4.5 can't be).
 CHAIN_INTERVAL  equ 1           ; chain gun: frames between rounds
 ; Linked chain guns (WPN_LCHAIN_L / _R, slots WPN_LINK_L / _R only): chain
 ; guns, firing straight ahead (no centre gun tilt) from LINK_OFF to the
 ; left / right of the centre line.  Either selected fires every one fitted.
-; Their gunsights: one crosshair each, LINK_SIGHT_DX either side of the
-; view's centre, in place of the centre one (sight_mask).
+; Their gunsights: one crosshair each, in place of the centre one
+; (sight_mask), where its rounds are SIGHT_RANGE ahead: LINK_SIGHT_DX either
+; side of the view's centre, GUN_SIGHT_DY below it; each moved by its own aim
+; assist (aim_probe, as the centre gun's).
 LINK_OFF        equ 26          ; 2 m (25.6 units)
 LINK_SHOTS      equ 200         ; rounds each
 LINK_RELOAD     equ 1           ; frames a round, reloading on the pad
-LINK_SIGHT_DX   equ 8           ; pixels
+; The gunsights show where the rounds are SIGHT_RANGE ahead (the projection:
+; 128 pixels * offset / distance): the muzzles are GUN_DY below the camera
+; (and the linked guns LINK_OFF to the side), so the crosshairs sit that
+; much off the view's centre, more the nearer the range.
+SIGHT_RANGE     equ 640         ; 50 m (12.8 units a metre)
+GUN_SIGHT_DY    equ (128*(-GUN_DY) + SIGHT_RANGE/2) / SIGHT_RANGE  ; 1 pixel down
+LINK_SIGHT_DX   equ (128*LINK_OFF + SIGHT_RANGE/2) / SIGHT_RANGE   ; 5 pixels
+        ASSERT GUN_SIGHT_DY == 1 && LINK_SIGHT_DX == 5
 ; Centre gun tilt (gun_tilt, signed, 256 = 360 deg): R / F tilt the centre
 ; slot's weapon up / down GUN_TILT_STEP a frame, at most GUN_TILT_UP up
 ; (11: 15.5 deg, the nearest step to 15) and GUN_TILT_DN down (32: 45 deg);
@@ -318,14 +328,15 @@ INT_COL         equ 11              ; the label's column (under the slots)
 INT_PCT_COL     equ 12              ; "nnn%" from this column
 INT_WARN        equ 50              ; below this percentage: amber,
 INT_DANGER      equ 25              ;   below this: red (else green)
-CHAIN_DEV       equ 9           ; spread: 9/256 rad = 2.01 degrees
-; Aim assist (aim_assist, weapons.asm): a centre slot shot turns to the middle
+CHAIN_DEV       equ 4           ; spread: 4/256 rad = 0.90 degrees
+; Aim assist (aim_assist, weapons.asm): a centre slot shot, or a linked
+; chain gun's (each from its own muzzle, on its own), turns to the middle
 ; of the nearest monster within AIM_DEV steps of 1/256 rad either way of it,
 ; as long as the monster was drawn last frame.  The view's 256 headings are
 ; 1.4 degrees apart, so without it a far monster can lie between two of them.
 AIM_DEV         equ 8           ; 8/256 rad = 1.8 degrees: tune this
-AIM_COLS        equ AIM_DEV/2+12    ; only monsters drawn this near the view's
-                                    ; centre column are measured: the cone,
+AIM_COLS        equ AIM_DEV/2+12    ; only monsters drawn this near the gun's
+                                    ; crosshair column are measured: the cone,
                                     ; then a frame's turn and a close one's box
         ASSERT AIM_DEV > 0 && AIM_DEV < 64
 ; Pulse laser: the beam is on for LASER_ON frames (0.1 s), then cools for
@@ -2013,13 +2024,17 @@ salvage_points: dw 0                    ; salvage points, 16-bit (newGame: 0)
 gun_tilt:   db 0                        ; centre gun tilt, signed (weapons_reset)
 barr_n:     db 0                        ; barricades in barr_tab (barricade_init)
 barr_tab:   ds NBARR*BARR_REC           ; barricades: x, z, hit points
-sight_y:    db VIEW_CY                  ; the gunsight's row (gun_aim)
+sight_y:    db VIEW_CY+GUN_SIGHT_DY     ; the gunsight's row (gun_aim)
 SM_CENTRE       equ 1               ; sight_mask: the crosshairs drawn: the
 SM_LINK_L       equ 2               ;   centre one, the linked chain guns'
 SM_LINK_R       equ 4               ;   left and right (gun_aim)
 sight_mask: db SM_CENTRE
 sight_ax:   db 128                      ; the centre crosshair: where the
-sight_ay:   db VIEW_CY                  ;   aim assist turns its rounds
+sight_ay:   db VIEW_CY+GUN_SIGHT_DY     ;   aim assist turns its rounds
+sight_lx:   db 128-LINK_SIGHT_DX        ; the linked chain guns' crosshairs:
+sight_ly:   db VIEW_CY+GUN_SIGHT_DY     ;   left (x, y) and right, where their
+sight_rx:   db 128+LINK_SIGHT_DX        ;   aim assist turns their rounds
+sight_ry:   db VIEW_CY+GUN_SIGHT_DY     ;   (aim_probe; gun_aim: without it)
 sight_x:       db 128                      ; draw_gunsight: a crosshair's centre
 gs_row:     db VIEW_CY                  ;   and row
 ; The missile lock (lock_update, weapons.asm; drawn by draw_reticule)

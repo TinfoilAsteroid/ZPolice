@@ -693,10 +693,10 @@ bul_clip:
 
 ;==============================================================================
 ; Gunsight in the Layer 2 viewport: the crosshairs in sight_mask (gun_aim,
-; weapons.asm): the centre one at (sight_ax, sight_ay), where the aim assist
-; turns its rounds (aim_probe; on row sight_y, the centre gun's tilt, without
-; it), and the linked chain guns' LINK_SIGHT_DX either side of the view's
-; centre on row sight_y
+; weapons.asm): the centre one at (sight_ax, sight_ay), the linked chain
+; guns' at (sight_lx, sight_ly) and (sight_rx, sight_ry): where their rounds
+; are SIGHT_RANGE ahead, moved to where the aim assist turns them
+; (aim_probe)
 ;==============================================================================
 draw_gunsight:
         ld a,HUD_COL
@@ -708,17 +708,19 @@ draw_gunsight:
         push af
         ld a,(sight_ax)
         call c,gs_cross
-        ld a,(sight_y)
+        ld a,(sight_ly)
         ld (gs_row),a
         pop af
         rra
         push af
-        ld a,128-LINK_SIGHT_DX
+        ld a,(sight_lx)
         call c,gs_cross
         pop af
         rra
         ret nc
-        ld a,128+LINK_SIGHT_DX
+        ld a,(sight_ry)
+        ld (gs_row),a
+        ld a,(sight_rx)
         ; fall through
         ASSERT SM_CENTRE == 1 && SM_LINK_L == 2 && SM_LINK_R == 4
 

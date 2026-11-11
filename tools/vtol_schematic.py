@@ -23,9 +23,9 @@ CX = 240                                # the centre line
 
 # slot (key) -> (x, y) of its hardpoint, of its number's top-left, and the
 # (width, height) of the game's box round it (centred on the hardpoint)
-HARDPOINTS = {1: (CX, 60), 2: (190, 92), 3: (290, 92), 4: (214, 88), 5: (266, 88)}
-LABELS = {1: (CX - 3, 80), 2: (187, 105), 3: (287, 105), 4: (211, 101), 5: (263, 101)}
-BOXES = {slot: (11, 11) for slot in HARDPOINTS}
+HARDPOINTS = {1: (CX, 62), 2: (220, 89), 3: (260, 89), 4: (226, 89), 5: (254, 89)}
+LABELS = {1: (238, 34), 2: (212, 108), 3: (261, 108), 4: (222, 64), 5: (252, 64)}
+BOXES = {1: (17, 17), 2: (6, 24), 3: (6, 24), 4: (6, 24), 5: (6, 24)}
 
 OUT = 0xBF                              # outlines: light cyan
 FILL = 0x01                             # inside: darker than the screen

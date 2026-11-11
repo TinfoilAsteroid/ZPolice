@@ -187,7 +187,8 @@ limited.
 
 Linked chain guns: a pair, the L for slot 4 only and the R for slot 5 only.
 200 rounds each. With both fitted, selecting either one fires them together,
-each with its own crosshair. One runs dry and the other fires on alone.
+each with its own crosshair and its own aim assist. One runs dry and the
+other fires on alone.
 
 
 THE LOAD-OUT SCREEN

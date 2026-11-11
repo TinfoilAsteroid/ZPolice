@@ -239,6 +239,8 @@ gun_fire:
         call chain_round
         ld hl,-LINK_OFF
         call round_side
+        xor a                           ; its own aim assist (the left's)
+        call lk_apply
         ld a,1
         ld (lk_fired),a
 .lr:    ld a,(wpn_slots+2*WPN_LINK_R)
@@ -252,6 +254,8 @@ gun_fire:
         call chain_round
         ld hl,LINK_OFF
         call round_side
+        ld a,2                          ; its own aim assist (the right's)
+        call lk_apply
         ld a,1
         ld (lk_fired),a
 .ls:    ld a,(lk_fired)                 ; its sound, if either fired
@@ -334,9 +338,10 @@ round_turn:
 
 ;------------------------------------------------------------------------------
 ; Aim assist, for a centre slot round IX just spawned, pointing where the gun
-; does: the nearest monster drawn last frame (a monster behind a building
-; isn't: bit 1 of +31) with its middle within AIM_DEV steps of the path, or
-; its box on the path already.  The round turns to its middle, at most
+; does (or a linked chain gun's, from its own muzzle: each on its own): the
+; nearest monster drawn last frame (a monster behind a building isn't: bit 1
+; of +31) near the gun's crosshair column (aa_col) with its middle within
+; AIM_DEV steps of the path, or its box on the path already.  The round turns to its middle, at most
 ; AIM_DEV steps sideways and AIM_DEV up or down: aa_d and aa_ds, kept for the
 ; frame's shots (aim_apply) and the sight.  Only the round: the view doesn't
 ; move.  A chain gun's spread goes on top.
@@ -351,21 +356,86 @@ aim_probe:
         xor a
         ld (aa_d),a
         ld (aa_ds),a
-        ld a,(wpn_sel)
-        cp WPN_CENTRE
-        ret nz
+        ld hl,lk_aim                    ; (the linked guns': none yet)
+        ld b,4
+.z:     ld (hl),a
+        inc hl
+        djnz .z
         call sel_slot
         ld a,(hl)
         or a
         ret z                           ; (an empty slot)
+        cp WPN_LCHAIN_L
+        jr z,.lk
+        cp WPN_LCHAIN_R
+        jr z,.lk
+        ld a,(wpn_sel)
+        cp WPN_CENTRE
+        ret nz
+        ld hl,0                         ; the centre gun: from the middle
+        ld a,128
+        ld de,sight_ax
+        call aa_gun
+        ld a,(aa_d)                     ; (aim_apply: its turn)
+        ld (lk_aim),a
+        ld a,(aa_ds)
+        ld (lk_aim+1),a
+        jr .done
+.lk:    ld a,(wpn_slots+2*WPN_LINK_L)   ; a linked chain gun: each fitted,
+        cp WPN_LCHAIN_L                 ; from its own muzzle, its own turn
+        jr nz,.lr
+        ld hl,-LINK_OFF
+        ld a,128-LINK_SIGHT_DX
+        ld de,sight_lx
+        call aa_gun
+        ld a,(aa_d)
+        ld (lk_aim),a
+        ld a,(aa_ds)
+        ld (lk_aim+1),a
+.lr:    ld a,(wpn_slots+2*WPN_LINK_R)
+        cp WPN_LCHAIN_R
+        jr nz,.done
+        ld hl,LINK_OFF
+        ld a,128+LINK_SIGHT_DX
+        ld de,sight_rx
+        call aa_gun
+        ld a,(aa_d)
+        ld (lk_aim+2),a
+        ld a,(aa_ds)
+        ld (lk_aim+3),a
+.done:  ld a,(lk_aim)                   ; aa_d, aa_ds: the centre gun's (or
+        ld (aa_d),a                     ; the left linked gun's) for aim_apply
+        ld a,(lk_aim+1)
+        ld (aa_ds),a
+        ret
+
+; A gun's assist: HL = its muzzle's offset to the right (round_side), A = its
+; crosshair's column unturned, DE -> its crosshair (x, y: y = sight_y
+; unturned).  aa_d, aa_ds: its turn; the crosshair moved to where its rounds
+; go.
+aa_gun:
+        ld (aa_col),a
+        ld (aa_sp),de
+        xor a
+        ld (aa_d),a
+        ld (aa_ds),a
+        push hl
         ld ix,aa_probe
         ld hl,BULLET_STEP
         call spawn_round
+        pop hl
+        ld a,h
+        or l
+        call nz,round_side
         call aim_assist
+        ld hl,(aa_sp)
         ld a,(aa_d)                     ; across: 128 * d/256 pixels
         sra a
-        add a,128
-        ld (sight_ax),a
+        ld c,a
+        ld a,(aa_col)
+        add a,c
+        ld (hl),a
+        inc hl
         ld a,(aa_ds)                    ; up: the slope's change, likewise
         sra a
         neg
@@ -378,9 +448,26 @@ aim_probe:
 .lo:    cp VIEW_H-SIGHT_MARGIN
         jr c,.hi
         ld a,VIEW_H-SIGHT_MARGIN-1
-.hi:    ld (sight_ay),a
+.hi:    ld (hl),a
         ret
         ASSERT AIM_DEV/2 < SIGHT_MARGIN ; (sight_y is within the view)
+
+; Round IX (a linked chain gun's, just spawned and moved to its muzzle): its
+; gun's turn, A = 0 left, 2 right (lk_aim, aim_probe)
+lk_apply:
+        ld hl,lk_aim
+        add hl,a
+        ld a,(hl)
+        ld (aa_d),a
+        inc hl
+        ld a,(hl)
+        ld (aa_ds),a
+        call aim_apply
+        ld a,(lk_aim)                   ; (aa_d back to the left's: as
+        ld (aa_d),a                     ; aim_probe left it)
+        ld a,(lk_aim+1)
+        ld (aa_ds),a
+        ret
 
 ; Round IX (a centre slot round just spawned): the frame's turn (aim_probe)
 aim_apply:
@@ -404,7 +491,8 @@ aim_assist:
         bit 1,(iy+31)
         jr z,.nx
         ld a,(iy+32)                    ; (most are nowhere near the sight)
-        sub 128
+        ld hl,aa_col
+        sub (hl)
         jp p,.c
         neg
 .c:     cp AIM_COLS
@@ -1347,9 +1435,11 @@ round_climb:
 ;------------------------------------------------------------------------------
 ; R / F: tilt the centre gun up / down (GUN_TILT_STEP a frame, to
 ; GUN_TILT_UP up, GUN_TILT_DN down); V: back towards level at GUN_CTR_STEP.
-; Then sight_y: the gunsight's row for the selected weapon, VIEW_CY minus
-; 128 * tan(tilt) for the centre slot (the projection's scale), kept
-; SIGHT_MARGIN rows inside the view.
+; Then sight_y: the gunsight's row for the selected weapon, where its rounds
+; are SIGHT_RANGE ahead: the centre slot's from sight_rows (by its tilt), a
+; pylon's or linked gun's VIEW_CY + GUN_SIGHT_DY (straight ahead), kept
+; SIGHT_MARGIN rows inside the view; the crosshairs there, unturned (aim_probe
+; turns them).
 ;------------------------------------------------------------------------------
 gun_aim:
         ld a,K_GUN_UP
@@ -1385,25 +1475,16 @@ gun_aim:
         jp m,.st
         xor a
 .st:    ld (gun_tilt),a
-.sight: ld c,VIEW_CY
+.sight: ld c,VIEW_CY+GUN_SIGHT_DY
         ld a,(wpn_sel)
         cp WPN_CENTRE
         jr nz,.sy                       ; a pylon: straight ahead
-        ld a,(gun_tilt)
-        or a
-        jr z,.sy
-        jp m,.sd
-        ld hl,tilt_rows                 ; up: higher on the screen
+        ld a,(gun_tilt)                 ; the centre slot: by its tilt
+        add a,GUN_TILT_DN
+        ld hl,sight_rows
         add hl,a
-        ld a,c
-        sub (hl)
-        jr .sc
-.sd:    neg                             ; down: lower
-        ld hl,tilt_rows
-        add hl,a
-        ld a,c
-        add a,(hl)
-.sc:    ld c,a
+        ld a,(hl)
+        ld c,a
         cp SIGHT_MARGIN
         jr nc,.lo
         ld c,SIGHT_MARGIN
@@ -1413,9 +1494,15 @@ gun_aim:
         ld c,VIEW_H-SIGHT_MARGIN-1
 .sy:    ld a,c
         ld (sight_y),a
-        ld (sight_ay),a                 ; (the centre crosshair: aim_probe
-        ld a,128                        ; moves it)
+        ld (sight_ay),a                 ; (the crosshairs: aim_probe moves
+        ld (sight_ly),a                 ; them)
+        ld (sight_ry),a
+        ld a,128
         ld (sight_ax),a
+        ld a,128-LINK_SIGHT_DX
+        ld (sight_lx),a
+        ld a,128+LINK_SIGHT_DX
+        ld (sight_rx),a
         call sel_slot                   ; the crosshairs (sight_mask): a
         ld a,(hl)                       ; linked chain gun selected, one for
         ld c,SM_CENTRE                  ; each fitted; else the centre one
@@ -1437,12 +1524,16 @@ gun_aim:
         ret
         ASSERT SM_CENTRE == 1 && SM_LINK_L == 2 && SM_LINK_R == 4
 
-; round(128 * tan(k * 360/256 deg)), k = 0..GUN_TILT_DN: the gunsight's
-; rows from the centre for a tilt of k
-tilt_rows:  db 0, 3, 6, 9, 13, 16, 19, 22, 25, 29, 32, 35, 39, 42, 46, 49
-            db 53, 57, 61, 64, 68, 73, 77, 81, 86, 90, 95, 100, 105, 110
-            db 116, 122, 128
-        ASSERT $ - tilt_rows == GUN_TILT_DN + 1
+; The centre gunsight's row for a tilt of k (256 = 360 deg), k =
+; -GUN_TILT_DN..GUN_TILT_UP: where its rounds are SIGHT_RANGE (R) ahead,
+; from a muzzle GUN_DY below the camera: round(VIEW_CY - 128 tan(a) +
+; 128 * -GUN_DY / (R cos a)), before the margin (test_aim.py checks it)
+sight_rows:
+            db 194, 188, 182, 176, 171, 165, 160, 156, 151, 146, 142
+            db 138, 134, 130, 126, 122, 118, 115, 111, 108, 104, 101
+            db 97, 94, 91, 87, 84, 81, 78, 75, 71, 68, 65
+            db 62, 59, 56, 53, 49, 46, 43, 40, 36, 33, 30
+        ASSERT $ - sight_rows == GUN_TILT_DN + GUN_TILT_UP + 1
         ASSERT GUN_TILT_UP <= GUN_TILT_DN
 
 ;------------------------------------------------------------------------------
@@ -1869,11 +1960,17 @@ weapons_reset:
         ld (gun_wait),a
         ld (svc_on),a
         ld (gun_tilt),a                 ; the centre gun level
-        ld a,VIEW_CY
+        ld a,VIEW_CY+GUN_SIGHT_DY
         ld (sight_y),a
         ld (sight_ay),a
+        ld (sight_ly),a
+        ld (sight_ry),a
         ld a,128
         ld (sight_ax),a
+        ld a,128-LINK_SIGHT_DX
+        ld (sight_lx),a
+        ld a,128+LINK_SIGHT_DX
+        ld (sight_rx),a
         ld a,SM_CENTRE                  ; the centre crosshair
         ld (sight_mask),a
         xor a
@@ -3085,6 +3182,11 @@ sr_cos:     dw 0
 cg_d:       dw 0                        ; chain_round
 cg_s:       dw 0
 rs_off:     dw 0                        ; round_side
+aa_col:     db 128                      ; aim_assist: the gun's crosshair column
+aa_sp:      dw 0                        ; aa_gun: -> the crosshair
+lk_aim:     ds 4                        ; aim_probe: the turns (d, ds) of the
+                                        ; centre gun or left linked gun, and
+                                        ; the right linked gun
 aa_d:       db 0                        ; the frame's aim assist: turn
 aa_ds:      db 0                        ;   (1/256 rad), the slope's change
 aa_probe:   ds BREC                     ; aim_probe's round (never flies)
