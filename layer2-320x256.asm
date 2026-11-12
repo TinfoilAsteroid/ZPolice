@@ -660,6 +660,253 @@ f12_name:   db "ZPDATA/FONT12.ZPF", 0
 f12_head:   db "ZPFN", 1, F12_W, F12_H, F12_FIRST, F12_COUNT, F12_BPR
 
 ;------------------------------------------------------------------------------
+; Text on the game's own Layer 2 (256x192, row-major): the GAME OVER message
+; over the last frame of the view (game_over_screen, menu.asm).  Row y is
+; page l256_base + y/32, at (y & 31)*256 + x in slot 0.  The fonts as on the
+; 320x256 screens (l320_font, l320_ink, l320_paper), but the colours are the
+; level palette's entries (its fixed ones: zpolice.asm); l256_rows, if not
+; 0, -> each row's colour in place of the ink's (a gradient of entries).
+;------------------------------------------------------------------------------
+
+; Draw on the buffer shown (NextReg $12)
+l256_shown:
+        ld a,$12
+        call read_nextreg
+        add a,a                         ; 16K bank -> 8K page
+        ld (l256_base),a
+        ld hl,0
+        ld (l256_rows),hl
+        jp l320_nopg
+
+; C = x, B = y, A = colour: one pixel.  Keeps BC, DE.
+l256_pset:
+        push af
+        ld a,b
+        rlca
+        rlca
+        rlca
+        and 7
+        ld hl,l256_base
+        add a,(hl)
+        ld hl,l320_pg
+        cp (hl)
+        jr z,.in
+        ld (hl),a
+        nextreg L2SEC_MMU,a
+.in:    ld a,b
+        and 31
+        ld h,a
+        ld l,c
+        pop af
+        ld (hl),a
+        ret
+
+; A = ASCII: one character at (l256_x, l256_y), in the font l320_font (the
+; large one without its file: the 8x8 glyph in the large cell), its ink
+; rows l256_rows' or l320_ink's (flat: the level palette has no gradients),
+; the paper l320_paper (L320_NOPAPER: none); l256_x on by the cell's width
+l256_char:
+        cp 'a'
+        jr c,.uc
+        cp 'z'+1
+        jr nc,.uc
+        sub 'a'-'A'
+.uc:    sub 32
+        ld c,a
+        ld a,(l320_font)
+        or a
+        jr z,.f8
+        ld a,(f12_ok)
+        or a
+        jr z,.f8c
+        ld a,c                          ; the large font
+        cp F12_COUNT
+        jr c,.l1
+        xor a
+.l1:    ld l,a                          ; * 20
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,hl
+        add hl,de
+        ld de,f12_buf+F12_HEADER
+        add hl,de
+        ld de,F12_H<<8 | 2              ; rows, bytes a row
+        ld bc,F12_W<<8 | 0              ; width, no offset
+        jr .draw
+.f8c:   ld b,F12_W<<8 >> 8              ; the 8x8 glyph in a large cell
+        ld a,b
+        ld (l256_adv),a
+        ld b,2+1*16                     ; (offset: 2 across, 1 down)
+        jr .g8
+.f8:    ld a,8
+        ld (l256_adv),a
+        ld b,0
+.g8:    ld a,c
+        cp 64
+        jr c,.g1
+        xor a
+.g1:    ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,font8
+        add hl,de
+        ld de,8<<8 | 1
+        ld c,b
+        ld b,8
+        jr .go
+.draw:  ld a,b
+        ld (l256_adv),a
+.go:    ld (l256_gp),hl                 ; the glyph
+        ld a,d
+        ld (l256_h),a
+        ld a,e
+        ld (l256_bpr),a
+        ld a,b
+        ld (l256_w),a
+        ld a,c                          ; the offset in the cell: low
+        and 15                          ; nibble across, high down
+        ld hl,(l256_x)
+        add hl,a
+        ld (l256_cx),hl
+        ld a,c
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        ld hl,l256_y
+        add a,(hl)
+        ld (l256_cy),a
+        ld hl,(l256_rows)               ; the rows' colours
+        ld a,h
+        or l
+        jr nz,.rows
+        ld hl,f12_flat
+        ld a,(l320_ink)
+        ld b,F12_H
+.fl:    ld (hl),a
+        inc hl
+        djnz .fl
+        ld hl,f12_flat
+.rows:  ld (l256_rp),hl
+        ld a,(l256_h)                   ; each row
+        ld (l256_r),a
+.row:   ld a,%10000000
+        ld (l256_m),a
+        ld hl,(l256_gp)
+        ld (l256_bp),hl
+        ld a,(l256_w)
+        ld (l256_c),a
+        ld a,(l256_cx)
+        ld c,a
+        ld a,(l256_cy)
+        ld b,a
+.px:    ld hl,(l256_bp)                 ; ink or paper
+        ld a,(l256_m)
+        and (hl)
+        jr z,.pap
+        ld hl,(l256_rp)
+        ld a,(hl)
+        call l256_pset
+        jr .nx
+.pap:   ld a,(l320_paper)
+        cp L320_NOPAPER
+        call nz,l256_pset
+.nx:    inc c
+        ld a,(l256_m)                   ; the next bit, or the next byte
+        rrca
+        ld (l256_m),a
+        jr nc,.sb
+        ld hl,(l256_bp)
+        inc hl
+        ld (l256_bp),hl
+.sb:    ld hl,l256_c
+        dec (hl)
+        jr nz,.px
+        ld hl,(l256_gp)                 ; the next row
+        ld a,(l256_bpr)
+        add hl,a
+        ld (l256_gp),hl
+        ld hl,(l256_rp)
+        inc hl
+        ld (l256_rp),hl
+        ld hl,l256_cy
+        inc (hl)
+        ld hl,l256_r
+        dec (hl)
+        jr nz,.row
+        ld hl,(l256_x)
+        ld a,(l256_adv)
+        add hl,a
+        ld (l256_x),hl
+        ret
+
+; HL -> text ending 0, C = y, DE -> its rows' colours (0: l320_ink, flat):
+; centred across the view (256 wide), with a shadow one pixel down and right
+; in L256_SHADOW first.  The font: l320_font.
+l256_title:
+        ld (l256_tp),hl
+        ld (l256_tr),de
+        ld a,c
+        ld (l256_ty),a
+        ld b,0                          ; the width: characters * the cell
+.ln:    ld a,(hl)
+        or a
+        jr z,.lw
+        inc hl
+        inc b
+        jr .ln
+.lw:    ld a,(l320_font)
+        or a
+        ld e,8
+        jr z,.w8
+        ld e,F12_W
+.w8:    ld d,b
+        mul d,e
+        ld hl,256
+        or a
+        sbc hl,de
+        srl h
+        rr l
+        ld (l256_tx),hl
+        ld a,(l320_ink)                 ; the shadow
+        push af
+        ld a,L256_SHADOW
+        ld (l320_ink),a
+        ld hl,0
+        ld (l256_rows),hl
+        ld hl,(l256_tx)
+        inc hl
+        ld a,(l256_ty)
+        inc a
+        call .one
+        pop af                          ; the text
+        ld (l320_ink),a
+        ld hl,(l256_tr)
+        ld (l256_rows),hl
+        ld hl,(l256_tx)
+        ld a,(l256_ty)
+.one:   ld (l256_x),hl
+        ld (l256_y),a
+        ld hl,(l256_tp)
+.ch:    ld a,(hl)
+        or a
+        ret z
+        inc hl
+        push hl
+        call l256_char
+        pop hl
+        jr .ch
+
+L256_SHADOW     equ MAP_BG          ; black in every level's palette
+
+;------------------------------------------------------------------------------
 ; Images from the SD card
 ;------------------------------------------------------------------------------
 ; An image file (ZPDATA/*.ZPI, tools/imagefile.py; made with
@@ -1233,6 +1480,26 @@ f12_gp:     dw 0                        ;   -> the row colours
 f12_flat:   ds F12_H                    ; a colour with no gradient
 f12_buf:    ds F12_SIZE_MAX             ; the large font's file (f12_load)
 f8_buf:     ds F8_SIZE_MAX              ; the 8x8 font's file (f8_load)
+l256_base:  db 0                        ; l256: the shown buffer's first page,
+l256_x:     dw 0                        ;   the text position,
+l256_y:     db 0
+l256_rows:  dw 0                        ;   -> the rows' colours (0: the ink)
+l256_adv:   db 0                        ; l256_char: the cell's width,
+l256_gp:    dw 0                        ;   -> the glyph's row,
+l256_bp:    dw 0                        ;   -> its byte,
+l256_h:     db 0                        ;   rows,
+l256_bpr:   db 0                        ;   bytes a row,
+l256_w:     db 0                        ;   columns,
+l256_cx:    dw 0                        ;   the glyph's top-left,
+l256_cy:    db 0
+l256_rp:    dw 0                        ;   -> this row's colour,
+l256_r:     db 0                        ;   rows left,
+l256_c:     db 0                        ;   columns left,
+l256_m:     db 0                        ;   the bit
+l256_tp:    dw 0                        ; l256_title: the text,
+l256_tr:    dw 0                        ;   its rows' colours,
+l256_tx:    dw 0                        ;   where
+l256_ty:    db 0
 img_fh:     db 0                        ; l320_image: the file,
 img_x:      dw 0                        ;   the next column's x,
 img_y:      db 0                        ;   the top row,

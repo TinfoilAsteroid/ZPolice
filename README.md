@@ -290,10 +290,18 @@ X works in a wreck too.
   ones be rescued twice). The base is at full strength, as at any level's
   start.
 
-**Game over:** when the landing pad is destroyed, the main loop goes to
-`game_over_screen` (`menu.asm`). It shows GAME OVER and PRESS SPACE TO
-CONTINUE until SPACE is pressed (`space_prompt`; `le_space` on the LEVEL COMPLETE
-screen; a SPACE already held doesn't count), then returns to the main menu.
+**Game over:** when the landing pad is destroyed, or the VTOL (below), the
+main loop goes to `game_over_screen` (`menu.asm`). Over the last frame of the
+view, still on the screen (the game's own Layer 2, drawn on directly by
+`l256_title`, layer2-320x256.asm, mapped into slot 2 for it), it writes GAME
+OVER in the large font in the fire particles' colours (`go_fire`, bright to
+dark), VTOL DESTROYED or BASE DESTROYED in yellow, and PRESS SPACE TO
+CONTINUE in white, each centred with a black shadow a pixel down and right.
+The colours are the level palette's fixed entries (`FIRE_COL0`…,
+`BULLET_COL`, `EDGE_COL`, `MAP_BG`), so they're the same in every level. The
+engines go quiet, the HUD stays. At a new SPACE (`space_wait`; a SPACE
+already held doesn't count) the main menu. After game complete (the ULA
+screen up) it's the plain ULA GAME OVER still (`game_over_ula`).
 The menu times frames from the raster line. It reads NextRegs `$1E`, `$1F`, `$1E`
 and retries if the high byte changed, because a read straddling line 256
 would otherwise look like line 0 and end a frame early.
@@ -1079,7 +1087,9 @@ A zombie that is killed, by gun, laser, rocket or missile, sprays
   frames (+11), so zombie and rocket bursts share the pool, `part_spray`,
   `part_update` and `draw_particles`. `part_update` (in
   `update_weapons`, before firing) ages and moves them. `draw_particles` (in
-  the city page, after the tracers) draws each as one pixel over the city.
+  the city page, after the tracers) draws each over the city, by its depth:
+  a pixel far off, 2×2 nearer than `PART_NEAR2` (35 m), 3×3 nearer than
+  `PART_NEAR3` (12.5 m), clipped to the view.
   `newGame` clears them.
 
 ### Chain gun
@@ -1457,9 +1467,20 @@ At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
   `DEAD_FALL_MAX` (8 units, 11 m/s), until it hits the ground under it.
   That's the road, or the highest roof under its footprint (`floor_y`).
   From the 14 m ceiling it falls in about 2 seconds.
+* **The crash** (`wreck_fx`, weapons.asm, each frame while a wreck): fire
+  bursts (`fire_burst`) `WRECK_AHEAD` (3.75 m) in front of the camera, so
+  they're seen.
+  * **Destroyed:** an explosion, `WRECK_BOOM` (24) particles just below eye
+    level, a rocket's bang and the light shake.
+  * **Falling:** `WRECK_DEBRIS` (3) every other frame, 2 m below the eye;
+    the spin trails them round the view.
+  * **Hitting the ground:** `WRECK_IMPACT` (32, most of the pool), the
+    crash sound and the heavy shake (`shake_big`, below).
+  * **On the ground:** `WRECK_EMBERS` (2) every 4th frame until GAME OVER.
 * **Game over:** once on the ground (`dead_down`) it lies there for
-  `DEAD_PAUSE` (100) frames. Then the game is over: the GAME OVER screen
-  until SPACE is pressed, then the main menu.
+  `DEAD_PAUSE` (50, half the 100 it was) frames. Then the game is over: GAME OVER over the view,
+  VTOL DESTROYED (see "Game over"), until SPACE is pressed, then the main
+  menu.
 * **Where:** `vtol_wreck` in `player.asm`. `newGame` resets it all.
 
 ### Instrument panel (ULA / Layer 1)
@@ -1609,6 +1630,10 @@ transparent: the city map and the gauges.
     crunch start only once the last shake is over. The damage and the
     border flash still come with every bump.
   * `next_level` and `game_reset` stop any shake (`shake_off`).
+  * **Heavy shake:** a wreck hitting the ground (`shake_big`) shakes for
+    `SHAKE_BIG_LEN` (16) frames from `shake_big_xy`, up to 4 pixels each
+    way, dying away. `shake_tick` reads the table `shake_tab` points to and
+    puts it back to `shake_xy` at the end.
 
 ### Hardware sprites (`sprites.asm`, Layer 3)
 Support for the Next's 128 hardware sprites. Nothing in the game uses them
@@ -1734,7 +1759,7 @@ NextReg select alone, so this still works):
 | `tools/screen_editor.py` | the screen image editor (tkinter): 320x256 images |
 | `tools/vtol_schematic.py` | draws the load-out's VTOL schematic into `ZPDATA/VTOL.ZPI`; its hardpoints match `lo_hp` (loadout.asm) |
 | `mainmenu.asm` | main menu page (`PAGE_MAINMENU`, page 36, game logic at `$C000`): the menu screen at 320x256 (layer2-320x256.asm), per-frame random seed stirring, starts `newGame`, continues the save game, opens redefine keys |
-| `menu.asm` | end screens page (`PAGE_MENU`, page 8, game logic at `$C000`): game over, game complete, load error, on the ULA screen; back to the main menu through `menu_go` |
+| `menu.asm` | end screens page (`PAGE_MENU`, page 8, game logic at `$C000`): game over (over the view, on the game's Layer 2), game complete and load error (on the ULA screen); back to the main menu through `menu_go` |
 | `levelend.asm` | level complete page (`PAGE_LEVELEND`, page 37, game logic at `$C000`, drawn at 320x256): LEVEL n COMPLETE, the rearm, the salvage and its rewards (`salvage_award`, `salvage_tab`), PRESS SPACE TO CONTINUE, then the load-out (`loadout_go`); after the last level the game complete screen (`game_done_go`) |
 | `input.asm` | input engine (`PAGE_INPUT`, page 12, core function at `$E000`): scans the 8 ZX half-rows, the 2 Next extended-key registers and the joysticks (ports `$1F`, `$37`, NextReg `$B2`) each frame; redefinable action keys and joystick inputs, the pause control |
 | `sprites.asm` | hardware sprites, Layer 3 (`PAGE_SPRITES`, page 13, core function at `$E000`): set-up, pattern and palette loading, a shadow attribute table and its per-frame upload, positions on the 320 × 256 sprite screen |

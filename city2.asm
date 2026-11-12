@@ -537,8 +537,10 @@ rk_back:
         ret
 
 ;==============================================================================
-; Zombie burst particles: one pixel each, coloured by age (PART_COL0 + 4 per
-; frame of age, bright to dark green), drawn over the city
+; Burst particles (zombies', rockets', a crash's): coloured by age (their
+; colour at age 1 + 4 per frame of age, bright to dark), drawn over the
+; city, a pixel each far off, 2x2 nearer than PART_NEAR2, 3x3 nearer than
+; PART_NEAR3
 ;==============================================================================
 draw_particles:
         ld ix,particles
@@ -552,21 +554,57 @@ draw_particles:
         inc hl                          ; -> x, y, z
         call bul_cam
         jr nz,.nx                       ; not in view
-        ld l,a                          ; x
+        ld (pt_x),a
         ld a,c
-        call seg_map                    ; row's section -> A = y & 31
-        ld h,a
+        ld (pt_y),a
         ld a,(ix+0)                     ; colour: its age-1 colour (+10)
         dec a                           ; + (age-1)*4
         add a,a
         add a,a
         add a,(ix+10)
-        ld (hl),a
+        ld (pt_c),a
+        ld hl,(tmpv+4)                  ; its size by its depth: near ones
+        ld de,PART_NEAR3                ; bigger (a crash's, in front of
+        or a                            ; the camera, most)
+        sbc hl,de
+        ld b,3
+        jr c,.sz
+        ld hl,(tmpv+4)
+        ld de,PART_NEAR2
+        or a
+        sbc hl,de
+        ld b,2
+        jr c,.sz
+        dec b
+.sz:    ld c,b                          ; B rows of C pixels, clipped to the
+.row:   ld a,(pt_y)                     ; view (VIEW_H) and its right edge
+        cp VIEW_H
+        jr nc,.nx
+        call seg_map                    ; row's section -> A = y & 31
+        ld h,a
+        ld a,(pt_x)
+        ld l,a
+        ld a,(pt_c)
+        ld e,c
+.px:    ld (hl),a
+        inc l
+        jr z,.re                        ; (the right edge)
+        dec e
+        jr nz,.px
+.re:    ld hl,pt_y
+        inc (hl)
+        djnz .row
 .nx:    ld de,PREC
         add ix,de
         pop bc
         djnz .lp
         ret
+
+PART_NEAR3      equ 160             ; nearer than 12.5 m: 3x3 pixels
+PART_NEAR2      equ 448             ; nearer than 35 m: 2x2 (else 1)
+pt_x:       db 0                        ; draw_particles: the particle's
+pt_y:       db 0                        ;   place on the screen
+pt_c:       db 0                        ;   and its colour
 
 ; HL -> world x, y, z: camera space into tmpv; A = outcode, Z set if in view
 ; (then A = screen x, C = screen y)

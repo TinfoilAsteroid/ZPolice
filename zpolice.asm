@@ -496,7 +496,22 @@ VTOL_HP         equ 50          ; the VTOL's hit points (ghosts attack it)
 ; main menu.
 DEAD_SPIN       equ $0800           ; 8 yaw units a frame: a turn in 32
 DEAD_FALL_MAX   equ 8               ; units a frame (11 m/s at 14 fps)
-DEAD_PAUSE      equ 100             ; frames on the ground before GAME OVER
+DEAD_PAUSE      equ 50              ; frames on the ground before GAME OVER (was 100)
+; The crash (wreck_fx, weapons.asm): fire bursts (fire_burst) WRECK_AHEAD in
+; front of the camera, so they're seen: WRECK_BOOM particles as it is
+; destroyed (and a shake), WRECK_DEBRIS every other frame as it falls (the
+; spin trails them round the view), WRECK_IMPACT and the heavy shake
+; (shake_big) when it hits the ground, then WRECK_EMBERS every 4th frame
+; until GAME OVER.
+WRECK_AHEAD     equ 48              ; 3.75 m (past NEAR)
+WRECK_BOOM      equ 24
+WRECK_DEBRIS    equ 3
+WRECK_IMPACT    equ 32
+WRECK_EMBERS    equ 2
+WRECK_DROP      equ 26              ; the debris 2 m below the eye,
+WRECK_EYE       equ 6               ;   the explosion 0.5 m
+WRECK_LOW       equ 4               ;   but never under this (the ground)
+        ASSERT WRECK_AHEAD > NEAR && WRECK_IMPACT <= NPART
 DISEMBARK       equ NOMINAL_FPS ; landed on the base pad: one off a second
 
 ; Particles (weapons.asm moves them, city.asm draws them).  A killed zombie
@@ -1113,8 +1128,8 @@ main_loop:
         ld a,(game_over)
         or a
         jr z,.play
-        nextreg LOGIC_MMU,PAGE_MENU     ; the pad is destroyed: game over
-        jp game_over_screen             ; (menu.asm) -> main menu
+        nextreg LOGIC_MMU,PAGE_MENU     ; the VTOL or the pad destroyed:
+        jp game_over_screen             ; GAME OVER over the view (menu.asm)
 .play:  ld a,(level_done)
         or a
         jr z,.go
@@ -1260,22 +1275,28 @@ l2_flip:
 
 ;------------------------------------------------------------------------------
 ; Screen shake, when the VTOL hits a building (player.asm sets shake_t to
-; SHAKE_LEN).  Each rendered frame, as it is shown, the Layer 2 view is
-; offset by the next pair of shake_xy through the scroll registers, a pixel
-; or two each way, dying away; the last pair (0, 0) puts it back.  Only
+; SHAKE_LEN), and heavier when a wreck hits the ground (shake_big:
+; SHAKE_BIG_LEN of shake_big_xy, up to 4 pixels).  Each rendered frame, as it
+; is shown, the Layer 2 view is offset by the next pair of the table
+; (shake_tab) through the scroll registers, dying away; the last pair (0, 0)
+; puts it back, and the table back to shake_xy.  Only
 ; Layer 2 moves: the HUD is on the ULA.  (X wraps at 256, Y at 192: -n is
 ; 256-n and 192-n.  An edge row or column of the view shows the far side's
 ; meanwhile.)
 ;------------------------------------------------------------------------------
 SHAKE_LEN       equ 6               ; rendered frames (about half a second)
+SHAKE_BIG_LEN   equ 16              ; a wreck's (over a second)
 shake_tick:
         ld a,(shake_t)
         or a
         ret z
         dec a
         ld (shake_t),a
-        add a,a
-        ld hl,shake_xy
+        ld hl,(shake_tab)
+        jr nz,.t
+        ld de,shake_xy                  ; (the last: the usual table again)
+        ld (shake_tab),de
+.t:     add a,a
         add hl,a
         ld a,(hl)
         nextreg $16,a                   ; Layer 2 scroll X
@@ -1284,8 +1305,18 @@ shake_tick:
         nextreg $17,a                   ; Layer 2 scroll Y
         ret
 
+; The heavy shake (a wreck hitting the ground), over any going
+shake_big:
+        ld hl,shake_big_xy
+        ld (shake_tab),hl
+        ld a,SHAKE_BIG_LEN
+        ld (shake_t),a
+        ret
+
 ; Stop any shake: the view back in place
 shake_off:
+        ld hl,shake_xy
+        ld (shake_tab),hl
         xor a
         ld (shake_t),a
         nextreg $16,0
@@ -1295,6 +1326,11 @@ shake_off:
 ; (x, y) pixels, used from the last pair back to the first
 shake_xy:   db 0,0, 1,0, 256-1,192-1, 1,1, 256-2,192-1, 2,1
         ASSERT $ - shake_xy == 2*SHAKE_LEN
+shake_big_xy:
+        db 0,0, 1,0, 256-1,1, 1,192-1, 256-2,1, 2,192-1, 256-2,2, 2,192-2
+        db 256-3,2, 3,192-2, 256-3,3, 3,192-3, 256-4,3, 4,192-3, 256-4,4, 4,192-4
+        ASSERT $ - shake_big_xy == 2*SHAKE_BIG_LEN
+shake_tab:  dw shake_xy                 ; the table shake_tick uses
 shake_t:    db 0                        ; frames of shake left (0: none)
 gfx_ok:     db 0                        ; 1: the figures' graphics are loaded
 

@@ -73,6 +73,7 @@ update_weapons:
         jr z,.alive
         call las_reset                  ; destroyed: no firing, no beam
         call lock_off                   ;   no lock
+        call wreck_fx                   ;   the crash: fire and debris
         jr .move
 .alive:
     IF DEBUG_KILLALL
@@ -1960,6 +1961,8 @@ weapons_reset:
         ld (gun_wait),a
         ld (svc_on),a
         ld (gun_tilt),a                 ; the centre gun level
+        ld (wf_t),a                     ; (no crash yet)
+        ld (wf_hit),a
         ld a,VIEW_CY+GUN_SIGHT_DY
         ld (sight_y),a
         ld (sight_ay),a
@@ -2119,6 +2122,94 @@ laser_update:
         ret z                           ; off the map (can't, inside the wall)
         ld (ix+B_STATE),3               ; beam
         ret
+
+;------------------------------------------------------------------------------
+; The crash, each frame the VTOL is a wreck (vtol_dead; vtol_wreck, player.asm,
+; spins it down): fire bursts WRECK_AHEAD in front of the camera.  The first
+; frame an explosion (WRECK_BOOM, a shake, a bang); falling, WRECK_DEBRIS
+; every other frame; the frame it is down (dead_down) the impact
+; (WRECK_IMPACT, the heavy shake, the crash); then WRECK_EMBERS every 4th
+; frame until GAME OVER.
+;------------------------------------------------------------------------------
+wreck_fx:
+        ld hl,wf_t
+        ld a,(hl)
+        inc (hl)
+        jr nz,.n
+        dec (hl)                        ; (at most 255)
+.n:     or a
+        jr nz,.fall
+        ld hl,WRECK_EYE                 ; destroyed: the explosion, in front
+        ld (wf_drop),hl                 ; of the eye
+        ld a,WRECK_BOOM
+        call wf_burst
+        ld hl,WRECK_DROP                ; (the rest lower: debris)
+        ld (wf_drop),hl
+        ld a,SFX_BOOM_ROCKET
+        ld (sfx2_req),a
+        ld a,(shake_t)
+        or a
+        ret nz
+        ld a,SHAKE_LEN
+        ld (shake_t),a
+        ret
+.fall:  ld a,(dead_down)
+        or a
+        jr nz,.down
+        ld a,(wf_t)                     ; falling: debris
+        and 1
+        ret nz
+        ld a,WRECK_DEBRIS
+        jr wf_burst
+.down:  ld a,(wf_hit)
+        or a
+        jr nz,.burn
+        inc a
+        ld (wf_hit),a
+        ld a,SFX_CRASH                  ; the impact
+        ld (sfx2_req),a
+        call shake_big                  ; (zpolice.asm)
+        ld a,WRECK_IMPACT
+        jr wf_burst
+.burn:  ld a,(wf_t)                     ; on the ground: embers
+        and 3
+        ret nz
+        ld a,WRECK_EMBERS
+        ; fall through
+
+; A fire particles WRECK_AHEAD in front of the camera, wf_drop below the
+; eye (but WRECK_LOW above the ground at least)
+wf_burst:
+        ld (rb_parts),a
+        ld hl,WRECK_AHEAD               ; x = cam x + d sin(yaw)
+        ld de,(sin_y)
+        call fmul
+        ld de,(cam_x+1)
+        add hl,de
+        ld (rb_x),hl
+        ld hl,WRECK_AHEAD               ; z = cam z + d cos(yaw)
+        ld de,(cos_y)
+        call fmul
+        ld de,(cam_z+1)
+        add hl,de
+        ld (rb_z),hl
+        ld hl,(wf_drop)                 ; y
+        ld de,WRECK_LOW
+        add hl,de
+        ex de,hl
+        ld hl,(cam_y)
+        or a
+        sbc hl,de
+        jr nc,.y
+        ld hl,0
+.y:     ld de,WRECK_LOW
+        add hl,de
+        ld (rb_y),hl
+        jp fire_burst
+
+wf_t:       db 0                        ; wreck_fx: frames since destroyed
+wf_hit:     db 0                        ;   1: the impact done
+wf_drop:    dw WRECK_DROP               ; wf_burst: how far below the eye
 
 ;------------------------------------------------------------------------------
 ; Particles (pool `particles`, drawn by draw_particles): zombie bursts and
