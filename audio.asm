@@ -4,9 +4,10 @@
 ;
 ; Sound devices: the Next's TurboSound, three AY-3-8912 chips.  initgame
 ; (initialise.asm) has already set the chip mode to AY (NextReg $06),
-; turned TurboSound and the internal speaker on (NextReg $08) and the AY
-; outputs to stereo (NextReg $09).  init_audio then sets every chip to a
-; known, silent state (at start-up, and on every menu screen: menu_clear).
+; turned TurboSound and the internal speaker on (NextReg $08), and the
+; engines' chip, AY 1, to mono (NextReg $09: its three channels in the
+; centre, AY_MONO_ENGINES), the effects' chips stereo.  init_audio then sets every chip to a
+; known, silent state (at start-up, and on every menu screen: menu_quiet).
 ; AY 1 is the VTOL's engines: engine_start here, then the interrupt routine
 ; plays them (engine_tick, interrupts.asm).  AY 2 is the weapons' sound
 ; effects, AY 3 explosions: the game asks for one with ld a,SFX_n / ld
@@ -32,6 +33,10 @@ AY_RIGHT        equ %00100000       ; right output on
 AY_CHIP_1       equ %11
 AY_CHIP_2       equ %10
 AY_CHIP_3       equ %01
+; NextReg $09 (Peripheral 4) bits 5-7 put the hardware's AY 0, 1, 2 in mono:
+; select %11 is its AY 0, the game's AY 1 (the engines), so bit 5
+AY_MONO_ENGINES equ %00100000
+        ASSERT AY_CHIP_1 == %11
 
 ; AY registers
 AY_TONE_A       equ 0               ; channel A tone period: fine, coarse (4)
@@ -84,7 +89,11 @@ SFX_BOOM_PROX   equ 10              ;   a proximity shell's
 SFX_SPLAT       equ 11              ; a zombie hit (AY 3 channel C, sfx3_req)
 SFX_CRASH       equ 12              ; the VTOL hitting a building (AY 3, sfx2_req)
 SFX_LOCK        equ 13              ; the missile lock: a double beep (AY 2)
-SFX_LAST        equ 13              ; (sfx_table, sfx_data.asm)
+SFX_CHARGE      equ 14              ; the devil charging its lightning: a
+                                    ; rising whine (AY 3 channel C, sfx3_req)
+SFX_BOLT        equ 15              ; its lightning: a crackling zap, then
+                                    ; thunder (AY 3, sfx2_req)
+SFX_LAST        equ 15              ; (sfx_table, sfx_data.asm)
 SFX_STEP        equ $FE             ; end of a step: the next, next interrupt
 SFX_END         equ $FF             ; end of the sound
 SFX_MIX_NOISE_A_TONE_B equ AY_NO_TONE_A|AY_NO_TONE_C|AY_NO_NOISE_B|AY_NO_NOISE_C

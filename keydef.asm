@@ -40,7 +40,7 @@ KD_JOY_LEN      equ 8               ;   (joystick names at most this long)
 KD_MSG_ROW      equ 22              ; messages (large font)
 KD_HELP_ROW     equ 23              ; the keys' help, two lines (large)
 KD_PAUSE        equ 50              ; a second of 50 Hz frames
-KD_VIS          equ K_ACTIONS       ; controls shown at once: all of them.
+KD_VIS          equ 23              ; controls shown at once (the list scrolls)
         ASSERT (KD_ROW0 + KD_VIS)*8 <= F12_Y0 + KD_MSG_ROW*F12_H  ; (more than
         ASSERT KD_HEAD_ROW*8 >= F12_Y0 + (KD_TITLE_ROW+1)*F12_H   ; fit: the list
         ASSERT KD_VIS <= K_ACTIONS  ;   scrolls, kd_top, to keep kd_cur in view)
@@ -351,8 +351,9 @@ kd_key_name:
 ; input page, in slot 7, where the file handler goes too: so they go through
 ; kd_buf, in this page.
 ;------------------------------------------------------------------------------
-KF_VERSION      equ 3               ; (1: 20 controls, before K_VISION; 2: 21,
-                                    ;  before the strafe controls)
+KF_VERSION      equ 4               ; (1: 20 controls, before K_VISION; 2: 21,
+                                    ;  before the strafe controls; 3: 23,
+                                    ;  before K_TARGET)
 KF_SIZE         equ 6 + 4*K_ACTIONS ; "ZPKY", version, controls, key_defs,
                                     ; joy_defs
         ASSERT joy_defs == key_defs + 2*K_ACTIONS
@@ -473,11 +474,12 @@ txt_kd_joyblank: db "        ", 0
 ; The controls' names, by K_* (input.asm)
 kd_names:   dw kc_0, kc_1, kc_2, kc_3, kc_4, kc_5, kc_6, kc_7, kc_8, kc_9
             dw kc_10, kc_11, kc_12, kc_13, kc_14, kc_15, kc_16, kc_17, kc_18
-            dw kc_19, kc_20, kc_21, kc_22
+            dw kc_19, kc_20, kc_21, kc_22, kc_23
         ASSERT ($ - kd_names)/2 == K_ACTIONS
         ASSERT K_SPEED_UP == 0 && K_FIRE == 9 && K_GUN_UP == 10
         ASSERT K_SLOT1 == 11 && K_GUN_DN == 16 && K_GUN_CTR == 17 && K_PAUSE == 18
         ASSERT K_BOOST == 19 && K_VISION == 20 && K_STRAFE_L == 21 && K_STRAFE_R == 22
+        ASSERT K_TARGET == 23
 kc_0:   db "SPEED UP", 0
 kc_1:   db "SPEED DOWN", 0
 kc_2:   db "AIR BRAKE", 0
@@ -501,6 +503,7 @@ kc_19:  db "BOOST", 0
 kc_20:  db "VISION MODE", 0
 kc_21:  db "STRAFE LEFT", 0
 kc_22:  db "STRAFE RIGHT", 0
+kc_23:  db "NEXT TARGET", 0
 
 ; Input names by bank and bit (the KB_* and J1_* / J2_* codes, input.asm):
 ; 8 per bank

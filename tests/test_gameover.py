@@ -137,5 +137,28 @@ def test_held_space():
         sd.close()
 
 
+
+def test_game_complete():
+    """After the last level: CONGRATULATIONS, a 320x256 Layer 2 screen in the
+    large font with PRESS SPACE TO CONTINUE; SPACE: the main menu (no GAME
+    OVER)"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.start_game(cpu, sym["LEVEL_LAST"])
+        zp.frames(cpu, 2)
+        cpu.sp, cpu.pc = sym["stack_top"], sym["game_done_go"]
+        zp.run_until(cpu, lambda: cpu.pc == sym["space_wait"], "the congratulations screen")
+        mode320 = lambda: (cpu.nextreg.get(0x70, 0) >> 4) & 3 == 1
+        zp.check(mode320() and cpu.rd(sym["l320_font"]) == sym["L320_F12"],
+                 "congratulations: not 320x256 in the large font")
+        zp.run_until(cpu, lambda: cpu.pc == sym["kbd_scan"], "its key scan")
+        for _ in range(100):                # (it waits: no timer)
+            zp.run_until(cpu, lambda: cpu.pc == sym["kbd_scan"], "its key scan")
+            cpu.stepi()
+        zp.check(cpu.mmu[6] == sym["PAGE_MENU"], "left the congratulations without SPACE")
+        cpu.keys = {" "}
+        zp.run_until(cpu, lambda: cpu.pc == sym["main_menu"], "the main menu", limit=200_000_000)
+
+
 if __name__ == "__main__":
     zp.main(globals())

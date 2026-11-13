@@ -26,6 +26,9 @@ Completed items moved from TODO.md, under the same headings.
   (front, side or rear by their way), not wave. Distant figures use their
   smaller levels. See README "Figures and the sprite editor".)
 
+- (Done 2026-11-13) Screens outside the game in Layer 2 320x256: all of
+  them (see "Screens in Layer 2 320x256" below).
+
 ## Controls and input
 
 - (Done 2026-11-02: the key and joystick definitions are saved to the SD
@@ -79,6 +82,9 @@ Completed items moved from TODO.md, under the same headings.
   of the centre. The proximity cannon moved to 75 (was a chain gun); the
   chain gun at 95 removed. Save game version 5. See README "Linked chain
   guns".)
+- (Done 2026-11-11: aim assist for the two linked chain guns, each its own
+  from its own muzzle, and their sights at 50 m. See README "Linked chain
+  guns".)
 
 - (Done 2026-11-03: the lateral thrusters, a salvage reward at 90 in place
   of a pulse laser (and 65 is now night vision, monochrome only). K / L,
@@ -129,6 +135,20 @@ Completed items moved from TODO.md, under the same headings.
 - (Done 2026-11-01: hand-edited level files, `levels/LEVELnn.TXL`: map
   changes, draw distances, waves and specials. See README "Hand-edited
   levels".)
+
+- At the final city we want something like an entrance to hell where the zombies come from
+  this will be represented by a large road section as a circle, a boss monster will spawn in the road and attempt to destroy the landing pad
+  (Done 2026-11-12: level 50's map changes clear a circle of road, radius
+  3, round (12, 52); the devil rises there in the last wave, with that
+  wave's zombies, and hunts the VTOL: "Final boss" below.)
+
+- Missile lock, add a key to cycle through targets near by to select a
+  different target
+  (Done 2026-11-13: M, `K_TARGET`, redefinable, NEXT TARGET: the next
+  monster by index, round the list, drawn last frame and in range; it
+  locks on afresh, `LOCK_TIME` again; none other, the lock stays.
+  `lk_next`, weapons.asm; tests/test_lock.py. The redefine list now
+  scrolls, 23 of 24 shown; KEYS.ZPK version 4.)
 
 ## Performance
 
@@ -240,6 +260,36 @@ Completed items moved from TODO.md, under the same headings.
   frame in all. The city page then had only about 10 bytes free (since split: city2.asm). See
   README "Performance".)
 
+- Speed up building rendering (2026-11-09):
+  - (Done 2026-11-09: front to back looked at, occlusion pitched on;
+    closed, it looks fine in play. See DONE.md.) Front to back, measured
+    in the emulator over the 10 render-test views: every write to the
+    view's pixels counted, by what wrote it.
+    - Level flight is already nearly there: the occlusion pass and the cut
+      rows leave an overdraw of only 1.00-1.32 (face writes / pixels
+      kept). Drawing the faces' visible runs only (an ideal span buffer,
+      60 T a row) would save 0-1.3% of a frame: not worth a rewrite.
+    - Pitched views have no occlusion (OCCLUSION_CULL is level flight
+      only): overdraw 1.3-1.9, and buildings that end up wholly overdrawn
+      take 15-56% of the frame (view 8, pitch -20: 40 of 47 buildings,
+      56%).
+    - The clear: only 33% of its pixels survive, but clearing just the
+      gaps would cost about what the one DMA fill does.
+    - Tried: occlusion at any pitch (`OCC_PITCHED`, zpolice.asm, off).
+      The cover rule still holds pitched (no roll, camera above the
+      ground), except that the vertical edges lean, so only the columns
+      of both a building's top and bottom corners are covered from its
+      top down (the first try, the whole span, changed 50 of 124 views).
+      With that: pixel-identical over 124 random pitched views (and the
+      render test's 4), frame time -5.4% (median -3.4%; -31.6% to +9.6%
+      by view). It drops 74% of the wholly overdrawn buildings, but
+      every one is still transformed (occ_pretest's bounds are level
+      flight only, so it's skipped when pitched) and recorded: in view 8
+      it saves 424K T of faces and spends ~420K T more on the pass.
+    - (Done 2026-11-09: a pitch-aware occ_pretest, and `OCC_PITCHED` on up
+      to `OCC_PMAX` (18): -7.7% over the 124 pitched views, pixel-identical.
+      See DONE.md.)
+
 ## Testing
 
 - (Done 2026-11-02: a regression suite in `tests/`, run by build.bat after
@@ -283,6 +333,148 @@ See README "Levels and cities".
 - (Done 2026-11-01: specials per wave from the level file, up to 5 types
   and counts a wave, wave 1 the level's start; `LV_SPECIAL_MAX` replaced
   by the types. See README "Special monsters".)
+
+## Screens in Layer 2 320x256 (2026-11-09, done 2026-11-13)
+
+Move the screens outside the game from the ULA (`text.asm`: 32x24
+characters, attribute colours) to Layer 2 320x256 (40x32 characters, any
+colour). The graphics page is done and tested: `layer2-320x256.asm`
+(`PAGE_L320`, in slot 2 over the occlusion page), test_l320.py; see README.
+The game start already switches back to 256x192 and puts the occlusion page
+back (`l2_game_mode`).
+
+Each screen, in place of `menu_clear` / `menu_print`:
+- `nextreg L320_MMU,PAGE_L320`, `l320_cls`, `l320_mode320` (clear before
+  switching, so the old contents never show).
+- Its text tables (row, column, colour, text) through `l320_print_list`,
+  with the colours as RRRGGGBB (`L320_WHITE`, `L320_YELLOW`, ...) in place
+  of the `MENU_*` attributes, re-laid out for 40x32.
+- Highlights (the selected option, a fit / can't-fit colour) with
+  `l320_recolour`, or by printing again in the new colour.
+- Panels and frames with `l320_box` / `l320_fill`.
+
+1. (Done 2026-11-10) Main menu: its own page now (`mainmenu.asm`,
+   `PAGE_MAINMENU`, page 36), and its NO SAVED GAME message.
+2. (Done 2026-11-13) Game over: drawn over the view in the Layer 2 large
+   font (`game_over_screen`, menu.asm); after game complete there's none
+   (the congratulations go back to the main menu).
+3. (Done 2026-11-10) Level complete: its own page now (`levelend.asm`,
+   `PAGE_LEVELEND`, page 37), with the salvage and its rewards and its own
+   PRESS SPACE (`le_space`). (Done 2026-11-13: game complete,
+   `game_complete_screen`, menu.asm: 320x256, the large font, PRESS SPACE
+   back to the main menu.)
+4. (Done 2026-11-13) Load error (`load_error_screen`, menu.asm): 320x256,
+   the large font, its message on three lines (CANNOT LOAD LEVEL, PUT THE
+   ZPDATA FOLDER / BESIDE ZPOLICE.NEX).
+5. (Done 2026-11-10) VTOL load-out (`loadout_screen`, loadout.asm). Since:
+   a schematic of the VTOL's underside with the slots' hardpoints
+   (ZPDATA/VTOL.ZPI, read when the screen opens; tools/screen_editor.py,
+   tools/vtol_schematic.py). Red
+   (`SCR_BAD`, a weapon that can't go in the slot) is hard to read on the
+   dark blue: maybe a lighter red.
+6. (Done 2026-11-10) Redefine keys (`keydef_screen`, keydef.asm): all 23
+   controls show at once now (no scrolling).
+7. (Done 2026-11-13) `menu_clear` removed (nothing used it); `menu_print`
+   and `menu_char` stay, for the boxes over the game (PAUSED, PREPARE FOR
+   COMBAT).
+8. (Done 2026-11-10) A large font for these screens: 12x10 cells in
+   colour gradients, ZPDATA/FONT12.ZPF, loaded at start-up, edited with
+   tools/font_editor.py. The 8x8 font in the same style too, FONT8.ZPF
+   (every text screen and the HUD). Maybe still: a title picture (see Graphics above),
+   and lower case / more punctuation in the font (59 characters now:
+   space to Z).
+
+## Projection optimisation (2026-11-07)
+
+1. (Done 2026-11-09: a leaner projection, `vproj`: 36% off a corner's
+   projection, 2.0% off the frame. See DONE.md.)
+2. (Done 2026-11-09: No real benefit in testing. See DONE.md.)
+   The street dots (draw_dots, 4.2% of a
+   frame) project grid points too, but likely couldn't have shared it
+   with the buildings: a dot is only worked out for a corner with no building next
+   to it, when drawing a floor tile, so the two sets of points barely
+   meet. A cache of the dots' own among the floor tiles is still open: a
+   dot already cached for the frame when a tile gets ready to project it means that
+   dot is already drawn, so the tile can skip it (no second projection,
+   no second draw).
+4. (Done 2026-11-09: fewer cells reaching the transform, a leaner
+   occ_pretest, the walk's own cull and whole rows skipped: 2.8% off the
+   frame, pixel-identical. See DONE.md.)
+
+## DMA optimisation (2026-11-07)
+
+1. (Done 2026-11-12) Clear screen as two rectangles, sky and ground: fill
+   mode, 2D, in 32-row pieces (`dd_band`), by physical address in the
+   buffer being drawn (seg_base), so no paging. Not X,Y on the hidden
+   screen: the level's start clears both buffers before NextReg $13 is set
+   (tests/test_hardware.py caught it writing over pages 0-2).
+   - (Before: the clear by dma_fill in fill mode, section by section; that
+     part was already done.)
+2. (Done 2026-11-12) Long spans in fill mode: `span_arm` leaves the DMA in
+   fill mode, `fill_poly` sends the face's colour as the fill value,
+   `occ_dma` turns fill off round its copy. With item 1: -7.8% of a frame
+   (emulator, 6 T a DMA byte).
+3. (Done 2026-11-12) Block fill buildings (`fill_blocks`): runs of rows with
+   the same left and right x, scanned row by row; a run of 4 rows or more,
+   8 wide or more, one DMA+ rectangle, the rest spans. Level flight only:
+   pitched, rows rarely repeat and the scan cost more than it saved. With
+   items 1-2: -8.4% (-6% to -17% by view). Still to do: check the frame
+   rate on a real Next (`DRAW_FPS`) and the sound with the long bursts.
+5. (Done 2026-11-12) Draw the figures with DMA+ (`spr_rect.asm`): one 2D
+   transparent transfer a figure, by physical address (not X,Y: see item
+   1), clipped by cutting the row length, rows and source start; mirrored
+   by port B counting down. The hardware build loads its own file,
+   ZPDATA/SPRITEHW.ZPG (gengraphics.py), each level a rectangle: 48 pages
+   of the 58 allowed (pages 86-95 shared with the load-out's background
+   copy and read back at a level's start: wave_prepare, gfx_reload); past
+   58, a 2 MB Next's pages. A near figure: ~25,000
+   T to ~3,000 (-89%, emulator, 6 T a DMA byte). Tried first: a DMA copy
+   per row from SPRITES.ZPG's runs: only ~2% (rows of at most 16 pixels).
+   - The fading ghost (spr_col: every pixel one colour) can't be blitted:
+     the CPU draws it from the rectangle, ~20% slower than the plain
+     build. To do: fade it by stepping its own palette entries towards the
+     background instead, and blit it too.
+
+## Final boss monster (done 2026-11-12 to 2026-11-13)
+
+- this will be a large "staypuft" type boss monster about 10 building levels tall and taking a whole square. It will look more like the devil from the end of quatermass and the pitt.
+- It will walk and each step shake the screen. Each step will be half a tile. its objective to destroy the vtol. It takes 3 seconds to charge up its eyes from black to blue. Then will fire lightning at the vtol. it will always fire instantly in a straight line regardless of anything in the way. if it hits a building on the way. 
+- That building will be destroyed replaced with say 50 particles and high reducing at 2 frames per meter until height of 1m. if the lightning hits the player it will cause 20 damage and spin the player in a random direction for a random 15 to 90 degrees. 
+- the building is only desctroyed from the in memory map the file on SD will not be touched.
+- it will also randomly pitch the vtol up or down by 45 degrees and decellerate to 0 as per pressing the z key.
+ - to make space for tge graphics all other monsters can eb swapped out with the new one from SD card.
+
+(Done 2026-11-12: the devil, devil.asm and devil_draw.asm; README "Special
+monsters" has the details, tests/test_devil.py the checks.  As asked, but:
+- (2026-11-13) it chases the VTOL, not the pad; it walks through
+  buildings under level 5, terraces, barricades and the pad, knocking them
+  down as its lightning does (the pad: no game over), and over rubble; it
+  shoots the VTOL within 160 m;
+- the VTOL's nose is pitched half way to its limit (PITCH_KICK, PMAX/2:
+  17 degrees), not 45;
+- its graphics (ZPDATA/DEVIL.ZPB, sprites/devil.json: a first go, drawn by
+  tools/devilart.py, to edit) go over the figures' pages from the kept
+  ones on (the humans', zombies' and fast zombies' are kept: its wave has
+  zombies) at its wave's start, behind PREPARE FOR COMBAT;
+- it's scaled as it's drawn.  (2026-11-13) On real hardware, from 150
+  rows tall each frame row is drawn once and DMA+ copies it down the rows
+  that repeat it: close to, 62-72% less than the CPU alone (about 400K T at
+  most); smaller, the CPU draws it (about 120-280K T);
+- (2026-11-13) buildings are cover: the bolt stops at the first one in the
+  way (it comes down), the VTOL safe; a hit's spin, pitch halved (7-44
+  degrees, half way up or down) and its speed braked to half, not to 0;
+  it looks more like Quatermass's Martian (a locust's head, great horns),
+  white with blue tints; thermal black with a grey outline, red eyes; night
+  vision bright greens or light greys, white eyes; its footfall kills the
+  zombies and humans under it;
+- (2026-11-13) on its level the pad destroyed is no game over; the palette
+  darkens a step every 100 hit points off it; its hit points on the HUD
+  (debug); buildings' bursts wider; a chain gun hit: one quick spark;
+- (2026-11-13) its eyes charge for 10 s, not 3, with a rising whine for
+  the last 3; its lightning does 10 damage, not 20, with a crackling zap
+  and thunder;
+- (2026-11-13) tools/sprite_editor.py edits sprites/devil.json (last in its
+  list: one 64 x 128 size a frame, no Size menu).)
 
 ## (Original notes, kept for reference)
 

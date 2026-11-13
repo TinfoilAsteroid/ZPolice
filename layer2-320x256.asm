@@ -1073,12 +1073,18 @@ img_magic:  db "ZPIM", 1
 ; text with no paper (L320_NOPAPER); before a field's text changes it puts
 ; that box of the background back (l320_restore), then prints the new text.
 ; Both go through slot 4 ($8000, the ULA screen's, unused on these screens:
-; put back after).
-        ASSERT PAGE_GFX0 + GFX_PAGES_MAX <= PAGE_L320_BG
+; put back after).  The copy's pages are the figure graphics' last ones
+; (shared: no figure is drawn on these screens): shared_pg says the copy has
+; them, and the level's start reads the graphics back (wave_prepare,
+; gfx_reload).
+        ASSERT PAGE_L320_BG >= PAGE_GFX0
+        ASSERT PAGE_L320_BG + L320_PAGES == PAGE_GFX0 + GFX_PAGES_MAX
         ASSERT PAGE_L320_BG + L320_PAGES <= 96
 
 ; The screen as it is now, into the background copy
 l320_bg_save:
+        ld a,1
+        ld (shared_pg),a                ; (the figures' last pages: taken)
         ld b,0
 .pg:    ld a,b
         add a,L320_PAGE0

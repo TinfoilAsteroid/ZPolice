@@ -100,12 +100,23 @@ TERRACE_CODE, TERRACE_H = 17, 32       # 0.25 height units
 # on the HUD map, nothing placed there; as tall as the wall (BLD_MAX_H), so
 # anything that tests heights (collisions, sight, rounds) finds it solid.
 VOID_CODE, VOID_H = 18, BLD_MAX_H
-emit_words("htab", [round(lvl * BLD_MAX_H / 15) for lvl in range(16)] + [PAD_H, TERRACE_H, VOID_H])
+# Entry 19 (RUBBLE_CODE): a building the final boss's lightning brought down,
+# 1 m of rubble; 20..23 (COLLAPSE_CODE on): one each for a building coming
+# down, its height (0 here) set by the game as it falls (devil.asm).  Only
+# ever in the game's own map, never in a file.
+RUBBLE_CODE, RUBBLE_H = 19, 13
+COLLAPSE_CODE, COLLAPSE_N = 20, 4
+emit_words("htab", [round(lvl * BLD_MAX_H / 15) for lvl in range(16)] + [PAD_H, TERRACE_H, VOID_H]
+           + [RUBBLE_H] + [0] * COLLAPSE_N)
 lines.append(f"        ASSERT BLD_MAX_H == {BLD_MAX_H}   ; gentables.py and zpolice.asm agree")
 lines.append(f"PAD_CODE        equ {PAD_CODE}      ; map code of the base landing pad")
 lines.append(f"TERRACE_CODE    equ {TERRACE_CODE}      ; the terrace round it (0.25 height units)")
 lines.append(f"PAD_H           equ {PAD_H}     ; its height (0.5 height units)")
 lines.append(f"VOID_CODE       equ {VOID_CODE}      ; out of bounds (outside the perimeter): never drawn")
+lines.append(f"RUBBLE_CODE     equ {RUBBLE_CODE}      ; a building brought down: 1 m of rubble")
+lines.append(f"RUBBLE_H        equ {RUBBLE_H}")
+lines.append(f"COLLAPSE_CODE   equ {COLLAPSE_CODE}      ; COLLAPSE_N buildings coming down: their")
+lines.append(f"COLLAPSE_N      equ {COLLAPSE_N}       ; heights set as they fall (devil.asm)")
 lines.append("")
 
 # ---------------------------------------------------------------------------
@@ -158,6 +169,10 @@ TERRACE_R = 2                              # terrace: cells 1..2 out from the pa
 BLD_FAMILIES = 16                          # ordinary buildings: families 0..15
                                            # (the wall's 0); 16..61 kept free
 WALL_FAMILY = 0                            # the perimeter wall's colour family
+# The last level's entrance to hell: a circle of road HELL_R cells round
+# (HELL_X, HELL_Z), far across the city from the base, where the final boss
+# (the devil) rises in the last wave (the level's map changes: level_generate)
+HELL_X, HELL_Z, HELL_R = 12, 52, 3
 BASE_YAW = 0                               # start heading: north (+z), up the
                                            # middle boulevard (0 = +z, 64 = +x)
 lines.append(f"PAD_X           equ {PAD_X}      ; base landing pad cell (gentables.py)")
@@ -165,6 +180,9 @@ lines.append(f"PAD_COL         equ ${PAD_FAMILY * 4:02X}     ; its city_col (col
 lines.append(f"TERRACE_COL     equ ${TERRACE_FAMILY * 4:02X}     ; the terrace's city_col")
 lines.append(f"TERRACE_R       equ {TERRACE_R}       ; terrace: cells 1..TERRACE_R from the pad")
 lines.append(f"PAD_Z           equ {PAD_Z}")
+lines.append(f"HELL_X          equ {HELL_X}      ; the final level's entrance to hell: a")
+lines.append(f"HELL_Z          equ {HELL_Z}      ; circle of road round this cell, where the")
+lines.append(f"HELL_R          equ {HELL_R}       ; devil rises (level_generate)")
 lines.append(f"BASE_YAW        equ {BASE_YAW}      ; start heading: north up the boulevard")
 lines.append(f"WALL_FAMILY     equ {WALL_FAMILY}       ; perimeter wall colour family (gentables.py)")
 lines.append(f"        ASSERT GRID == {GRID}   ; gentables.py and zpolice.asm agree")
@@ -267,6 +285,17 @@ FIXED = {   # index: (R, G, B) 0..7 - indices must match zpolice.asm
     19: ("HUD_WARN", (7, 0, 0)),
     23: ("DOT_COL", (5, 5, 5)),
     27: ("ZOMBIE_COL", (4, 6, 2)),        # zombie silhouettes (pale olive)
+    171: ("DEVIL_EYE", (0, 0, 0)),        # the devil's eyes: set as they charge
+    # the devil's own colours (family 47, no building's: BLD_FAMILIES), white
+    # with blue tints, its outline dark blue: as here unless
+    # sprites/devil_palette.json says otherwise (spritefile.py: the vision
+    # modes' too, tools/visionpal.py)
+    188: ("DEVIL_COL0", (7, 7, 7)),       # white
+    189: ("DEVIL_COL1", (5, 6, 7)),       # pale blue
+    190: ("DEVIL_COL2", (3, 4, 7)),       # blue
+    191: ("DEVIL_COL3", (1, 1, 3)),       # dark blue: its outline
+    175: ("BOLT_COL", (6, 7, 7)),         # its lightning: the bright core
+    179: ("BOLT_COL2", (2, 4, 7)),        #   and its blue glow
     31: ("BULLET_COL", (7, 7, 2)),        # machine gun tracers (yellow)
     35: ("LASER_COL", (7, 1, 1)),         # pulse laser beam (red)
     39: ("MAP_BG", (0, 0, 0)),            # city map: streets (black)
@@ -595,6 +624,8 @@ import spritefile                      # the figures' colours (sprites/palette.j
 if not os.path.exists(spritefile.PAL_FILE):
     raise SystemExit(f"{spritefile.PAL_FILE}: missing: run gengraphics.py first (build.bat does)")
 SPR_PAL = spritefile.load_palette()
+for _e in spritefile.DEVIL_ENTRIES:       # the devil's own colours (normal):
+    FIXED[_e] = (FIXED[_e][0], spritefile.load_devil_palette()[_e]["normal"])   # its file's
 from levelfile import (LEVEL_KEYS, LEVEL_VERSION, LV_MAX_WAVES, LV_SPEC_SLOTS, SPEC_NAMES,
                        SPEC_NONE, level_record, level_file, level_text, level_parse,
                        level_check, level_from_text)
@@ -704,9 +735,16 @@ def level_generate(lv):
     ghosts = 0 if lv < 5 else min(5, (lv - 3) // 2)
     banshees = 1 if lv <= 10 else 2 if lv <= 30 else 3
     ghouls = 0 if lv < 21 else 1 if lv < 30 else 2 if lv < 40 else 3
+    # The last level's last wave is the final boss alone (the devil: its
+    # graphics go over the other monsters', so none of them with it), at the
+    # entrance to hell: a circle of road (the level's map changes).
+    last = lv == CITY_LEVELS * len(CITIES)
     waves_specials = []
     for w in range(1, waves + 1):
         sp = []
+        if w == waves and last:
+            waves_specials.append([(SPEC_NAMES.index("DEVIL"), 1)])
+            continue
         if w == waves and lv % CITY_LEVELS == 0:
             sp.append((SPEC_NAMES.index("LICH"), 1))
         if w == 1 and ghosts:
@@ -720,7 +758,11 @@ def level_generate(lv):
             sp.append((SPEC_NAMES.index("CLUSTERS"), 4))
         waves_specials.append(sp)
     values = (zomb, waves, fast, VIEW_R)
-    changes = []                       # (x, z, code, col): none
+    changes = []                       # (x, z, code, col)
+    if last:
+        changes = [(HELL_X + dx, HELL_Z + dz, 0, GROUND_IDX)
+                   for dz in range(-HELL_R, HELL_R + 1) for dx in range(-HELL_R, HELL_R + 1)
+                   if dx * dx + dz * dz <= HELL_R * HELL_R + 1]
     return level_text(lv, cn, CITIES[cn - 1][0], values, waves_specials, changes)
 
 import levelpal
@@ -857,7 +899,7 @@ MAIN_FILES = [   # file, its labels, its opening lines
 ]
 EQU_TO = {"PAD_": "city_map.asm", "TERRACE_": "city_map.asm",
           "BASE_YAW": "city_map.asm", "WALL_FAMILY": "city_map.asm",
-          "LEVEL_LAST": "city_map.asm",
+          "LEVEL_LAST": "city_map.asm", "HELL_": "city_map.asm",
           "CITY_LEVELS": "city_map.asm",
           "ASSERT GRID": "city_map.asm", "ASSERT BLD_MAX_H": "htabs.asm"}
 EQU_TO.update({f"ASSERT {name} ==": "l2_pallets.asm" for _, (name, _) in FIXED.items()})

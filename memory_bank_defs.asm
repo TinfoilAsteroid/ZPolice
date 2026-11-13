@@ -183,11 +183,14 @@ PAGE_MAINMENU           equ 36          ; mainmenu.asm: the main menu (slot 6)
 PAGE_LEVELEND           equ 37          ; levelend.asm: level complete (slot 6)
 PAGE_L320_BG            equ 86          ; 86-95: a copy of a 320x256 screen's
                                         ; background (l320_bg_save), to put back
-                                        ; under text that changes (l320_restore)
-PAGE_GFX0               equ 38          ; the figures' graphics (from page 38,
+                                        ; under text that changes (l320_restore).
+                                        ; Shared: the figures' last 10 pages
+                                        ; (shared_pg; gfx_reload puts them back)
+PAGE_GFX0               equ 38          ; the figures' graphics (pages 38-95,
                                         ; GFX_PAGES_MAX at most), loaded from
                                         ; ZPDATA/SPRITES.ZPG at start-up; each
                                         ; mapped at $C000 (slot 6) to draw
+GFX_SHARED              equ PAGE_L320_BG - PAGE_GFX0    ; (its first shared page)
 PAGE_LEVEL              equ 30          ; level_load.asm: level and city
                                         ; files (slot 6); pages 18-29 are
                                         ; the Layer 2 buffers

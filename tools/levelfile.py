@@ -56,7 +56,7 @@ def field(line, k):
 LEVEL_KEYS = ["ZOMBIES", "WAVES", "FAST", "VIEW"]
 LEVEL_VERSION = 2                      # the level files' format (level_load.asm)
 LV_MAX_WAVES, LV_SPEC_SLOTS = 10, 5    # levels.asm
-SPEC_NAMES = ["GHOST", "BANSHEE", "GHOUL", "LICH", "CLUSTERS"]     # the special types, by id (SPEC_*)
+SPEC_NAMES = ["GHOST", "BANSHEE", "GHOUL", "LICH", "DEVIL", "CLUSTERS"]  # the special types, by id (SPEC_*)
 SPEC_NONE = 255
 
 def level_record(lv, name, values, waves_specials):
@@ -171,6 +171,16 @@ def level_check(lv, d, cities):
             errs.append(f"WAVE {w}: {mons} specials; at most 8 at once (NSPEC)")
         if any(SPEC_NAMES[t] == "CLUSTERS" and n > 8 for t, n in sp):
             errs.append(f"WAVE {w}: at most 8 CLUSTERS")
+        # the final boss: its graphics go over the other monsters' (bar the
+        # zombies and humans), so it comes alone, last, and only one
+        devil = sum(n for t, n in sp if SPEC_NAMES[t] == "DEVIL")
+        if devil:
+            if devil > 1:
+                errs.append(f"WAVE {w}: one DEVIL at most")
+            if any(SPEC_NAMES[t] not in ("DEVIL", "CLUSTERS") and n for t, n in sp):
+                errs.append(f"WAVE {w}: a DEVIL comes without other special monsters")
+            if w != waves:
+                errs.append(f"WAVE {w}: a DEVIL only in the level's last wave ({waves})")
     ch = d["changes"]
     if len(ch) > 64:
         errs.append(f"CHANGES {len(ch)}: at most 64 (LVF_CHG_MAX)")

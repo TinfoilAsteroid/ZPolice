@@ -376,10 +376,15 @@ def mirror(px):
 # ---------------------------------------------------- the game's binary file
 # ZPDATA/SPRITES.ZPG:
 #   +0   4    "ZPGF"
-#   +4   1    format version (4)
+#   +4   1    format version (5)
 #   +5   1    pages (8K each, from PAGE_GFX0), 1..GFX_PAGES_MAX
 #   +6   1    directory entries: the purposes (the game's GFX_ENTRIES)
-#   +7   9    (reserved, 0)
+#   +7   1    kept pages: the directory and the KEEP_FIGURES' levels and
+#             pixels are all in the pages before this one (they're placed
+#             first).  The final boss's graphics (DEVIL.ZPB, below) go over
+#             the pages from here on in its wave: the other figures aren't
+#             drawn then
+#   +8   8    (reserved, 0)
 #   +16  pages x 8192: the pages, each loaded to $C000 (slot 6)
 # Page 0 starts with the directory (GFX_DIR, $C000):
 #   the purposes, 4 bytes each in ANIMS order: frames, 0, address of its
@@ -394,12 +399,18 @@ def mirror(px):
 #   pixels: a row at a time, its first drawn pixel's column (from the left),
 #     the number of pixels, then each a Layer 2 palette entry (SPR_PAL0 +
 #     colour) or 0 (transparent, skipped).
+# ZPDATA/SPRITEHW.ZPG, the real-hardware build's (REAL_HARDWARE: one DMA+
+# transparent rectangle a figure): the same but "ZPGR", and each level's
+# pixels its rectangle, width x height bytes row by row, 0 transparent.
 MAGIC = b"ZPGF"
-BIN_VERSION = 4
+MAGIC_RECT = b"ZPGR"
+BIN_VERSION = 5
+KEEP_FIGURES = ("human", "zombie", "fast_zombie")   # (the final boss's wave has them)
 HEADER = 16
 PAGE = 8192
 GFX_ADDR = 0xC000
-GFX_PAGES_MAX = 48                      # (pages 38 to 85: 86-95 are PAGE_L320_BG)
+GFX_PAGES_MAX = 58                      # (pages 38 to 95: 86-95 shared with PAGE_L320_BG,
+                                        #  read back at a level's start)
 GFX_MIN_H, GFX_MAX_H = 3, 32            # the sizes drawn, in rows.  The file
                                         # grows with the cube of GFX_MAX_H
 
@@ -433,9 +444,16 @@ def lod_bytes(lod):
     return bytes(out)
 
 
-def build(figures):
+def lod_rect(lod):
+    """A level's pixels as a rectangle (SPRITEHW.ZPG): every row whole."""
+    return bytes(SPR_PAL0 + v if v else 0 for r in pixels(lod) for v in r)
+
+
+def build(figures, rect=False):
     """figures: {name: data} for every figure -> (the file's bytes, pages
-    used, bytes used).  ValueError if it won't fit."""
+    used, bytes used): SPRITES.ZPG, or with rect SPRITEHW.ZPG (each level a
+    rectangle).  ValueError if it won't fit.  (keep_pages(file) is its kept
+    pages: the KEEP_FIGURES are placed first.)"""
     # the frames, each a list of (width, height, pixels) by height
     entries = []
     for fig, a in ANIMS:
@@ -446,7 +464,7 @@ def build(figures):
             levels = []
             for h in range(GFX_MIN_H, GFX_MAX_H + 1):
                 lod = sized(fr["lods"], zs[fi], d["height"], h)
-                levels.append((lod_size(lod)[0], lod_bytes(lod)))
+                levels.append((lod_size(lod)[0], lod_rect(lod) if rect else lod_bytes(lod)))
             frames.append(levels)
         entries.append(frames)
     assert len(entries) == len(ANIMS)
@@ -473,13 +491,24 @@ def build(figures):
         off += size
         return got
 
-    # the directory, then per frame its table of levels and their pixels
+    # the directory (its frame lists in ANIMS order), then per frame its
+    # table of levels and their pixels: the KEEP_FIGURES' first
     d = pages[0]
     p = 4 * len(entries)                # after the purpose table
+    lists = []
     for ai, frames in enumerate(entries):
         d[4 * ai] = len(frames)
         d[4 * ai + 2:4 * ai + 4] = (GFX_ADDR + p).to_bytes(2, "little")
-        for levels in frames:
+        lists.append(p)
+        p += 3 * len(frames)
+    assert p == dir_size
+    kept = [ai for ai, (fig, _) in enumerate(ANIMS) if fig in KEEP_FIGURES]
+    keep = None
+    for ai in kept + [ai for ai in range(len(entries)) if ai not in kept]:
+        if keep is None and ai not in kept:
+            keep = page + (1 if off else 0)     # (the kept ones all before it)
+        p = lists[ai]
+        for levels in entries[ai]:
             tp, ta = place(1 + 4 * len(levels))
             d[p] = tp
             d[p + 1:p + 3] = ta.to_bytes(2, "little")
@@ -490,7 +519,162 @@ def build(figures):
                 pages[pg][addr - GFX_ADDR:addr - GFX_ADDR + len(data)] = data
                 t += bytes((w, pg, addr & 255, addr >> 8))
             pages[tp][ta - GFX_ADDR:ta - GFX_ADDR + len(t)] = t
-    assert p == dir_size
+    if keep is None:
+        keep = len(pages)
     used = page * PAGE + off
-    head = MAGIC + bytes((BIN_VERSION, len(pages), len(entries))) + bytes(HEADER - 7)
+    head = ((MAGIC_RECT if rect else MAGIC) + bytes((BIN_VERSION, len(pages), len(entries), keep))
+            + bytes(HEADER - 8))
     return head + b"".join(bytes(pg) for pg in pages), len(pages), used
+
+
+def keep_pages(data):
+    """A built figure file's kept pages (the KEEP_FIGURES' are before it)."""
+    return data[7]
+
+
+# ---------------------------------------------------- the final boss
+# The devil (Quatermass's): sprites/devil.json, the figure format, but its
+# own: never in SPRITES.ZPG.  DEVIL_ANIMS' frames, each one level of
+# DEVIL_W x DEVIL_SRC_H pixels, which the game scales itself to any size
+# (devil_draw, city2.asm).  Its eyes are colour DEVIL_EYE_COLOUR, which the
+# game draws in its own palette entry, DEVIL_EYE_ENTRY, glowing from black
+# to blue as it charges its lightning (red in thermal: devil.asm); and the
+# colours in DEVIL_COLOURS are drawn in its own entries too (white, pale
+# blue, blue, dark blue; black in thermal).
+#
+# ZPDATA/DEVIL.ZPB, loaded over the figures' pages from the kept pages on
+# (above) when its wave starts:
+#   +0   4    "ZPDV"
+#   +4   1    format version (1)
+#   +5   1    frames (DEVIL_FRAMES), in DEVIL_ANIMS order
+#   +6   1    width (DEVIL_W)
+#   +7   1    height (DEVIL_SRC_H)
+#   +8   8    (reserved, 0)
+#   +16  frames x 8192: each frame's pixels, row by row, a Layer 2 palette
+#        entry each (SPR_PAL0 + colour; DEVIL_EYE_ENTRY its eyes), 0
+#        transparent: one 8K page a frame, at $C000 to draw
+DEVIL = "devil"
+DEVIL_H = 597                           # world units: 10 building levels (46 m)
+DEVIL_W, DEVIL_SRC_H = 64, 128
+DEVIL_ANIMS = [("walk_front", "walking towards the camera (2 steps)"),
+               ("walk_side", "walking, side on, facing left (mirrored for right)"),
+               ("walk_rear", "walking away from the camera")]
+DEVIL_FRAMES_EACH = 2
+DEVIL_FRAMES = DEVIL_FRAMES_EACH * len(DEVIL_ANIMS)
+DEVIL_EYE_COLOUR = 23                   # (cyan in the editor)
+DEVIL_EYE_ENTRY = 171                   # (a fixed slot: zpolice.asm DEVIL_EYE)
+# Its own colours: these figure colours are drawn in the devil's palette
+# entries (gentables.py FIXED DEVIL_COL0..3: black in thermal), not the
+# figures' (shared with the other figures, so they'd show in thermal)
+DEVIL_COLOURS = {2: 188,                # white
+                 21: 189,               # pale blue (white in the editor)
+                 12: 190,               # blue
+                 13: 191,               # dark blue: its outline
+                 DEVIL_EYE_COLOUR: DEVIL_EYE_ENTRY}
+# Its own entries' colours, one place for all of them: normal (gentables.py
+# puts them in every palette) and in each vision mode (visionpal.py), in
+# sprites/devil_palette.json (the sprite editor edits it; made from
+# DEVIL_PAL_DEFAULT if missing):
+#     {"format": "Z-Police devil palette", "version": 1,
+#      "colours": {"188": {"normal": [r, g, b], "NVG": [...], "NVM": [...],
+#                          "THM": [...]}, ... "191": ...}}
+# Its eyes (DEVIL_EYE_ENTRY) are the game's: black in every palette, set as
+# they charge, to DEVIL_EYE_SHOWN fully charged (the editor shows that).
+DEVIL_PAL_FILE = os.path.join(SPRITE_DIR, "devil_palette.json")
+DEVIL_PAL_FORMAT = "Z-Police devil palette"
+DEVIL_PAL_MODES = ("normal",) + VISION_MODES
+DEVIL_ENTRIES = (188, 189, 190, 191)    # (gentables.py FIXED DEVIL_COL0..3)
+DEVIL_PAL_DEFAULT = {
+    188: {"normal": (7, 7, 7), "NVG": (4, 7, 4), "NVM": (7, 7, 7), "THM": (0, 0, 0)},   # white
+    189: {"normal": (5, 6, 7), "NVG": (2, 7, 2), "NVM": (6, 6, 6), "THM": (0, 0, 0)},   # pale blue
+    190: {"normal": (3, 4, 7), "NVG": (0, 6, 0), "NVM": (5, 5, 5), "THM": (0, 0, 0)},   # blue
+    191: {"normal": (1, 1, 3), "NVG": (0, 3, 0), "NVM": (3, 3, 3), "THM": (3, 3, 3)},   # outline
+}
+DEVIL_EYE_SHOWN = {"normal": (0, 3, 7), "NVG": (7, 7, 7), "NVM": (7, 7, 7), "THM": (7, 0, 0)}
+
+
+def load_devil_palette(path=DEVIL_PAL_FILE):
+    """sprites/devil_palette.json -> {entry: {mode: (r, g, b)}}; the
+    defaults if there's no file.  ValueError if malformed."""
+    if not os.path.exists(path):
+        return {e: dict(m) for e, m in DEVIL_PAL_DEFAULT.items()}
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    if d.get("format") != DEVIL_PAL_FORMAT:
+        raise ValueError(f"{path}: not a {DEVIL_PAL_FORMAT} file")
+    try:
+        return {e: {m: tuple(int(v) for v in d["colours"][str(e)][m]) for m in DEVIL_PAL_MODES}
+                for e in DEVIL_ENTRIES}
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"{path}: needs entries {', '.join(map(str, DEVIL_ENTRIES))}, "
+                         f"each [r, g, b] for {', '.join(DEVIL_PAL_MODES)}")
+
+
+def save_devil_palette(dp, path=DEVIL_PAL_FILE):
+    lines = []
+    for e in DEVIL_ENTRIES:
+        modes = ", ".join(f'"{m}": {json.dumps(list(dp[e][m]))}' for m in DEVIL_PAL_MODES)
+        lines.append(f'  "{e}": {{{modes}}}')
+    text = ('{\n "format": "%s", "version": %d,\n "colours": {\n' % (DEVIL_PAL_FORMAT, VERSION)
+            + ",\n".join(lines) + "\n }\n}\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def devil_palette_problems(dp):
+    errs = []
+    for e in DEVIL_ENTRIES:
+        for m in DEVIL_PAL_MODES:
+            c = dp[e][m]
+            if len(c) != 3 or any(not 0 <= v <= 7 for v in c):
+                errs.append(f"entry {e} {m}: r, g, b are 0..7")
+            elif is_transparent(c):
+                errs.append(f"entry {e} {m}: {tuple(c)} is Layer 2's transparent colour")
+    return errs
+
+
+DEVIL_MAGIC = b"ZPDV"
+DEVIL_VERSION = 1
+assert DEVIL_W * DEVIL_SRC_H == PAGE
+
+
+def devil_path():
+    return os.path.join(SPRITE_DIR, f"{DEVIL}.json")
+
+
+def devil_problems(fig_data):
+    """What the game can't use in the devil's data, as messages."""
+    errs = []
+    need = [a for a, _ in DEVIL_ANIMS]
+    for a in need:
+        if a not in fig_data["anims"]:
+            errs.append(f"{a}: missing (the game uses it)")
+    for a, an in fig_data["anims"].items():
+        if a not in need:
+            errs.append(f"{a}: not one of the devil's ({', '.join(need)})")
+            continue
+        if len(an["frames"]) != DEVIL_FRAMES_EACH:
+            errs.append(f"{a}: {DEVIL_FRAMES_EACH} frames")
+        for fi, fr in enumerate(an["frames"]):
+            if len(fr["lods"]) != 1:
+                errs.append(f"{a} frame {fi + 1}: one level ({DEVIL_W}x{DEVIL_SRC_H}: the game scales it)")
+                continue
+            lod = fr["lods"][0]
+            if lod_size(lod) != (DEVIL_W, DEVIL_SRC_H) or any(len(r) != DEVIL_W for r in lod["rows"]):
+                errs.append(f"{a} frame {fi + 1}: {DEVIL_W}x{DEVIL_SRC_H} pixels")
+            bad = {ch for r in lod["rows"] for ch in r if ch not in PIXEL_CHARS}
+            if bad:
+                errs.append(f"{a} frame {fi + 1}: unknown pixels {''.join(sorted(bad))!r}")
+    return errs
+
+
+def devil_file(fig_data):
+    """sprites/devil.json's data -> ZPDATA/DEVIL.ZPB's bytes."""
+    out = DEVIL_MAGIC + bytes((DEVIL_VERSION, DEVIL_FRAMES, DEVIL_W, DEVIL_SRC_H)) + bytes(HEADER - 8)
+    for a, _ in DEVIL_ANIMS:
+        for fr in fig_data["anims"][a]["frames"]:
+            px = pixels(fr["lods"][0])
+            out += bytes(DEVIL_COLOURS.get(v, SPR_PAL0 + v) if v else 0
+                         for r in px for v in r)
+    assert len(out) == HEADER + DEVIL_FRAMES * PAGE
+    return out

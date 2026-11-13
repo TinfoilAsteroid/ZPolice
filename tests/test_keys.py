@@ -7,10 +7,10 @@ import os
 import zptest as zp
 from zptest import sym
 
-N_DEFS = sym["K_ACTIONS"]                  # (23: with K_VISION, the strafes)
-KF_VERSION = 3
+N_DEFS = sym["K_ACTIONS"]                  # (24: with K_VISION, the strafes, K_TARGET)
+KF_VERSION = sym["KF_VERSION"]
 KF_SIZE = 6 + 4 * N_DEFS
-KB_Q, KB_M = 0x0201, 0x0704                # SPEED UP's default, and M
+KB_Q, KB_J = 0x0201, 0x0608                # SPEED UP's default, and J (unused)
 
 
 def boot(sd):
@@ -39,16 +39,16 @@ def scans(cpu, keys, n):
 
 
 def redefine_speed_up(cpu):
-    """9 on the main menu, SPEED UP redefined as M, then 1 to leave."""
+    """9 on the main menu, SPEED UP redefined as J, then 1 to leave."""
     kd = sym["PAGE_KEYDEF"]
     scans(cpu, "9", 2)
     zp.run_until(cpu, lambda: zp.at_scan(cpu, kd), "the redefine screen")
     scans(cpu, "", 3)
     scans(cpu, " ", 2)                 # SPACE: redefine all, from SPEED UP
     scans(cpu, "", 60)                 #   (its second's pause)
-    scans(cpu, "M", 2)
+    scans(cpu, "J", 2)
     scans(cpu, "", 3)
-    zp.check(defs(cpu)[0] == KB_M, f"SPEED UP is {defs(cpu)[0]:04X} after pressing M, not {KB_M:04X}")
+    zp.check(defs(cpu)[0] == KB_J, f"SPEED UP is {defs(cpu)[0]:04X} after pressing J, not {KB_J:04X}")
     scans(cpu, "1", 2)
     zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu again")
 
@@ -69,9 +69,9 @@ def test_saved_and_loaded():
         data = open(p, "rb").read()
         zp.check(len(data) == KF_SIZE, f"KEYS.ZPK is {len(data)} bytes, not {KF_SIZE}")
         zp.check(data[:6] == b"ZPKY" + bytes([KF_VERSION, N_DEFS]), f"KEYS.ZPK header {data[:6]!r}")
-        zp.check(data[6:8] == KB_M.to_bytes(2, "little"), f"KEYS.ZPK SPEED UP {data[6:8].hex()}")
+        zp.check(data[6:8] == KB_J.to_bytes(2, "little"), f"KEYS.ZPK SPEED UP {data[6:8].hex()}")
         d = defs(boot(sd))
-        zp.check(d[0] == KB_M, f"after a restart SPEED UP is {d[0]:04X}, not M")
+        zp.check(d[0] == KB_J, f"after a restart SPEED UP is {d[0]:04X}, not J")
         zp.check(d[1:] == d0[1:], "after a restart other keys changed")
         open(p, "wb").write(data[:4] + b"\x09" + data[5:])     # a version this game doesn't know
         zp.check(defs(boot(sd)) == d0, "a KEYS.ZPK of the wrong version was used")

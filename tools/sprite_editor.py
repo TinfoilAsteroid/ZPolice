@@ -2,7 +2,7 @@
 and their 32 colours, sprites/palette.json (tools/spritefile.py has the
 format).
 
-    python tools/sprite_editor.py [zombie|fast_zombie|ghoul|ghost|banshee|human|lich]
+    python tools/sprite_editor.py [zombie|fast_zombie|ghoul|ghost|banshee|human|lich|devil]
 
 On the left: the figure, its purposes (what the game draws it doing: a
 zombie walking towards the camera, side on or away; a human waving or
@@ -45,6 +45,19 @@ this one).
 
 Save (Ctrl+S) checks the figure (spritefile.problems) and writes its file
 and the colours; build.bat (gengraphics.py) then makes ZPDATA/SPRITES.ZPG.
+
+The devil, the final boss (sprites/devil.json, last in the list), is edited
+the same way, but it has one size a frame, DEVIL_W x DEVIL_SRC_H (64 x 128):
+the game scales it to its size as it draws it, so there are no generated
+sizes and the Size menu doesn't apply.  Two frames a purpose (its legs).
+Colour DEVIL_EYE_COLOUR (23) is its eyes: the game draws them in their own
+colour, glowing black to blue as it charges its lightning (white in night
+vision, red in thermal); they're shown fully charged.  Colours 2, 21, 12
+and 13 are its own (spritefile.DEVIL_COLOURS: its palette entries 188-191,
+sprites/devil_palette.json): with the devil chosen they show, and Edit
+colour sets, its own colours in each mode, not the other figures'.  Its
+checks are spritefile.devil_problems; build.bat makes ZPDATA/DEVIL.ZPB from
+it.
 """
 import copy
 import os
@@ -58,6 +71,29 @@ import spritefile as sf
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SWATCH = 22
 PREVIEW_MS = 200                        # a preview frame (4 game frames at 20 fps)
+
+
+NAMES = sf.FIGURE_NAMES + [sf.DEVIL]   # (the devil: its own format, last)
+
+
+def is_devil(f):
+    return f == sf.DEVIL
+
+
+def fig_path(f):
+    return sf.devil_path() if is_devil(f) else sf.figure_path(f)
+
+
+def fig_height(f):
+    return sf.DEVIL_H if is_devil(f) else sf.figure_height(f)
+
+
+def fig_anims(f):
+    return sf.DEVIL_ANIMS if is_devil(f) else sf.figure_anims(f)
+
+
+def fig_problems(f, d):
+    return sf.devil_problems(d) if is_devil(f) else sf.problems(f, d)
 
 
 VIEW_MODES = [("normal", "Normal"), ("NVG", "Night vision green"),
@@ -104,14 +140,20 @@ class Editor:
             messagebox.showerror("Vision colours", str(e))
             self.vision = sf.default_vision(self.pal)
         self.view_mode = tk.StringVar(value="normal")
-        for f in sf.FIGURE_NAMES:
-            p = sf.figure_path(f)
+        try:
+            self.devil_pal = sf.load_devil_palette()
+        except (OSError, ValueError) as e:
+            messagebox.showerror("The devil's colours", str(e))
+            self.devil_pal = sf.load_devil_palette(path="")
+        self.dpal_dirty = False
+        for f in NAMES:
+            p = fig_path(f)
             try:
                 self.figs[f] = sf.load(p)
             except (OSError, ValueError):
-                self.figs[f] = {"name": f, "height": sf.figure_height(f), "anims": {}}
+                self.figs[f] = {"name": f, "height": fig_height(f), "anims": {}}
         self.build_ui()
-        self.select_fig(fig if fig in self.figs else sf.FIGURE_NAMES[0])
+        self.select_fig(fig if fig in self.figs else NAMES[0])
         self.root.after(PREVIEW_MS, self.tick)
 
     # ------------------------------------------------------------------ UI
@@ -157,7 +199,7 @@ class Editor:
                        command=self.cmd_unpin_all)
         mb.add_cascade(label="Size", menu=lm)
         vm = tk.Menu(mb, tearoff=0)
-        for z in (8, 14, 20):
+        for z in (4, 8, 14, 20):
             vm.add_command(label=f"{z} pixels a pixel", command=lambda z=z: self.set_zoom(z))
         vm.add_checkbutton(label="Grid", variable=self.grid, command=self.redraw)
         vm.add_checkbutton(label="Onion skin (previous frame)", variable=self.onion, command=self.redraw)
@@ -175,9 +217,9 @@ class Editor:
         left = tk.Frame(r, padx=6, pady=6)
         left.pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(left, text="Figure").pack(anchor=tk.W)
-        self.figlist = tk.Listbox(left, height=len(sf.FIGURE_NAMES), exportselection=False, width=24)
-        for f in sf.FIGURE_NAMES:
-            self.figlist.insert(tk.END, f"{f} ({sf.figure_height(f)} units high)")
+        self.figlist = tk.Listbox(left, height=len(NAMES), exportselection=False, width=24)
+        for f in NAMES:
+            self.figlist.insert(tk.END, f"{f} ({fig_height(f)} units high)")
         self.figlist.pack(anchor=tk.W)
         self.figlist.bind("<<ListboxSelect>>", lambda e: self.on_list(self.figlist, self.select_fig_i))
         tk.Label(left, text="Purpose").pack(anchor=tk.W, pady=(8, 0))
@@ -245,13 +287,21 @@ class Editor:
         self.status.config(text=text)
 
     def set_title(self):
-        star = "*" if (self.fig in self.dirty or self.pal_dirty) else ""
+        star = "*" if (self.fig in self.dirty or self.pal_dirty or self.dpal_dirty) else ""
         self.root.title(f"Z-Police figures - {self.fig}{star}")
 
     def cols(self):
-        """The colours shown: the normal ones, or a vision mode's."""
+        """The colours shown: the normal ones, or a vision mode's; for the
+        devil, its own colours (and its eyes fully charged) where it has
+        them"""
         m = self.view_mode.get()
-        return self.pal if m == "normal" else self.vision[m]
+        cols = self.pal if m == "normal" else self.vision[m]
+        if not is_devil(self.fig):
+            return cols
+        cols = list(cols)
+        for fc, entry in sf.DEVIL_COLOURS.items():
+            cols[fc] = sf.DEVIL_EYE_SHOWN[m] if entry == sf.DEVIL_EYE_ENTRY else self.devil_pal[entry][m]
+        return cols
 
     def mode_name(self):
         return dict(VIEW_MODES)[self.view_mode.get()]
@@ -274,6 +324,8 @@ class Editor:
     def sizes(self, fi=None):
         """Every size listed for frame fi: the game's, and any drawn size
         taller, tallest first."""
+        if is_devil(self.fig):                  # (one size: the game scales it)
+            return [sf.DEVIL_SRC_H]
         hs = set(range(sf.GFX_MIN_H, sf.GFX_MAX_H + 1))
         hs |= {sf.lod_size(l)[1] for l in self.lods(fi)}
         return sorted(hs, reverse=True)
@@ -334,27 +386,32 @@ class Editor:
         return lod
 
     def select_fig_i(self, i):
-        self.select_fig(sf.FIGURE_NAMES[i])
+        self.select_fig(NAMES[i])
 
     def select_fig(self, f):
         self.fig = f
+        if is_devil(f) and self.zoom > 5:       # (64 x 128: smaller)
+            self.zoom = 4
+        elif not is_devil(f) and self.zoom < 8:
+            self.zoom = 14
         self.figlist.selection_clear(0, tk.END)
-        self.figlist.selection_set(sf.FIGURE_NAMES.index(f))
+        self.figlist.selection_set(NAMES.index(f))
         self.animlist.delete(0, tk.END)
-        for a, _ in sf.figure_anims(f):
+        for a, _ in fig_anims(f):
             n = len(self.data()["anims"].get(a, {}).get("frames", []))
             self.animlist.insert(tk.END, f"{a} ({n} frames)")
         self.select_anim_i(0)
         self.set_title()
 
     def select_anim_i(self, i):
-        a, desc = sf.figure_anims(self.fig)[i]
+        a, desc = fig_anims(self.fig)[i]
         self.anim = a
         self.animlist.selection_clear(0, tk.END)
         self.animlist.selection_set(i)
         self.animdesc.config(text=desc)
         if not self.frames():
-            self.frames().append({"lods": [sf.new_lod(8, 16, 0)]})
+            size = (sf.DEVIL_W, sf.DEVIL_SRC_H) if is_devil(self.fig) else (8, 16)
+            self.frames().append({"lods": [sf.new_lod(*size, 0)]})
         self.frame = min(self.frame, len(self.frames()) - 1)
         self.refresh_frames()
         self.select_frame(self.frame)
@@ -376,6 +433,8 @@ class Editor:
     def distance(self, h):
         """Where the game draws size h, in metres (12.8 world units a metre):
         its projected height rounds to h.  GFX_MAX_H from there in."""
+        if is_devil(self.fig):
+            return "any: scaled"
         H = self.data()["height"] * sf.PROJ / 12.8
         if h > sf.GFX_MAX_H:
             return "not drawn: a source"
@@ -447,6 +506,9 @@ class Editor:
         else:
             how = (f"generated from the {sf.lod_size(self.source(h))[1]}-row drawing: "
                    "painting draws it by hand")
+        if is_devil(self.fig):
+            how = (f"the game scales it to its size.  Colour {sf.DEVIL_EYE_COLOUR}: its eyes "
+                   "(they glow black to blue in the game)")
         c.create_text(4, h * z + 10, anchor=tk.NW, fill="#c0c0c0",
                       text=f"{w}x{h}, {self.distance(h)}: {how}.\n"
                            "The bottom centre (yellow) stands on the figure's feet.")
@@ -482,6 +544,14 @@ class Editor:
         cols = self.cols()
         px = self.view_px(fi=fi)
         w, h = len(px[0]), len(px)
+        if is_devil(self.fig):                  # (half size, and its own)
+            for p, ox in ((sf.shrink(px, w // 2, h // 2), 40), (px, 130)):
+                for y, row in enumerate(p):
+                    for x, v in enumerate(row):
+                        if v:
+                            X, Y = ox - len(p[0]) // 2 + x, 165 - len(p) + y
+                            pv.create_rectangle(X, Y, X + 1, Y + 1, fill=hex_rgb(cols[v]), width=0)
+            return
         for scale, ox in ((1, 30), (2, 100)):
             base = 160
             for y in range(h):
@@ -638,9 +708,14 @@ class Editor:
     def edit_colour(self, i):
         if i == 0:
             return messagebox.showinfo("Colour 0", "Colour 0 is transparent: it is never drawn.")
+        own = sf.DEVIL_COLOURS.get(i) if is_devil(self.fig) else None
+        if own == sf.DEVIL_EYE_ENTRY:
+            return messagebox.showinfo(f"Colour {i}", "The devil's eyes: the game sets their colour as "
+                                       "they charge, black to blue (white in night vision, red in "
+                                       "thermal). Shown fully charged.")
         cols = self.cols()
         w = tk.Toplevel(self.root)
-        w.title(f"Colour {i}: {self.mode_name()}")
+        w.title(f"Colour {i}: {self.mode_name()}" + (" (the devil's own)" if own else ""))
         w.transient(self.root)
         vs = []
         for j, name in enumerate("rgb"):
@@ -659,8 +734,12 @@ class Editor:
             if sf.is_transparent(c):
                 return messagebox.showerror("Transparent", f"{c} is Layer 2's transparent colour: "
                                             "it would never show.", parent=w)
-            cols[i] = c
-            self.pal_dirty = True
+            if own:                     # the devil's own colour, this mode's
+                self.devil_pal[own][self.view_mode.get()] = c
+                self.dpal_dirty = True
+            else:
+                cols[i] = c
+                self.pal_dirty = True
             self.set_title()
             self.redraw()
             w.destroy()
@@ -704,7 +783,7 @@ class Editor:
 
     def select_fig_anim_counts(self):
         sel = self.animlist.curselection()
-        for i, (a, _) in enumerate(sf.figure_anims(self.fig)):
+        for i, (a, _) in enumerate(fig_anims(self.fig)):
             n = len(self.data()["anims"].get(a, {}).get("frames", []))
             self.animlist.delete(i)
             self.animlist.insert(i, f"{a} ({n} frames)")
@@ -740,6 +819,14 @@ class Editor:
         except ValueError:
             return False, None
 
+    def no_sizes(self):
+        """The devil: one size, no Size menu (True, and says so)"""
+        if is_devil(self.fig):
+            messagebox.showinfo("Size", f"The devil has one size, {sf.DEVIL_W}x{sf.DEVIL_SRC_H}: "
+                                "the game scales it to its size as it draws it.")
+            return True
+        return False
+
     def after_sizes(self, h):
         self.changed()
         self.refresh_frames()
@@ -748,6 +835,8 @@ class Editor:
         self.select_size(h)
 
     def cmd_pin(self):
+        if self.no_sizes():
+            return
         if self.cur_lod() is not None:
             return self.say(f"{self.size} rows is drawn by hand already")
         self.push_undo()
@@ -756,6 +845,8 @@ class Editor:
         self.say(f"{self.size} rows: drawn by hand from now on")
 
     def cmd_unpin(self):
+        if self.no_sizes():
+            return
         lod = self.cur_lod()
         if lod is None:
             return self.say(f"{self.size} rows is generated already")
@@ -769,6 +860,8 @@ class Editor:
         self.say(f"{self.size} rows: generated again")
 
     def cmd_unpin_all(self):
+        if self.no_sizes():
+            return
         if not messagebox.askyesno("Back to generated", "Every frame of this purpose: every "
                                    "drawn size but the largest forgotten, so the build makes "
                                    "them all from the largest?  Hand edits to them are lost."):
@@ -780,6 +873,8 @@ class Editor:
         self.after_sizes(self.size)
 
     def cmd_lod_add(self):
+        if self.no_sizes():
+            return
         w0, h0 = len(self.view_px()[0]), len(self.view_px())
         size = self.ask_size("Add a drawn size (blank)", w0, h0)
         if not size:
@@ -792,6 +887,8 @@ class Editor:
         self.after_sizes(size[1])
 
     def cmd_lod_resize(self):
+        if self.no_sizes():
+            return
         lod = self.cur_lod()
         if lod is None:
             return self.say("a generated size: draw it by hand first (Size menu)")
@@ -815,6 +912,8 @@ class Editor:
         self.after_sizes(h)
 
     def cmd_lod_minz(self):
+        if self.no_sizes():
+            return
         lod = self.cur_lod()
         if lod is None:
             return self.say("a generated size: draw it by hand first (Size menu)")
@@ -830,7 +929,7 @@ class Editor:
 
     # ---------------------------------------------------------------- files
     def cmd_check(self):
-        errs = sf.problems(self.fig, self.data()) + sf.palette_problems(self.pal, self.vision)
+        errs = fig_problems(self.fig, self.data()) + sf.palette_problems(self.pal, self.vision)
         shared = {c: fs for c, fs in sf.shared_colours(self.figs).items()
                   if self.fig in fs and set(fs) != {"zombie", "fast_zombie"}}
         note = "".join(f"\n- colour {c} is used by {', '.join(fs)}: a vision mode colours them alike"
@@ -850,9 +949,9 @@ class Editor:
                 for f2 in fr["frames"]:
                     if f2["lods"]:
                         f2["lods"][0]["min_z"] = 0
-            errs += [f"{f}: {e}" for e in sf.problems(f, d)]
+            errs += [f"{f}: {e}" for e in fig_problems(f, d)]
             try:
-                sf.save(sf.figure_path(f), d)
+                sf.save(fig_path(f), d)
             except OSError as e:
                 return messagebox.showerror("Can't save", str(e))
         if self.pal_dirty:
@@ -861,8 +960,15 @@ class Editor:
                 sf.save_palette(self.pal, self.vision)
             except OSError as e:
                 return messagebox.showerror("Can't save", str(e))
-        saved = sorted(self.dirty) + (["the colours"] if self.pal_dirty else [])
-        self.dirty, self.pal_dirty = set(), False
+        if self.dpal_dirty:
+            errs += [f"the devil's colours: {e}" for e in sf.devil_palette_problems(self.devil_pal)]
+            try:
+                sf.save_devil_palette(self.devil_pal)
+            except OSError as e:
+                return messagebox.showerror("Can't save", str(e))
+        saved = (sorted(self.dirty) + (["the colours"] if self.pal_dirty else [])
+                 + (["the devil's colours"] if self.dpal_dirty else []))
+        self.dirty, self.pal_dirty, self.dpal_dirty = set(), False, False
         self.set_title()
         self.say("saved " + (", ".join(saved) if saved else "(nothing changed)")
                  + "; build.bat puts them in the game")
@@ -876,14 +982,14 @@ class Editor:
                 "Reload", f"Throw away the changes to {self.fig}?"):
             return
         try:
-            self.figs[self.fig] = sf.load(sf.figure_path(self.fig))
+            self.figs[self.fig] = sf.load(fig_path(self.fig))
         except (OSError, ValueError) as e:
             return messagebox.showerror("Can't load", str(e))
         self.dirty.discard(self.fig)
         self.select_fig(self.fig)
 
     def cmd_quit(self):
-        if (self.dirty or self.pal_dirty) and not messagebox.askyesno(
+        if (self.dirty or self.pal_dirty or self.dpal_dirty) and not messagebox.askyesno(
                 "Unsaved changes", "Quit without saving the changes?"):
             return
         self.root.destroy()

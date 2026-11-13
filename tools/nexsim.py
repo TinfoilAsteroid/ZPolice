@@ -38,7 +38,8 @@ KEYROWS = {  # half-row address byte -> keys bits 0..4
 
 # Estimated zxnDMA cost per byte for a memory->memory transfer (CPU halted).
 DMA_T_PER_BYTE = int(os.environ.get("DMA_T", "2"))
-DDMA_FILL = 0x08                                        # DMA+ mode ($DF) flag
+# DMA+ (zxnDDMA) mode flags ($DF): docs/ZXNDDMA.md
+DDMA_PHYS, DDMA_2D, DDMA_TRANS, DDMA_FILL, DDMA_XY, DDMA_HIDDEN = 1, 2, 4, 8, 16, 32
 
 
 # Video timing at 28MHz, 50Hz: 312 lines of 1792 T (raster from T-states).
@@ -80,8 +81,11 @@ class Cpu:
         self.ay_chip, self.ay_pan, self.ay_reg = 3, 3, 0
         self.pal_idx = self.pal_phase = self.pal_hi = 0
         self.dma = {"pending": [], "a": 0, "b": 0, "len": 0, "a2b": True,
-                    "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0,
-                    "ddma": 0, "fill": 0}
+                    "amode": 1, "bmode": 1, "atiming": 0, "btiming": 0, "mask": 0}
+        self.dma_reset()
+        self.dma_bytes = 0              # bytes the DMA has moved (all transfers)
+        self.trap_pc, self.trap = -1, None  # trap() called when pc reaches trap_pc
+                                            # (before that instruction)
 
     # --- memory -------------------------------------------------------------
     def page(self, n):
@@ -172,23 +176,45 @@ class Cpu:
             return v | 0xE0
         if lo in (0x1F, 0x37):                  # joysticks (Kempston / Mega Drive)
             return self.joy.get(lo, 0)
+        if port == 0x243B:                      # the selected NextReg
+            return self.nr_sel
         if port == 0x253B:
             line = (self.t // T_PER_LINE) % LINES_PER_FRAME
             if self.nr_sel == 0x1E:
                 return line >> 8
             if self.nr_sel == 0x1F:
                 return line & 0xFF
+            if 0x50 <= self.nr_sel <= 0x57:     # MMU: what's mapped (as the hardware)
+                return self.mmu[self.nr_sel - 0x50]
             return self.nextreg.get(self.nr_sel, 0)
         return 0xFF
 
-    # --- zxnDMA (enough for memory->memory transfers), and of DMA+ (zxnDDMA)
-    # only what the game uses, fill mode.  Any other DMA+ command stops the
-    # run: a transfer it doesn't model must not pass as a plain copy.
+    # --- zxnDMA (memory and I/O transfers) and DMA+ (zxnDDMA, the core 3.03.00
+    # blitter): full (physical) addresses, 2D rectangles with strides,
+    # transparency, fill, Layer 2 X,Y on the shown or hidden screen
+    # (docs/ZXNDDMA.md).  Memory-to-memory only: a port transfer stops the
+    # run, as does a physical address outside the RAM pages.
+    def dma_reset(self):
+        """$C3: the DMA+ settings cleared (the start addresses, directions,
+        port modes and block length stay)"""
+        self.dma.update({"ddma": 0, "fill": 0, "trans": 0, "aext": 0, "bext": 0,
+                         "rowlen": 0, "rows": 0, "astride": 0, "bstride": 0, "xy": []})
+
     def dma_write(self, v):
         d = self.dma
         if d["pending"]:
             reg, field = d["pending"].pop(0)
-            d[field] = (d[field] & ~(0xFF << (8 * reg))) | (v << (8 * reg)) if reg < 2 else v
+            if field == "xy":                           # $DF's X, Y follow bytes
+                d["xy"].append(v)
+                if len(d["xy"]) == 3:
+                    self.dma_xy()
+            elif reg < 2:
+                d[field] = (d[field] & ~(0xFF << (8 * reg))) | (v << (8 * reg))
+            else:
+                d[field] = v
+                if field == "ddma" and v & DDMA_XY:     # 3 more: X lo, X hi, Y
+                    d["xy"] = []
+                    d["pending"] = [(2, "xy")] * 3 + d["pending"]
             return
         p = []
         if v & 0x80 == 0:
@@ -216,35 +242,83 @@ class Cpu:
                 elif v == 0x87:
                     self.dma_run()
                 elif v == 0xC3:
-                    d["ddma"] = d["fill"] = 0
+                    self.dma_reset()
                 elif v == 0xDF:
                     p.append((2, "ddma"))
                 elif v == 0xF7:
                     p.append((2, "fill"))
-                elif v in (0xD7, 0xDB, 0xE3, 0xE7, 0xEB, 0xEF, 0xF3):
-                    raise NotImplementedError(f"DMA+ command {v:02X}")
+                elif v == 0xF3:
+                    p.append((2, "trans"))
+                elif v == 0xD7:
+                    p.append((2, "aext"))
+                elif v == 0xDB:
+                    p.append((2, "bext"))
+                elif v in (0xE3, 0xE7, 0xEB, 0xEF):
+                    f = {0xE3: "rowlen", 0xE7: "rows", 0xEB: "astride", 0xEF: "bstride"}[v]
+                    p += [(0, f), (1, f)]
             # WR3 / WR5 ignored
         d["pending"] = p
 
+    def dma_xy(self):
+        """$DF with the X,Y flag: port B's address (and extended byte) from
+        the Layer 2 bank ($12, or $13 hidden) and mode ($70), stride 256"""
+        d = self.dma
+        xlo, xhi, y = d["xy"]
+        if not d["ddma"] & DDMA_PHYS:
+            raise NotImplementedError("DMA+ X,Y without the physical flag")
+        bank = self.nextreg.get(0x13 if d["ddma"] & DDMA_HIDDEN else 0x12, 0)
+        base = 0x40000 + bank * 0x4000
+        mode = (self.nextreg.get(0x70, 0) >> 4) & 3
+        addr = base + (y * 256 + xlo if mode == 0 else ((xhi & 1) << 8 | xlo) * 256 + y)
+        d["b"], d["bext"] = addr & 0xFFFF, addr >> 16
+        d["bstride"] = 256
+
+    def dma_mem(self, addr, ext, v=None):
+        """Read (v None) or write a byte at a port's address: through the MMU,
+        or physical (22 bits: RAM pages from $40000)"""
+        if not self.dma["ddma"] & DDMA_PHYS:
+            a = addr & 0xFFFF
+            if v is None:
+                return self.rd(a)
+            self.wr(a, v)
+            return
+        phys = ((ext & 0x3F) << 16) | (addr & 0xFFFF)
+        if phys < 0x40000:
+            raise NotImplementedError(f"DMA+ physical address {phys:06X} (ROM)")
+        pg, off = divmod(phys - 0x40000, 0x2000)
+        if v is None:
+            return self.page(pg)[off]
+        self.page(pg)[off] = v
+
     def dma_run(self):
         d = self.dma
-        n = d["len"] or 0x10000
-        src, dst = (d["a"], d["b"]) if d["a2b"] else (d["b"], d["a"])
-        sm, dm = (d["amode"], d["bmode"]) if d["a2b"] else (d["bmode"], d["amode"])
+        flags = d["ddma"]
+        a2b = d["a2b"]
+        src, sext, dst, dext = ((d["a"], d["aext"], d["b"], d["bext"]) if a2b
+                                else (d["b"], d["bext"], d["a"], d["aext"]))
+        sm, dm = (d["amode"], d["bmode"]) if a2b else (d["bmode"], d["amode"])
+        sst, dst_ = (d["astride"], d["bstride"]) if a2b else (d["bstride"], d["astride"])
         step = {0: -1, 1: 1, 2: 0, 3: 0}
-        if d["ddma"] & ~DDMA_FILL:
-            raise NotImplementedError(f"DMA+ mode {d['ddma']:02X}")
-        if d["ddma"]:                                   # fill: no reads
-            for _ in range(n):
-                self.wr(dst, d["fill"])
-                dst = (dst + step[dm]) & 0xFFFF
-            self.t += n * DMA_T_PER_BYTE // 2
-            return
-        for _ in range(n):
-            self.wr(dst, self.rd(src))
-            src = (src + step[sm]) & 0xFFFF
-            dst = (dst + step[dm]) & 0xFFFF
-        self.t += n * DMA_T_PER_BYTE
+        full = 0x400000 if flags & DDMA_PHYS else 0x10000
+        if flags & DDMA_2D:
+            rows, rowlen = max(1, d["rows"]), max(1, d["rowlen"])
+        else:
+            rows, rowlen = 1, d["len"] or 0x10000
+        s0 = (sext << 16 | src) if flags & DDMA_PHYS else src
+        d0 = (dext << 16 | dst) if flags & DDMA_PHYS else dst
+        n = 0
+        for row in range(rows):
+            s = (s0 + row * sst) % full
+            t = (d0 + row * dst_) % full
+            for _ in range(rowlen):
+                v = d["fill"] if flags & DDMA_FILL else self.dma_mem(s & 0xFFFF, s >> 16)
+                if not (flags & DDMA_TRANS and v == d["trans"]):
+                    self.dma_mem(t & 0xFFFF, t >> 16, v)
+                s = (s + step[sm]) % full
+                t = (t + step[dm]) % full
+                n += 1
+        self.dma_bytes += n
+        self.t += n * DMA_T_PER_BYTE // (2 if flags & DDMA_FILL else 1)
 
     def port_out(self, port, v):
         if (port & 0xFF) == 0xFE:
@@ -490,7 +564,7 @@ class Cpu:
             s = bytearray()
             while self.rd(a):
                 s.append(self.rd(a)); a += 1
-            return os.path.join(self.esx_root, s.decode())
+            return os.path.join(self.esx_root, s.decode().lstrip("/"))   # (/: the card's root)
         def ok(a=None):
             self.r[6] &= ~FC
             if a is not None:
@@ -540,6 +614,11 @@ class Cpu:
                 for i in range(11): self.wr(self.ix + i, 0)
                 for i in range(4): self.wr(self.ix + 7 + i, (size >> (8 * i)) & 0xFF)
                 ok()
+        elif fn == 0xAA:                                # F_MKDIR
+            path = name_at(self.ix)
+            if os.path.exists(path): return err(self.ESX_ERR_EXISTS)
+            if not os.path.isdir(os.path.dirname(path)): return err(self.ESX_ERR_NOFILE)
+            os.mkdir(path); ok()
         elif fn == 0xAD:                                # F_UNLINK
             path = name_at(self.ix)
             if not os.path.exists(path): return err(self.ESX_ERR_NOFILE)
@@ -548,6 +627,8 @@ class Cpu:
             raise Halt(f"esxDOS function {fn:02X} not modelled")
 
     def step(self):
+        if self.pc == self.trap_pc:
+            self.trap()
         if self.pc == 0x0008 and self.mmu[0] == 0xFF and getattr(self, "esx_root", None):
             self.t += 1000
             return self.esx_call()

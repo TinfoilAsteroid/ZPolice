@@ -36,6 +36,22 @@ def test_figures():
 def test_sprites_built():
     built = open(os.path.join(zp.ROOT, "ZPDATA", "SPRITES.ZPG"), "rb").read()
     zp.check(bytes(sf.build(figures())[0]) == built, "ZPDATA/SPRITES.ZPG is out of date: run build.bat")
+    hw = open(os.path.join(zp.ROOT, "ZPDATA", "SPRITEHW.ZPG"), "rb").read()
+    zp.check(bytes(sf.build(figures(), rect=True)[0]) == hw, "ZPDATA/SPRITEHW.ZPG is out of date: run build.bat")
+
+
+def test_devil_palette():
+    """sprites/devil_palette.json passes its checks, and the built palettes
+    hold its colours: normal (every city's) and each vision mode's (level 50's)"""
+    dp = sf.load_devil_palette()
+    errs = sf.devil_palette_problems(dp)
+    zp.check(not errs, "; ".join(errs))
+    data = open(os.path.join(zp.ROOT, "ZPDATA", "LEVEL50.ZPV"), "rb").read()
+    for k, mode in enumerate(sf.DEVIL_PAL_MODES):
+        for e in sf.DEVIL_ENTRIES:
+            a, lo = data[8 + 512 * k + 2 * e], data[9 + 512 * k + 2 * e]
+            got = (a >> 5, (a >> 2) & 7, ((a & 3) << 1) | (lo & 1))
+            zp.check(got == tuple(dp[e][mode]), f"entry {e} {mode}: {got}, the file says {dp[e][mode]}")
 
 
 def test_hud_sprites():

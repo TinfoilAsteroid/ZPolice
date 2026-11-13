@@ -144,7 +144,9 @@ K_BOOST     equ 19                      ; the booster on / off (player.asm)
 K_VISION    equ 20                      ; the next vision mode (vis_cycle)
 K_STRAFE_L  equ 21                      ; a lateral thrusters pulse left,
 K_STRAFE_R  equ 22                      ;   right (player.asm strafe)
-K_ACTIONS   equ 23
+K_TARGET    equ 23                      ; the missile lock's next target
+                                        ;   (weapons.asm lk_next)
+K_ACTIONS   equ 24
 
 ;------------------------------------------------------------------------------
 ; Read all the input banks: key_prev = last scan, key_now = this one, every
@@ -456,6 +458,7 @@ key_prev:   ds KEY_BANKS                ; the scan before (must follow key_now)
             dw KB_X                     ; K_BOOST
             dw KB_N                     ; K_VISION
             dw KB_K, KB_L               ; K_STRAFE_L, K_STRAFE_R
+            dw KB_M                     ; K_TARGET
     ENDM
 ; The joystick defaults: the stick flies (left / right turn, up / down climb
 ; and descend), FIRE (Mega Drive B) fires; a Mega Drive pad's C / A are
@@ -480,6 +483,7 @@ key_prev:   ds KEY_BANKS                ; the scan before (must follow key_now)
             dw J1_MODE                  ; K_BOOST (a 6-button pad's MODE)
             dw 0                        ; K_VISION
             dw 0, 0                     ; K_STRAFE_L, K_STRAFE_R
+            dw 0                        ; K_TARGET
     ENDM
 key_defs:   KEY_DEFAULTS
             ASSERT $ - key_defs == K_ACTIONS*2

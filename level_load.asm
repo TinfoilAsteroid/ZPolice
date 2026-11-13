@@ -256,7 +256,13 @@ vis_cycle:
 ; the Layer 2 palette
 vis_apply:
         ld a,(vision_mode)
-        add a,a                         ; * 512: high byte * 2
+        or a
+        jr nz,.m
+        ld a,(dv_dark)                  ; (normal, the devil hurt: darker)
+        or a
+        jr nz,vis_dark.go
+        xor a
+.m:     add a,a                         ; * 512: high byte * 2
         ld h,a
         ld l,0
         ld de,ll_vbuf+VPF_PAL
@@ -275,6 +281,74 @@ ll_palette:
         ld a,(hl)
         inc hl
         nextreg $44,a                   ; low blue bit
+        djnz .pl
+        ret
+
+; The devil hurt (dv_dark, devil.asm): in normal vision, the level's normal
+; palette (from its vision palettes, ll_vbuf) with each r, g, b dv_dark
+; lower (not below 0) into Layer 2 palette 0.  (Its eyes: the devil sets
+; them each frame it charges.)  Nothing without the vision palettes.
+vis_dark:
+        ld a,(vision_mode)
+        or a
+        ret nz
+.go:    ld a,(vis_ok)
+        or a
+        ret z
+        ld a,(dv_dark)
+        ld c,a
+        ld hl,ll_vbuf+VPF_PAL           ; (normal: the first)
+        nextreg $43,%00010000           ; edit Layer 2 palette 0, auto-inc
+        nextreg $40,0
+        ld b,0
+.pl:    push bc
+        ld a,(hl)                       ; RRRGGGBB
+        inc hl
+        ld e,(hl)                       ; the low blue bit
+        inc hl
+        push hl
+        ld d,a
+        rlca                            ; r: bits 7-5
+        rlca
+        rlca
+        and 7
+        sub c
+        jr nc,.r
+        xor a
+.r:     rrca
+        rrca
+        rrca
+        ld h,a                          ; r back in bits 7-5
+        ld a,d
+        rrca
+        rrca
+        and 7                           ; g
+        sub c
+        jr nc,.g
+        xor a
+.g:     add a,a
+        add a,a
+        or h
+        ld h,a
+        ld a,d                          ; b: its two bits and the low one
+        and 3
+        add a,a
+        ld l,a
+        ld a,e
+        and 1
+        or l
+        sub c
+        jr nc,.b
+        xor a
+.b:     ld l,a
+        srl a
+        or h
+        nextreg $44,a
+        ld a,l
+        and 1
+        nextreg $44,a
+        pop hl
+        pop bc
         djnz .pl
         ret
 
@@ -299,7 +373,7 @@ ll_check:
 ;------------------------------------------------------------------------------
 ; At start-up (this page in slot 6, the file handler set up): the figures'
 ; graphics, ZPDATA/SPRITES.ZPG (gengraphics.py; tools/spritefile.py has the
-; format), into pages PAGE_GFX0 on, each read through slot 4 (the ULA
+; format; REAL_HARDWARE: SPRITEHW.ZPG, each level a rectangle), into pages PAGE_GFX0 on, each read through slot 4 (the ULA
 ; screen's, put back after: the screen still shows).  gfx_ok = 1 if they are
 ; all there and fit this game (magic, version, pages, purposes); else 0, and
 ; the figures aren't drawn.  Leaves the file handler in slot 7.
@@ -332,31 +406,166 @@ gfx_load:
         jr nz,.cl
         ld a,PAGE_GFX0
         ld (gl_pg),a
-.pg:    ld a,(gl_pg)                    ; each page, 8K, through slot 4
+        call gl_pages
+        jr c,.cl
+        ld a,(ll_cbuf+5)
+        ld (gfx_pages),a
+        ld c,a
+        ld a,(ll_cbuf+7)                ; the kept figures' pages (at most all)
+        cp c
+        jr c,.k
+        ld a,c
+.k:     ld (gfx_keep),a
+        ld a,1
+        ld (gfx_ok),a
+.cl:    ld a,(fh_handle)
+        jp fh_close
+
+; gl_n pages (8K each) from the open file into pages gl_pg on, through slot
+; 4 (the ULA screen's, put back after).  Carry if one couldn't be read whole.
+gl_pages:
+        ld a,(gl_pg)
         nextreg ULA_MMU,a
         ld a,(fh_handle)
         ld hl,ULA_ADDR
         ld bc,MEMBANK_SIZE
         call fh_read
         nextreg ULA_MMU,PAGE_ULA0       ; (the flags kept)
-        jr c,.cl
+        ret c
         ld a,b
         cp high MEMBANK_SIZE
-        jr nz,.cl                       ; (not all of it)
+        scf
+        ret nz                          ; (not all of it)
         ld hl,gl_pg
         inc (hl)
         ld hl,gl_n
         dec (hl)
-        jr nz,.pg
+        jr nz,gl_pages
+        or a
+        ret
+
+;------------------------------------------------------------------------------
+; At a level's start (wave_prepare, this page in slot 6), after a screen took
+; the figures' last pages for its background copy (shared_pg; l320_bg_save)
+; or the devil's graphics went over them (devil_gfx): A = the first page to
+; read back (gfx_stale), from it to the file's last, from the graphics file;
+; then gfx_ok again.  Carry if the file can't be read (it was read at
+; start-up: the SD card is at fault).  Leaves the file handler in slot 7.
+;------------------------------------------------------------------------------
+gfx_reload:
+        ld (gl_pg),a
+        ld c,a
+        ld a,(gfx_pages)
+        sub c                           ; the pages from there on
+        jr z,.none
+        jr nc,.some
+.none:  or a                            ; (none: carry clear)
+        ret
+.some:  ld (gl_n),a
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,gfx_name
+        ld b,FA_READ|FA_OPEN_EX
+        call fh_open
+        ret c
+        ld a,(gl_pg)                    ; at GFX_HEADER + page * 8K: BC:DE
+        ld c,a
+        and 7
+        rrca
+        rrca
+        rrca
+        ld d,a                          ; (page & 7) << 13
+        ld e,GFX_HEADER
+        srl c
+        srl c
+        srl c
+        ld b,0                          ; page >> 3
+        ld l,SEEK_START
+        ld a,(fh_handle)
+        call fh_seek
+        jr c,gl_bad
+        ld a,(gl_pg)
+        add a,PAGE_GFX0
+        ld (gl_pg),a
+        call gl_pages
+        jr c,gl_bad
+        ld a,(fh_handle)
+        call fh_close
         ld a,1
         ld (gfx_ok),a
-.cl:    ld a,(fh_handle)
-        jp fh_close
+        or a                            ; (carry clear)
+        ret
+gl_bad: ld a,(fh_handle)
+        call fh_close
+        scf
+        ret
+        ASSERT GFX_HEADER < 256 && GFX_PAGES_MAX < 256
 
+;------------------------------------------------------------------------------
+; The devil's wave (wave_prepare, this page in slot 6): its graphics,
+; ZPDATA/DEVIL.ZPB (gengraphics.py; tools/spritefile.py has the format),
+; over the figures' pages from the kept ones on (gfx_keep: only the zombies
+; and humans are drawn with it), one 8K page a frame.  devil_gfx = 1.  Carry
+; if it can't be read or doesn't fit this game.  Leaves the file handler in
+; slot 7.
+;------------------------------------------------------------------------------
+devil_load:
+        ld a,(gfx_keep)                 ; (room for it, and its work page:
+        cp GFX_PAGES_MAX-DEVIL_FRAMES   ; devil_draw)
+        ccf
+        ret c
+        nextreg CODE_MMU,PAGE_FILE
+        ld hl,dv_name
+        ld b,FA_READ|FA_OPEN_EX
+        call fh_open
+        ret c
+        ld hl,ll_cbuf                   ; the header
+        ld bc,GFX_HEADER
+        call fh_read
+        jr c,gl_bad
+        ld hl,ll_cbuf
+        ld de,dv_magic
+        ld c,DEVIL_VERSION
+        call ll_check
+        jr c,gl_bad
+        ld hl,ll_cbuf+5                 ; its frames, their size
+        ld de,dv_shape
+        ld b,3
+.sh:    ld a,(de)
+        cp (hl)
+        jr nz,gl_bad
+        inc de
+        inc hl
+        djnz .sh
+        ld a,DEVIL_FRAMES
+        ld (gl_n),a
+        ld a,(gfx_keep)
+        add a,PAGE_GFX0
+        ld (gl_pg),a
+        call gl_pages
+        jr c,gl_bad
+        ld a,(fh_handle)
+        call fh_close
+        nextreg CITY2_MMU,PAGE_CITY2    ; each row's opaque columns (devil_draw:
+        call dv_extents                 ; it draws only them)
+        nextreg CITY2_MMU,PAGE_ULA0     ; (the ULA screen back)
+        ld a,1
+        ld (devil_gfx),a
+        or a                            ; (carry clear)
+        ret
+        ASSERT DEVIL_W * DEVIL_SRC_H == MEMBANK_SIZE
+
+    IFDEF REAL_HARDWARE                 ; (DMA+: each level a rectangle)
+gfx_name:   db "ZPDATA/SPRITEHW.ZPG", 0
+gfx_magic:  db "ZPGR"
+    ELSE
 gfx_name:   db "ZPDATA/SPRITES.ZPG", 0
 gfx_magic:  db "ZPGF"
+    ENDIF
 gl_pg:      db 0                        ; gfx_load: the page being read,
 gl_n:       db 0                        ;   pages left
+dv_name:    db "ZPDATA/DEVIL.ZPB", 0
+dv_magic:   db "ZPDV"
+dv_shape:   db DEVIL_FRAMES, DEVIL_W, DEVIL_SRC_H
         ASSERT GFX_HEADER <= CTF_DATA
         ASSERT MEMBANK_SIZE == $2000
 

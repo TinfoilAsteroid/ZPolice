@@ -32,7 +32,7 @@ page.
 | 5 `PAGE_ZOMBIE` | `zombie.asm` | `$2000`–`$3488` |
 | | `human.asm` | to `$3A34` |
 | | `map.asm` (the HUD map) | to `$3BE1` |
-| | `interrupts.asm` (IM 2 table at `$3C00`, the ISR, `engine_tick`, `sfx_tick`) | to `$3F99` |
+| | `interrupts.asm` (IM 2 table at `$3C00`, the ISR; the sound players are in the audio page) | to `$3F99` |
 
 ## MMU 2: `$4000`–`$5FFF` (NextReg `$52`)
 
@@ -89,7 +89,6 @@ The boot stub maps this page in.
 | | `l2_pallets.asm` | fixed colour slot checks |
 | | `levels.asm` | the current level's record, `level_cur` (`$A05B`) |
 | | `text.asm` | text screens: menu, load-out |
-| | `sfx_data.asm` | the sound effects |
 | | `layer2_cls.asm` | the zxnDMA fill block and `dma_fill` (used by the city, HUD and menu pages) |
 
 **Loaded from a file:**
@@ -153,7 +152,7 @@ The rest of the city file goes to MMU 3.
                                         | `$E059` |
 | 16 `PAGE_FILE`     | `file_handler.asm` (SD card load / save) 
                                         | `$E125` |
-| 17 `PAGE_AUDIO`    | `audio.asm`      | `$E06E` |
+| 17 `PAGE_AUDIO`    | `audio.asm`, `sound.asm`, `sfx_data.asm` | `$E98F` |
 
 ## Page summary
 
@@ -198,7 +197,7 @@ swaps pages and then calls into them has to be resident.
 ### MMU 5: `$A000`–`$BFFF`, page 11 `PAGE_MAIN` (end `$B584`)
 
 - **Files:** `zpolice.asm`, with `htabs.asm`, `city_map.asm`,
-  `l2_pallets.asm`, `levels.asm`, `text.asm` and `sfx_data.asm`.
+  `l2_pallets.asm`, `levels.asm` and `text.asm`.
 - **Main flow:**
   - `start` (`$A76B`): set-up, then the main menu.
   - `main_loop` (`$A8DB`): pages in each game page in turn and calls it.
@@ -213,9 +212,7 @@ swaps pages and then calls into them has to be resident.
   `vtol_landed`, `vtol_ground`, `vtol_damage`, `wpn_cfg_ptr`, `wpn_fits`.
 - **Pause and save games:** `game_pause`, `save_game`, `load_save`,
   `continue_game`, `sg_copy`. The save buffer is `sg_buf` (`$ABA1`).
-- **Text screens and sound data:**
-  - `text.asm`: menu and load-out text, `menu_clear`.
-  - `sfx_data.asm`: `sfx_table` at `$A37B` and the effects.
+- **Text screens:** `text.asm`: menu and load-out text, `menu_clear`.
 - **Shared state:** the camera, weapons, level, wave, salvage and booster
   variables; the bullets and particles; `level_cur` (`$A05B`).
 - **Stack:** 256 bytes below `stack_top` (`$B585`).
@@ -229,12 +226,15 @@ swaps pages and then calls into them has to be resident.
   - the IM 2 vector table `im2_table` (`$3C00`);
   - the routine `im2_routine` (`$3E3E`), with its own stack `isr_stack`
     (`$3F9A`);
-  - `engine_tick` (`$3E5A`) for the engine sound;
-  - `sfx_tick` / `sfx_voice` (`$3F0C`) for the three effect voices;
-  - `isr_ay`.
+  - the sound's resident state: the request bytes (`sfx_req`, `sfx2_req`,
+    `sfx3_req`), the playing sounds' pointers, `eng_on`, `eng_cur`.
 
-  These must be resident, because an interrupt can arrive whatever pages
-  are in slots 6 and 7. The routine only writes the AY ports.
+  The table and routine must be resident, because an interrupt can arrive
+  whatever pages are in slots 6 and 7. With the engines on, the routine
+  maps the audio page (`PAGE_AUDIO`: `sound.asm`'s `engine_tick`,
+  `sfx_tick`, `sfx_voice`, `isr_ay`, and `sfx_data.asm`) into slot 7 to
+  play the sound, then puts back the page that was there and the main
+  code's selected NextReg ($243B, read first).
 
 ### Always-mapped data (no code)
 

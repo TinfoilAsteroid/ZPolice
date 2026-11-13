@@ -6,15 +6,14 @@ LEVEL 11
 CITY 3
 NAME TOKYO
 ZOMBIES 10
-WAVES 3
+WAVES 2
 FAST 6
 VIEW 8
 
 ; special monsters, one line a wave (1 is the level's start): WAVE n,
-; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, CLUSTERS
+; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, DEVIL, CLUSTERS
 WAVE 1 GHOST 4
 WAVE 2 BANSHEE 2
-WAVE 3
 
 ; cells of the city's map changed for this level: x z code family
 CHANGES 0

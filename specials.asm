@@ -73,15 +73,16 @@ TG_BASE         equ $C0             ; + a base tile's index (base_hp, 0..24)
 ; LICH_RATE_STEP fewer a city before it, at least LICH_RATE_MIN.  Its
 ; record: +18 and +23 (LICH_HP_HI) its hit points, 16 bits; +24 (LICH_WAIT)
 ; frames to its next shot; +25 (LICH_FRAMES) frames between.
+; The devil (ZT_DEVIL, id SPEC_DEVIL): the final boss (devil.asm).
 ; (Which waves have which is the level files' business: gentables.py.)
 BANSHEE_HP      equ 8
 BANSHEE_DMG     equ 5
 BANSHEE_R       equ TILE_UNITS/2
 BASE_TILES      equ (2*TERRACE_R+1)*(2*TERRACE_R+1)
-LICH_HP         equ 50              ; the first city's
-LICH_HP_STEP    equ 25              ; more a city
-LICH_RATE       equ 60              ; the first city's frames between shots
-LICH_RATE_STEP  equ 10              ; fewer a city
+LICH_HP         equ 25              ; the first city's
+LICH_HP_STEP    equ 5               ; more a city
+LICH_RATE       equ 150             ; the first city's frames between shots
+LICH_RATE_STEP  equ 5               ; fewer a city
 LICH_RATE_MIN   equ 10
 
 ;------------------------------------------------------------------------------
@@ -103,6 +104,7 @@ spec_init:
         add ix,de
         inc c
         djnz .lp
+        call dv_reset                   ; (devil.asm) nothing coming down
         call spec_wave                  ; wave 1's specials (wave_number 1)
         jp zflags                       ; (zombie.asm) mark their cells
 
@@ -168,6 +170,7 @@ ghost_init:
 ; the cells again
 ;------------------------------------------------------------------------------
 spec_update:
+        call dv_frame                   ; (devil.asm) the bolt, buildings falling
         ld a,(zwave_new)                ; a new wave: its banshees or ghouls
         or a
         call nz,spec_wave
@@ -182,7 +185,11 @@ spec_update:
         ld a,(ix+15)
         cp ZT_GHOST
         jr c,.nx                        ; (a ghoul walks: zombie_update)
-        call g_params                   ; a ghost or banshee: its settings
+        cp ZT_DEVIL
+        jr nz,.gh
+        call devil_move                 ; (devil.asm)
+        jr .nx
+.gh:    call g_params                   ; a ghost or banshee: its settings
         call ghost_move
 .nx:    ld de,ZREC
         add ix,de
@@ -256,10 +263,10 @@ spec_wave:
         ret
 
 ; Special type (SPEC_*, the level files) -> record type (ZT_*)
-spec_types: db ZT_GHOST, ZT_BANSHEE, ZT_GHOUL, ZT_LICH
+spec_types: db ZT_GHOST, ZT_BANSHEE, ZT_GHOUL, ZT_LICH, ZT_DEVIL
         ASSERT $ - spec_types == SPEC_IDS
         ASSERT SPEC_GHOST == 0 && SPEC_BANSHEE == 1 && SPEC_GHOUL == 2
-        ASSERT SPEC_LICH == 3
+        ASSERT SPEC_LICH == 3 && SPEC_DEVIL == 4
 
 ; sp_left monsters of record type sp_type into free special records (as
 ; many as there's room for)
@@ -286,7 +293,12 @@ spec_place:
         jr z,.li
         cp ZT_GHOUL
         jr z,.gh
+        cp ZT_DEVIL
+        jr z,.dv
         call ghost_init
+        pop bc
+        jr .nx
+.dv:    call devil_init                 ; (devil.asm)
         pop bc
         jr .nx
 .li:    call lich_init
@@ -1097,3 +1109,5 @@ gf_dx:      dw 0
 gf_dz:      dw 0
 gf_d:       dw 0
 ga_t:       dw 0                        ; g_aim: the speed factor
+
+        INCLUDE "devil.asm"             ; the final boss

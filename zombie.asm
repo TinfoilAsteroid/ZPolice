@@ -93,6 +93,8 @@ ZT_LICH         equ 3           ; +15: a lich, a city's boss: a special
                                 ; fireballs (lich_update, weapons.asm)
 ZT_GHOST        equ 4           ; +15: a ghost (specials.asm); types from
 ZT_BANSHEE      equ 5           ; here on fly (specials.asm moves them)
+ZT_DEVIL        equ 6           ; +15: the final boss (devil.asm), drawn by
+                                ; devil_draw (city2.asm)
 ZHP             equ 5           ; hit points: a zombie (level 1)
 ZHP_FAST        equ 4           ; and a fast zombie
 GHOUL_HP        equ ZHP         ; and a ghoul
@@ -740,6 +742,9 @@ base_damage:
         cp PAD_CODE
         jr nz,.ter
         pop hl
+        ld a,(level)                    ; (the last level, the devil's: only
+        cp LEVEL_LAST                   ; the VTOL destroyed ends it)
+        ret z
         ld a,1                          ; the landing pad: game over
         ld (game_over),a
         ret
@@ -1190,6 +1195,16 @@ zombie_draw:
         ld a,1
         ld (fig_mon),a                  ; a monster (fig_seen notes it)
         ld a,(ix+15)
+        cp ZT_DEVIL
+        jp z,devil_draw                 ; (city2.asm)
+        ld c,a
+        ld a,(devil_gfx)                ; the devil's graphics over the other
+        or a                            ; monsters': only the zombies drawn
+        ld a,c
+        jr z,.any
+        cp ZT_GHOUL
+        ret nc
+.any:
         cp ZT_GHOST
         jr nc,.ghost                    ; a flying special monster
         ld hl,0

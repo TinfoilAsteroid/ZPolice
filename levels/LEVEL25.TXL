@@ -5,18 +5,14 @@
 LEVEL 25
 CITY 5
 NAME BERLIN
-ZOMBIES 30
-WAVES 5
-FAST 13
+ZOMBIES 40
+WAVES 1
+FAST 40
 VIEW 8
 
 ; special monsters, one line a wave (1 is the level's start): WAVE n,
-; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, CLUSTERS
-WAVE 1 GHOST 5 GHOUL 1
-WAVE 2 BANSHEE 2
-WAVE 3 GHOUL 1
-WAVE 4 BANSHEE 2
-WAVE 5 LICH 1 GHOUL 1
+; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, DEVIL, CLUSTERS
+WAVE 1 CLUSTERS 1
 
 ; cells of the city's map changed for this level: x z code family
 CHANGES 0

@@ -77,8 +77,8 @@ def test_spawns_in_the_last_wave():
     try:
         zp.check(len(liches(cpu)) == 1, "no lich on level 5")
         r = liches(cpu)[0]
-        zp.check(hp(cpu, r) == 50, f"city 1: {hp(cpu, r)} hit points, not 50")
-        zp.check(cpu.rd(r + sym["LICH_FRAMES"]) == 60, "city 1: not 60 frames a shot")
+        zp.check(hp(cpu, r) == 25, f"city 1: {hp(cpu, r)} hit points, not 25")
+        zp.check(cpu.rd(r + sym["LICH_FRAMES"]) == 150, "city 1: not 150 frames a shot")
     finally:
         sd.close()
     sd, cpu = game(4)
@@ -86,7 +86,7 @@ def test_spawns_in_the_last_wave():
         zp.check(not liches(cpu), "a lich before the city's last level")
     finally:
         sd.close()
-    for lv, h, rate in ((10, 75, 50), (50, 275, 10)):
+    for lv, h, rate in ((10, 30, 145), (45, 65, 110)):     # (level 50's last: the devil)
         sd, cpu = game(lv)
         try:
             zp.check(not liches(cpu), f"level {lv}: a lich before the last wave")
@@ -132,7 +132,7 @@ def test_range():
         zp.check(not fireballs(cpu) and cpu.rd(r + sym["LICH_WAIT"]) == 0, "fired out of range")
         place(cpu, r, (32 - 9) * 256, 32 * 256)     # 180 m
         zp.frames(cpu, 1)
-        zp.check(cpu.rd(r + sym["LICH_WAIT"]) == 59, "didn't fire in range (a 60-frame reload)")
+        zp.check(cpu.rd(r + sym["LICH_WAIT"]) == cpu.rd(r + sym["LICH_FRAMES"]) - 1, "didn't fire in range (its reload)")
     finally:
         sd.close()
 
@@ -255,7 +255,7 @@ def test_big_hit_points_and_box():
         cpu.wr(r + sym["LICH_WAIT"], 200)
         cpu.wr(rec(0) + 10, 1)              # (a zombie left: the level goes on)
         cpu.wr(rec(0) + 7, 200)
-        cpu.wr(r + 18, 19)                  # 275, as city 10's
+        cpu.wr(r + 18, 19)                  # 275: over 8 bits
         cpu.wr(r + sym["LICH_HP_HI"], 1)
         x, z = cpu.rd16(r), cpu.rd16(r + 2)
         drop(cpu, sym["BK_ROCKET"], x, z)

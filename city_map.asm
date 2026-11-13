@@ -13,6 +13,9 @@ PAD_COL         equ $FC     ; its city_col (colour family * 4)
 TERRACE_COL     equ $F8     ; the terrace's city_col
 TERRACE_R       equ 2       ; terrace: cells 1..TERRACE_R from the pad
 PAD_Z           equ 32
+HELL_X          equ 12      ; the final level's entrance to hell: a
+HELL_Z          equ 52      ; circle of road round this cell, where the
+HELL_R          equ 3       ; devil rises (level_generate)
 BASE_YAW        equ 0      ; start heading: north up the boulevard
 WALL_FAMILY     equ 0       ; perimeter wall colour family (gentables.py)
         ASSERT GRID == 64   ; gentables.py and zpolice.asm agree

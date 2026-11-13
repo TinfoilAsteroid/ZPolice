@@ -22,14 +22,14 @@ hud_sprites:
 ; the sprites are hidden (frm_on; spr_hide_all clears it).  frame_tab: x, y,
 ; pattern and flags, then scale across and down: the edges are 1-row patterns
 ; stretched, FRM_H across (two at x8 overlapping, 224 pixels) and FRM_V down
-; (two at x4 overlapping, 96).  The panel's bottom corners are rounded too.
+; (two at x4 overlapping, 96).  (The panel's bottom corners aren't rounded:
+; sprites there covered the city map's bottom left.)
 ;------------------------------------------------------------------------------
-FRM_SPR0        equ CSPR_PTR_SPR+1  ; the frame's sprites (12)
+FRM_SPR0        equ CSPR_PTR_SPR+1  ; the frame's sprites (10)
 FRM_L           equ SPR_SCREEN_X
 FRM_R           equ SPR_SCREEN_X+256-SPR_SIZE
 FRM_T           equ SPR_SCREEN_Y
 FRM_B           equ SPR_SCREEN_Y+VIEW_H-SPR_SIZE
-FRM_PB          equ SPR_SCREEN_Y+192-SPR_SIZE   ; the panel's bottom corners
 FRM_X8          equ 3               ; (scale codes)
 FRM_X4          equ 2
 FRM_REC         equ 8
@@ -43,10 +43,6 @@ frame_tab:
         db FRM_CRN_P, SPRF_YMIRROR, 0, 0
         dw FRM_R, FRM_B
         db FRM_CRN_P, SPRF_XMIRROR|SPRF_YMIRROR, 0, 0
-        dw FRM_L, FRM_PB
-        db FRM_CRN_S, SPRF_YMIRROR, 0, 0
-        dw FRM_R, FRM_PB
-        db FRM_CRN_S, SPRF_XMIRROR|SPRF_YMIRROR, 0, 0
         dw FRM_L+SPR_SIZE, FRM_T                ; the top edge
         db FRM_H, 0, FRM_X8, 0
         dw FRM_R-16*8, FRM_T

@@ -150,8 +150,10 @@ zblip:
         inc a
         ld (ix+14),a
         ld a,(ix+15)                    ; a ghost or banshee: its own shades
-        ld hl,lshades                   ; (a lich: flashing red)
+        ld hl,lshades                   ; (a lich, the devil: flashing red)
         cp ZT_LICH
+        jr z,.z
+        cp ZT_DEVIL
         jr z,.z
         ld hl,zshades
         cp ZT_GHOST

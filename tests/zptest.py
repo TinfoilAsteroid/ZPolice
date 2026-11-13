@@ -73,6 +73,11 @@ def machine(sd, interrupts=False):
     cpu = nexsim.Cpu()
     cpu.esx_root = sd.root
     nexsim.load_nex(cpu, NEX)
+    if "wp_wait" in sym:                # PREPARE FOR WAVE's 2 s (wave_prepare):
+        ticks = sym["isr_ticks"]        # nexsim raises no interrupts of its own,
+        wait = sym["WPREP_TICKS"]       # so skip it (test_wave_prepare checks it)
+        cpu.trap_pc = sym["wp_wait"]
+        cpu.trap = lambda: (cpu.wr(ticks, wait & 255), cpu.wr(ticks + 1, wait >> 8))
     if interrupts:
         nxt = [cpu.t + FRAME_T]
 

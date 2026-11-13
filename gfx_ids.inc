@@ -4,12 +4,21 @@
 SPR_PAL0        equ 192     ; Layer 2 entry of figure colour 0
 GFX_ANIMS       equ 19
 GFX_ENTRIES     equ 19     ; the directory: the purposes (the vision modes: by palette)
-GFX_PAGES_MAX   equ 48
+GFX_PAGES_MAX   equ 58
 GFX_MIN_H       equ 3      ; the sizes drawn, in rows
 GFX_MAX_H       equ 32
 GFX_DIR         equ $C000
-GFX_VERSION     equ 4
+GFX_VERSION     equ 5
 GFX_HEADER      equ 16
+; The final boss, the devil (ZPDATA/DEVIL.ZPB): its frames, one 8K page each,
+; DEVIL_W x DEVIL_SRC_H pixels, scaled by the game; walk front, side, rear
+DEVIL_FRAMES    equ 6
+DEVIL_FRAMES_EACH equ 2
+DEVIL_W         equ 64
+DEVIL_SRC_H     equ 128
+DEVIL_H         equ 597     ; its height (world units)
+DEVIL_EYE_ENTRY equ 171     ; its eyes' palette entry
+DEVIL_VERSION   equ 1
 ANIM_ZOMBIE_WALK_FRONT          equ 0
 ANIM_ZOMBIE_WALK_SIDE           equ 1
 ANIM_ZOMBIE_WALK_REAR           equ 2

@@ -1,5 +1,6 @@
 """The save game: CONTINUE with none stays on the main menu; S on the pause
-screen writes ZPDATA/SAVEGAME.ZPS and returns to the menu; CONTINUE on a
+screen writes ZPDATA/SAVEGAME.ZPS (the hardware build: /home/ZPSave/, made
+at start-up: test_hardware.py runs this there too) and returns to the menu; CONTINUE on a
 fresh start then brings back the level, weapons, stock, hit points,
 salvage, booster, vision modes and vertical thrusters as they were.
 """
@@ -20,6 +21,14 @@ def state(cpu):
                 booster=(R(sym["boost_fitted"]), R(sym["boost_fuel"])),
                 vision=R(sym["vision_owned"]), thrusters=R(sym["vthrust_fitted"]),
                 lateral=R(sym["lthrust_fitted"]))
+
+
+def save_path(sd):
+    """Where the build writes the save game: the hardware build in
+    /home/ZPSave on the card, the plain one in ZPDATA"""
+    if "sg_home" in sym:
+        return os.path.join(sd.root, "home", "ZPSave", "SAVEGAME.ZPS")
+    return sd.path("SAVEGAME.ZPS")
 
 
 def menu_scans(cpu, n, keys_at):
@@ -65,8 +74,8 @@ def test_save_and_continue():
                 cpu.keys = {"S"} if k[0] == 5 else set()
             return cpu.pc == sym["main_menu"] and cpu.mmu[6] == sym["PAGE_MAINMENU"]
         zp.run_until(cpu, pause_then_s, "the main menu after S")
-        p = sd.path("SAVEGAME.ZPS")
-        zp.check(os.path.exists(p), "SAVEGAME.ZPS not written")
+        p = save_path(sd)
+        zp.check(os.path.exists(p), f"{p} not written")
         cpu = zp.machine(sd)
         menu_scans(cpu, 3, {3: "2"})
         zp.run_until(cpu, lambda: cpu.pc == sym["main_loop"], "the game after CONTINUE")

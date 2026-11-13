@@ -45,8 +45,6 @@ Items marked "(also below)" repeat an open point further down this file.
   distance (the per-level draw distance already exists).
 - HUD polish: weapon icons in place of letters, an ammo bar per slot, and a
   warning flash at low integrity.
-- Screens outside the game in Layer 2 320x256: see "Screens in Layer 2
-  320x256" below.
 
 ### Sound
 
@@ -57,8 +55,6 @@ Items marked "(also below)" repeat an open point further down this file.
   base-under-attack alarm.
 
 ### Gameplay
-- Missile lock, add a key to cycle through targets near by to select a different target
-- Add aim assist to twn linked chain guns
 - Salvage point change - 1 point per human not killed, 2 points per human rescuded, -5 per killed human: never goes below 0 or removes unlocks, or reactivates locks of player saves more
 - Review the levels and waves: there seem to be a lot of zombies early in the
   game. Zombies could also be weaker at the start, while the player hasn't
@@ -66,8 +62,6 @@ Items marked "(also below)" repeat an open point further down this file.
 - Ghosts respawning during a level, not only at the start (also below).
 - New monster types, or a boss every 10 levels.
 - Add super zombie, big and bulky as wide has 20 hit points.
-- At the final city we want something like an entrance to hell where the zombies come from
-  this will be represented by a large road section as a circle, a boss monster will spawn in the road and attempt to destroy the landing pad
 - Barricade gameplay: rebuild or place barricades, or repair them at the
   pad, using salvage.
 - When a weapon slot's ammo runs out, flash its 000 (it shows red now)
@@ -93,40 +87,13 @@ Items marked "(also below)" repeat an open point further down this file.
   new builds, Layer 2 compared byte for byte).
   - Still to look at, if anything: scale_comp itself (3-4% of a frame in
     corner projections), and occ_record (5-11% in level flight).
-  - (Done 2026-11-09: front to back looked at, occlusion pitched on;
-    closed, it looks fine in play. See DONE.md.) Front to back, measured
-    in the emulator over the 10 render-test views: every write to the
-    view's pixels counted, by what wrote it.
-    - Level flight is already nearly there: the occlusion pass and the cut
-      rows leave an overdraw of only 1.00-1.32 (face writes / pixels
-      kept). Drawing the faces' visible runs only (an ideal span buffer,
-      60 T a row) would save 0-1.3% of a frame: not worth a rewrite.
-    - Pitched views have no occlusion (OCCLUSION_CULL is level flight
-      only): overdraw 1.3-1.9, and buildings that end up wholly overdrawn
-      take 15-56% of the frame (view 8, pitch -20: 40 of 47 buildings,
-      56%).
-    - The clear: only 33% of its pixels survive, but clearing just the
-      gaps would cost about what the one DMA fill does.
-    - Tried: occlusion at any pitch (`OCC_PITCHED`, zpolice.asm, off).
-      The cover rule still holds pitched (no roll, camera above the
-      ground), except that the vertical edges lean, so only the columns
-      of both a building's top and bottom corners are covered from its
-      top down (the first try, the whole span, changed 50 of 124 views).
-      With that: pixel-identical over 124 random pitched views (and the
-      render test's 4), frame time -5.4% (median -3.4%; -31.6% to +9.6%
-      by view). It drops 74% of the wholly overdrawn buildings, but
-      every one is still transformed (occ_pretest's bounds are level
-      flight only, so it's skipped when pitched) and recorded: in view 8
-      it saves 424K T of faces and spends ~420K T more on the pass.
-    - (Done 2026-11-09: a pitch-aware occ_pretest, and `OCC_PITCHED` on up
-      to `OCC_PMAX` (18): -7.7% over the 124 pitched views, pixel-identical.
-      See DONE.md.)
-    - Possible later (not needed): the pitched pre-test is 3,600-4,500 T a building (5
-      fmuls on top of the level one's work), and it costs where little is
-      hidden (low, steep views: up to +18%; render views 4 and 5 +5% and
-      +13%). Per-frame tables of the height terms (h sinP, h cosP for the
-      15 heights) would take 2 of the 5 fmuls off each. Choosing per view
-      (the better of on and off) would add only ~1% more.
+  - Possible later (not needed): the pitched occlusion pre-test is
+    3,600-4,500 T a building (5 fmuls on top of the level one's work), and
+    it costs where little is hidden (low, steep views: up to +18%; render
+    views 4 and 5 +5% and +13%). Per-frame tables of the height terms
+    (h sinP, h cosP for the 15 heights) would take 2 of the 5 fmuls off
+    each. Choosing per view (the better of on and off) would add only ~1%
+    more.
   - Not to do: keeping SP borrowed for a whole polygon (saves the per-span
     SP restore and DI / EI, ~3%) would hold interrupts off long enough to
     miss some (the engines' sound); and clamping x instead of clipping the
@@ -140,52 +107,13 @@ Items marked "(also below)" repeat an open point further down this file.
 
 Completed items are in DONE.md.
 
-## Screens in Layer 2 320x256 (2026-11-09)
+## Screens in Layer 2 320x256
 
-Move the screens outside the game from the ULA (`text.asm`: 32x24
-characters, attribute colours) to Layer 2 320x256 (40x32 characters, any
-colour). The graphics page is done and tested: `layer2-320x256.asm`
-(`PAGE_L320`, in slot 2 over the occlusion page), test_l320.py; see README.
-The game start already switches back to 256x192 and puts the occlusion page
-back (`l2_game_mode`).
-
-Each screen, in place of `menu_clear` / `menu_print`:
-- `nextreg L320_MMU,PAGE_L320`, `l320_cls`, `l320_mode320` (clear before
-  switching, so the old contents never show).
-- Its text tables (row, column, colour, text) through `l320_print_list`,
-  with the colours as RRRGGGBB (`L320_WHITE`, `L320_YELLOW`, ...) in place
-  of the `MENU_*` attributes, re-laid out for 40x32.
-- Highlights (the selected option, a fit / can't-fit colour) with
-  `l320_recolour`, or by printing again in the new colour.
-- Panels and frames with `l320_box` / `l320_fill`.
-
-1. (Done 2026-11-10) Main menu: its own page now (`mainmenu.asm`,
-   `PAGE_MAINMENU`, page 36), and its NO SAVED GAME message.
-2. Game over (`game_over_screen`, menu.asm).
-3. (Done 2026-11-10) Level complete: its own page now (`levelend.asm`,
-   `PAGE_LEVELEND`, page 37), with the salvage and its rewards and its own
-   PRESS SPACE (`le_space`). Still to do: game complete
-   (`game_complete_screen`, menu.asm).
-4. Load error (`load_error_screen`, menu.asm).
-5. (Done 2026-11-10) VTOL load-out (`loadout_screen`, loadout.asm). Since:
-   a schematic of the VTOL's underside with the slots' hardpoints
-   (ZPDATA/VTOL.ZPI, read when the screen opens; tools/screen_editor.py,
-   tools/vtol_schematic.py). Red
-   (`SCR_BAD`, a weapon that can't go in the slot) is hard to read on the
-   dark blue: maybe a lighter red.
-6. (Done 2026-11-10) Redefine keys (`keydef_screen`, keydef.asm): all 23
-   controls show at once now (no scrolling).
-7. Then: check that nothing still uses `menu_clear` / `menu_print` /
-   `menu_char` (the pause screen, in flight, stays on the ULA) and remove
-   what isn't used from the resident page. test_gameover.py reads the ULA
-   screen (page 10) to see the game over screen: it would read Layer 2
-   instead.
-8. (Done 2026-11-10) A large font for these screens: 12x10 cells in
-   colour gradients, ZPDATA/FONT12.ZPF, loaded at start-up, edited with
-   tools/font_editor.py. The 8x8 font in the same style too, FONT8.ZPF
-   (every text screen and the HUD). Maybe still: a title picture (see Graphics above),
-   and lower case / more punctuation in the font (59 characters now:
-   space to Z).
+All the screens outside the game are done (DONE.md). Maybe still:
+- A title picture (see Graphics above), and lower case / more
+  punctuation in the large font (59 characters now: space to Z).
+- The load-out: red (`SCR_BAD`, a weapon that can't go in the slot) is
+  hard to read on the dark blue: maybe a lighter red.
 
 ## Projection optimisation (2026-11-07, to review)
 
@@ -221,22 +149,8 @@ level flight and the bottom corner on screen, so pitched views get none.
 
 To do, roughly 6-8% of a frame together (estimates; item 1 done, 2.0%;
 item 2 done, no benefit; item 4 done, 2.8%):
-1. (Done 2026-11-09: a leaner projection, `vproj`: 36% off a corner's
-   projection, 2.0% off the frame. See DONE.md.)
-2. (Done 2026-11-09: No real benefit in testing. See DONE.md.)
-   The street dots (draw_dots, 4.2% of a
-   frame) project grid points too, but likely couldn't have shared it
-   with the buildings: a dot is only worked out for a corner with no building next
-   to it, when drawing a floor tile, so the two sets of points barely
-   meet. A cache of the dots' own among the floor tiles is still open: a
-   dot already cached for the frame when a tile gets ready to project it means that
-   dot is already drawn, so the tile can skip it (no second projection,
-   no second draw).
 3. Outcode and projection in one pass (~1-1.5%): the corner read once, the
    outcode worked out on the way into the projection.
-4. (Done 2026-11-09: fewer cells reaching the transform, a leaner
-   occ_pretest, the walk's own cull and whole rows skipped: 2.8% off the
-   frame, pixel-identical. See DONE.md.)
 - A larger gain (2-3x) would need drawing front to back, skipping hidden
   buildings before any corner work (the overdraw item under Performance:
   measure overdraw first).
@@ -248,49 +162,25 @@ goes behind `REAL_HARDWARE` (`build.bat hardware`), keeping the plain zxnDMA
 path for CSpect, with its DMA+ commands modelled in tools/nexsim.py (it stops
 on any it doesn't model) and checked on a real Next: the frame rate with
 `DRAW_FPS`, before and after. Done so far: `dma_fill` uses fill mode, and
-NextRegs $CC-$CE are 0 (no interrupt holds a transfer back).
+NextRegs $CC-$CE are 0 (no interrupt holds a transfer back); items 1-3
+below (2026-11-12). The DMA+ reference: docs/ZXNDDMA.md (from the Next
+distribution's guide); tests/test_hardware.py checks the hardware build
+draws as the plain one.
 
 Estimates below are from the 10 render-test views (399 faces, 291,000
 pixels), with DMA costs from the primer (docs/zxnDDMA/zxnddma.gde in the
 Next distribution), not measured: filling faces is about 20% of a frame now
 (it agrees with the 2026-11-01 profile).
 
-1. Clear screen as two rectangles, sky and ground: fill mode, 2D, at a
-   Layer 2 X,Y in the hidden screen (NextReg $13, the back buffer), so no
-   paging of the sections. Small gain itself (~4,000 T a frame: the fill
-   mode's halving is already in), but the first proof on hardware of X,Y,
-   hidden screen and 2D, before the buildings rely on them.
-   - The clear's costs: plain DMA ~197,000 T (11% of a frame), fill mode
-     ~98,000 T (now, hardware build), 2-cycle timing ~65,000 T.
-2. Long spans (`DMA_SPAN_MIN`, 20 pixels, and up) in fill mode: the fill
-   value set once per face in place of `l2_cls_byte`; fs_loop's reload
-   stays as it is. The face fill about -20%. The fill flag stays on for
-   the spans: `occ_dma` (a memory copy) turns it off round itself and
-   back on.
-3. Block fill buildings: exact rectangles. Wherever rows of a face have
-   the same left and right x (TA / TB, after the edge walk), at least 4
-   rows and 16 wide, draw them as one DMA+ rectangle (2D, X,Y, hidden
-   screen, fill), the other rows as now. Pixel-identical, so the render
-   test still holds. 56% of face pixels qualify (walls facing us when
-   level most, but even pitched views: -14% to -58% by view). The plain
-   DMA set-up for the spans put back after each face's rectangles (~300 T).
-   - Alone about -30%; with item 2 about -38% (~12% of a frame from ~20%).
-   - Looked at and not worth it: the largest inner rectangle with the
-     slivers each side by the CPU. It covers 75% of the pixels but saves
-     no more (every row still needs its slivers), for more code.
+- Items 1-3 (done: DONE.md): check the frame rate on a real Next
+  (`DRAW_FPS`) and the sound with the long bursts.
+- Item 5 (done: DONE.md): the fading ghost (spr_col: one colour) can't
+  be blitted, the CPU draws it, ~20% slower than the plain build. To do:
+  fade it by stepping its own palette entries towards the background,
+  and blit it too.
 4. 2-cycle DMA timing (WR1 / WR2 timing bytes) for the fills: another ~7%
    of the face fill, and the clear down to ~65,000 T, if it is reliable on
    the hardware: to try.
-5. Draw the figures with DMA+. A block transfer to a Layer 2 X,Y needs no
-   paging of the screen, and it has a transparent colour (pixel value 0,
-   as the data has now), so it can replace spr_draw's pixel loops, still
-   clipping: cut the row length, the number of rows and the start of the
-   source to the view. The stored rows would have to become rectangles,
-   with a fixed stride, in place of each row's start and count. The vision
-   modes are already by palette, so one set of graphics serves every mode.
-   - The fading ghost (spr_col: every pixel one colour) can't be blitted:
-     fade it by stepping its own palette entries towards the background
-     instead.
 
 Things to watch:
 - A large rectangle is one long DMA burst: with $CC-$CE 0 no interrupt

@@ -1264,6 +1264,9 @@ occ_record:
 ; memory, both addresses counting up; then port A back on the fixed colour
 ; byte and the length's high byte 0, as the spans need (clear_screen.spans)
 occ_dma:    db DMA_DISABLE
+    IFDEF REAL_HARDWARE
+            db DDMA_MODE, 0                 ; (a copy: the spans' fill mode off)
+    ENDIF
             db DMA_WRO_BLOCK_PORTA_A2B_XFR  ; port A start, length:
             dw vtx
             dw 128
@@ -1276,6 +1279,9 @@ occ_dma_dst: dw 0
             dw l2_cls_byte
             dw 0
             db DMA_WR1_P1FIXED_MEMORY       ; port A fixed
+    IFDEF REAL_HARDWARE
+            db DDMA_MODE, DDMA_FLAG_FILL    ; (and the spans' fill mode back)
+    ENDIF
 occ_dma_n   equ $ - occ_dma
         ASSERT low vtx == 0 && OR_VIS + OR_N <= 16
 
@@ -1905,7 +1911,8 @@ spr_lod:
 ; isn't 0.  A row is its first drawn pixel's column, a count, then each
 ; pixel's palette entry (0: transparent).  A row wholly on screen goes
 ; through the quick loop (patched for mirroring and spr_col); one across a
-; screen edge checks each pixel.
+; screen edge checks each pixel.  (REAL_HARDWARE: the rectangles below.)
+    IFNDEF REAL_HARDWARE
 spr_draw:
         ld a,(spr_pg)
         nextreg LOGIC_MMU,a
@@ -2038,3 +2045,8 @@ sp_skip:    db 0                        ; spr_draw: the row's first pixel,
 sp_len:     db 0                        ;   its count,
 sp_x:       dw 0                        ;   the first's x,
 sp_hi:      db 0                        ;   and its row's address high byte
+    ELSE
+        INCLUDE "spr_rect.asm"          ; (DMA+: a figure, one rectangle)
+    ENDIF
+
+        INCLUDE "devil_draw.asm"        ; the final boss, scaled; its lightning

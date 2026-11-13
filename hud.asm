@@ -588,7 +588,7 @@ draw_integrity:
 .pr:    ld hl,int_txt
         ld de,ULA_ROW_INT+32+INT_PCT_COL
         ld b,4
-        jr print_glyphs
+        jp print_glyphs
 .dig:   ld (hl),0                       ; A = A mod B, (HL) = A / B
 .ds:    cp b
         jr c,.dd
@@ -599,6 +599,75 @@ draw_integrity:
         ret
         ASSERT VTOL_HP == 50            ; (percent = hp * 2)
         ASSERT INT_PCT_COL+3 < MAP_COL && INT_COL+8 < MAP_COL
+
+    IFNDEF RELEASE
+;------------------------------------------------------------------------------
+; Debug: the devil's hit points, "nnnn" in red after the integrity
+; percentage (row INT_ROW+1, DHP_COL), while it's there; blank otherwise.
+; Redrawn only when they change (dhp_shown).
+;------------------------------------------------------------------------------
+DHP_COL         equ INT_PCT_COL+5
+draw_devil_hp:
+        ld hl,$FFFF                     ; none
+        ld ix,zombies+NZOMB*ZREC
+        ld b,NSPEC
+.f:     bit 0,(ix+10)
+        jr z,.n
+        ld a,(ix+15)
+        cp ZT_DEVIL
+        jr nz,.n
+        ld l,(ix+18)
+        ld h,(ix+LICH_HP_HI)
+        jr .got
+.n:     ld de,ZREC
+        add ix,de
+        djnz .f
+.got:   ld de,(dhp_shown)
+        or a
+        sbc hl,de
+        add hl,de
+        ret z                           ; unchanged
+        ld (dhp_shown),hl
+        ld a,h
+        and l
+        inc a
+        jr nz,.num
+        ld hl,dhp_txt                   ; none: blank
+        ld b,4
+.bl:    ld (hl),GLYPH_SPACE
+        inc hl
+        djnz .bl
+        jr .pr
+.num:   ld ix,dhp_txt
+        ld de,1000
+        call .dig
+        ld de,100
+        call .dig
+        ld de,10
+        call .dig
+        ld (ix+0),l                     ; units
+.pr:    ld hl,ULA_ATTR + (INT_ROW+1)*32 + DHP_COL
+        ld b,4
+.at:    ld (hl),P_PANEL<<3 | C_WARN
+        inc hl
+        djnz .at
+        ld hl,dhp_txt
+        ld de,ULA_ROW_INT+32+DHP_COL
+        ld b,4
+        jp print_glyphs
+.dig:   ld a,-1                         ; (IX) = HL / DE, HL = the rest
+.ds:    inc a
+        or a
+        sbc hl,de
+        jr nc,.ds
+        add hl,de
+        ld (ix+0),a
+        inc ix
+        ret
+dhp_shown:  dw $FFFE                    ; (nothing yet: drawn the first time)
+dhp_txt:    ds 4
+        ASSERT DHP_COL+3 < MAP_COL
+    ENDIF
 
 ; HL -> B glyph codes, DE = first ULA cell: print them along the row
 print_glyphs:
@@ -633,6 +702,11 @@ print_glyphs:
 draw_hud:
         call draw_wpn
         call draw_integrity
+    IFNDEF RELEASE
+        push ix
+        call draw_devil_hp              ; (debug)
+        pop ix
+    ENDIF
         ; (the humans' states: hardware sprites, hum_hud in human.asm)
 
         call draw_gauges

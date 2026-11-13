@@ -1,6 +1,6 @@
 ;==============================================================================
-; Z-POLICE - sound effect data (resident: the main page, slot 5, always
-; mapped, so the interrupt routine can read it whatever else is paged in)
+; Z-POLICE - sound effect data (in the audio page, with the players,
+; sound.asm: mapped into slot 7 by the interrupt routine while it plays)
 ;
 ; Played on AY 2 by sfx_tick (interrupts.asm); the game asks for one with
 ; ld a,SFX_n / ld (sfx_req),a (the numbers are in audio.asm).  A sound is a
@@ -63,11 +63,14 @@ sfx_table:
         dw sfx_splat                    ; SFX_SPLAT
         dw sfx_crash                    ; SFX_CRASH
         dw sfx_lock                     ; SFX_LOCK
+        dw sfx_charge                   ; SFX_CHARGE
+        dw sfx_bolt                     ; SFX_BOLT
         ASSERT SFX_MG == 1 && SFX_LASER == 2 && SFX_CHAIN == 3
         ASSERT SFX_ROCKET == 4 && SFX_MISSILE == 5 && SFX_AUTOCANNON == 6
         ASSERT SFX_BOOM_ROCKET == 7 && SFX_BOOM_MISSILE == 8
         ASSERT SFX_BOOM_AUTOCANNON == 9 && SFX_BOOM_PROX == 10 && SFX_SPLAT == 11
         ASSERT SFX_CRASH == 12 && SFX_LOCK == 13
+        ASSERT SFX_CHARGE == 14 && SFX_BOLT == 15
         ASSERT ($ - sfx_table)/2 == SFX_LAST
 
 ; The machine gun, heavy: a sharp crack (bright noise) dropping into a deep
@@ -182,6 +185,53 @@ sfx_boom_prox:
 CRASH_RUMBLE    equ 4000            ; 109375 / 4000 = 27 Hz
         ASSERT CRASH_RUMBLE < 4096
 CRASH_LEN       equ 10              ; the fade, steps
+; The devil charging its lightning (devil.asm), its last DV_HUM_T
+; interrupts (3 s; AY 3 channel C, as the splats, which wait meanwhile:
+; dv_hum): an electric whine rising from CHG_F0 to CHG_F1 Hz (in steps of
+; even frequency) and swelling from volume 4 to 15, warbling (every other
+; step 1/12 flat), a step every 2 interrupts
+CHG_STEPS       equ 75              ; (x 2 interrupts: 3 s)
+CHG_F0          equ 80
+CHG_F1          equ 1600
+sfx_charge:
+CHG_I   DEFL 0
+        DUP CHG_STEPS
+CHG_P   DEFL 109375*(CHG_STEPS-1) / (CHG_F0*(CHG_STEPS-1) + (CHG_F1-CHG_F0)*CHG_I)
+        IF CHG_I & 1
+CHG_P   DEFL CHG_P + CHG_P/12
+        ENDIF
+        db AY_TONE_C, low CHG_P, AY_TONE_C+1, high CHG_P
+        db AY_VOL_C, 4 + (11*CHG_I)/(CHG_STEPS-1)
+        db SFX_STEP, SFX_STEP
+CHG_I   DEFL CHG_I+1
+        EDUP
+        db AY_VOL_C, 0, SFX_END
+        ASSERT 109375/CHG_F0 + 109375/CHG_F0/12 < 4096 && 2*CHG_STEPS == DV_HUM_T
+
+; The devil's lightning (AY 3, as the explosions): a crackling zap, the
+; brightest noise flickering in period and volume (channel A) beside a
+; zap sweeping down from about 4.4 kHz to 360 Hz (channel B), 240 ms; then
+; the thunder, a missile's blast
+    MACRO SFX_CRACKLE n, va, p, vb
+        db AY_NOISE, n, AY_VOL_A, va
+        db AY_TONE_B, low (p), AY_TONE_B+1, high (p), AY_VOL_B, vb, SFX_STEP
+    ENDM
+sfx_bolt:
+        db AY_MIXER, SFX_MIX_BOOM       ; (channel C: left alone)
+        SFX_CRACKLE 1, 15, 25, 15
+        SFX_CRACKLE 5, 9, 32, 14
+        SFX_CRACKLE 1, 15, 40, 13
+        SFX_CRACKLE 3, 6, 50, 12
+        SFX_CRACKLE 1, 14, 62, 11
+        SFX_CRACKLE 7, 10, 78, 10
+        SFX_CRACKLE 2, 15, 98, 9
+        SFX_CRACKLE 1, 8, 122, 8
+        SFX_CRACKLE 4, 13, 152, 7
+        SFX_CRACKLE 1, 15, 190, 6
+        SFX_CRACKLE 6, 7, 240, 5
+        SFX_CRACKLE 2, 12, 300, 4
+        SFX_BOOM 15, 24                 ; (its own mixer, rumble: the thunder)
+
 ; The missile lock: two short high beeps (about 1.5 kHz, channel A), 80 ms
 ; each with 40 ms between
 LOCK_TONE       equ 73              ; tone period: 109375 / 73 = 1.5 kHz

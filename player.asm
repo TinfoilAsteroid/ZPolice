@@ -130,12 +130,29 @@ update_player:
         ; while it brakes (ab_on), as it does while a nose key is held.
         xor a
         ld (ab_on),a
-        ld a,K_AIRBRAKE
+        ld a,(bolt_brake)               ; the devil's lightning: braked as by
+        or a                            ; the air brake, to half the speed it
+        jr z,.kz                        ; had (bolt_spd)
+        ld a,(bolt_spd)
+        bit 7,a
+        jr z,.t1
+        neg
+.t1:    ld c,a
+        ld a,(speed)
+        bit 7,a
+        jr z,.t2
+        neg
+.t2:    cp c
+        jr z,.bto
+        jp nc,.brk                      ; still faster: brake
+.bto:   xor a                           ; down to it: the brake off
+        ld (bolt_brake),a
+.kz:    ld a,K_AIRBRAKE
         call key_held
         jr z,.nw
 .brk:   ld a,(speed)
         or a
-        jr z,.nw                        ; stopped: nothing to brake
+        jr z,.stp                       ; stopped: nothing to brake
         ld (ab_on),a                    ; (non-zero: braking this frame)
         jp m,.rev
         sub AIRBRAKE_STEP               ; forwards: slower, not past 0
@@ -161,6 +178,9 @@ update_player:
         jr z,.nw
         dec a                           ; nose down
         ld (pitch),a
+        jr .nw
+.stp:   xor a                           ; stopped: the lightning's brake off
+        ld (bolt_brake),a
 .nw:
         ; --- yaw: YAW_RATE a frame, but YAW_FINE on the frame a turn key is
         ; first pressed (a tap turns 1 degree: fine control)
@@ -187,7 +207,16 @@ update_player:
 .rr:    ld hl,(yaw_frac)
         add hl,de
         ld (yaw_frac),hl
-.nf:
+.nf:    ld a,(spin_t)                   ; the devil's lightning: spun round
+        or a                            ; (spin_rate a frame, devil.asm)
+        jr z,.nsp
+        dec a
+        ld (spin_t),a
+        ld hl,(yaw_frac)
+        ld de,(spin_rate)
+        add hl,de
+        ld (yaw_frac),hl
+.nsp:
         ; --- pitch ---
         ld a,K_NOSE_DN
         call key_held

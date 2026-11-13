@@ -3,9 +3,9 @@
 ;
 ; Game over, game complete and the load error.  Game over (the VTOL or the
 ; landing pad destroyed) is drawn over the view, on the game's own Layer 2:
-; GAME OVER, why, and PRESS SPACE TO CONTINUE.  The others (and game over
-; after game complete) are drawn on the ULA screen with opaque paper
-; (text.asm), Layer 2 hidden.  The main menu and level complete have their
+; GAME OVER, why, and PRESS SPACE TO CONTINUE.  Game complete and the load
+; error are Layer 2 320x256 screens in the large font (screen320, as the
+; level complete).  The main menu and level complete have their
 ; own pages (mainmenu.asm, levelend.asm): these go back to the main menu
 ; through menu_go (zpolice.asm).
 ;==============================================================================
@@ -72,32 +72,12 @@ txt_go_vtol:
 txt_go_base:
         db "BASE DESTROYED", 0
 
-; After game complete (the ULA screen up, Layer 2 hidden): GAME OVER on the
-; ULA screen until SPACE is pressed, then the main menu
-game_over_ula:
-        ld sp,stack_top
-        call menu_clear
-        ld d,11
-        ld e,11
-        ld c,MENU_TITLE
-        ld hl,txt_game_over
-        call menu_print
-        call space_prompt
-        jp menu_go                      ; (zpolice.asm) the main menu
-
-; "PRESS SPACE TO CONTINUE", and wait until SPACE is pressed (newly: one held
-; down for firing as the screen came up doesn't count)
-LD_PROMPT_ROW   equ 23
-space_prompt:
-        ld de,LD_PROMPT_ROW<<8 | 4
-        ld c,MENU_ATTR
-        ld hl,txt_continue
-        call menu_print
-; Wait until SPACE is pressed, newly
+; Wait until SPACE is pressed, newly (one held down for firing as the
+; screen came up doesn't count)
 space_wait:
 .w:     call menu_frame
         call zrand                      ; (keep stirring the seed)
-        call kbd_scan                   ; (the input page: menu_clear)
+        call kbd_scan                   ; (the input page: screen320)
         ld hl,KB_SPACE
         call key_code_pressed
         jr z,.w
@@ -106,60 +86,38 @@ space_wait:
 txt_continue:
         db "PRESS SPACE TO CONTINUE", 0
 
-; The last level (LEVEL_LAST) complete: CONGRATULATIONS for GAME_DONE_FR
-; frames (10 seconds), then GAME OVER and the main menu
-GAME_DONE_FR    equ 500             ; 10 s of 50 Hz frames
+; The last level (LEVEL_LAST) complete: CONGRATULATIONS on a 320x256 screen
+; in the large font, and PRESS SPACE TO CONTINUE, until SPACE is pressed;
+; then the main menu
+GC_PROMPT_ROW   equ 23              ; (the large font's grid: 26 x 25)
 game_complete_screen:
-        call menu_clear
-        ld hl,txt_congrats              ; row, column, attribute, text, 0 ...
-.txt:   ld a,(hl)
-        cp $FF
-        jr z,.wait
-        ld d,a
-        inc hl
-        ld e,(hl)
-        inc hl
-        ld c,(hl)
-        inc hl
-        call menu_print                 ; HL past the text after
-        jr .txt
-.wait:  ld bc,GAME_DONE_FR
-.w:     push bc
-        call menu_frame
-        call zrand                      ; (keep stirring the seed)
-        pop bc
-        dec bc
-        ld a,b
-        or c
-        jr nz,.w
-        jp game_over_ula                ; then GAME OVER, then the menu
+        call screen320                  ; (text.asm) the input page in slot 7
+        ld hl,txt_congrats              ; row, column, ink, text, 0 ...
+        call l320_print_list
+        call space_wait
+        jp menu_go                      ; (zpolice.asm) the main menu
 
-txt_congrats:
-        db 8, 8, MENU_TITLE
+txt_congrats:                           ; (the large font's grid, centred)
+        db 8, (F12_COLS-15)/2, SCR_TITLE
         db "CONGRATULATIONS", 0
-        db 11, 5, MENU_ATTR
+        db 11, (F12_COLS-22)/2, SCR_TEXT
         db "ALL 50 LEVELS COMPLETE", 0
-        db 13, 6, MENU_ATTR
+        db 13, (F12_COLS-19)/2, SCR_TEXT
         db "THE CITIES ARE SAFE", 0
+        db GC_PROMPT_ROW, (F12_COLS-23)/2, SCR_HELP
+        db "PRESS SPACE TO CONTINUE", 0
         db $FF
         ASSERT LEVEL_LAST == 50         ; (the message says so)
 
-; newGame couldn't load the level's files (ZPDATA/LEVELnn.ZPL, its city):
-; say so for LOAD_ERR_FR frames, then the main menu
+; A level's files couldn't be read (its level file, its city: next_level;
+; the figures' or the devil's graphics: wave_prepare): say so on a 320x256
+; screen in the large font for LOAD_ERR_FR frames, then the main menu
 LOAD_ERR_FR     equ 250             ; 5 s of 50 Hz frames
 load_error_screen:
         ld sp,stack_top
-        call menu_clear
-        ld d,10
-        ld e,7
-        ld c,MENU_TITLE
-        ld hl,txt_load_err
-        call menu_print
-        ld d,12
-        ld e,3
-        ld c,MENU_ATTR
-        ld hl,txt_load_err2
-        call menu_print
+        call screen320                  ; (text.asm) the input page in slot 7
+        ld hl,txt_load_err              ; row, column, ink, text, 0 ...
+        call l320_print_list
         ld bc,LOAD_ERR_FR
 .w:     push bc
         call menu_frame
@@ -171,7 +129,11 @@ load_error_screen:
         jr nz,.w
         jp menu_go                      ; (zpolice.asm) the main menu
 
-txt_load_err:
+txt_load_err:                           ; (the large font's grid, centred)
+        db 9, (F12_COLS-17)/2, SCR_BAD
         db "CANNOT LOAD LEVEL", 0
-txt_load_err2:
-        db "ZPDATA MUST BE BESIDE THE NEX", 0
+        db 12, (F12_COLS-21)/2, SCR_TEXT
+        db "PUT THE ZPDATA FOLDER", 0
+        db 13, (F12_COLS-18)/2, SCR_TEXT
+        db "BESIDE ZPOLICE.NEX", 0
+        db $FF

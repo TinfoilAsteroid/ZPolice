@@ -1,10 +1,9 @@
 ;==============================================================================
-; Z-POLICE - text screens (resident): the ULA routines the end screens
-; (menu.asm) and the load-out screen (loadout.asm) share, from whichever
-; page is in slot 6.  Layer 2 hidden, the ULA screen with opaque paper,
-; 8x8 characters (font8, ASCII 32-95) by row and column with an attribute.
-; And screen320, the start of a Layer 2 320x256 screen (the main menu and
-; redefine keys: layer2-320x256.asm draws them).
+; Z-POLICE - text (resident): menu_print / menu_char, 8x8 characters
+; (font8, ASCII 32-95) on the ULA screen by row and column with an
+; attribute, for the boxes over the game (PAUSED, PREPARE FOR COMBAT); and
+; screen320, the start of a Layer 2 320x256 screen (every screen outside the
+; game: layer2-320x256.asm draws them), from whichever page is in slot 6.
 ;==============================================================================
 
 MENU_ATTR       equ P_PANEL<<3 | 7          ; white on the panel colour
@@ -31,23 +30,6 @@ menu_quiet:
         call init_audio                 ; (audio.asm)
         nextreg CODE_MMU,PAGE_INPUT
         ret
-
-; A ULA screen: hide Layer 2 (at 256x192 again, if a 320x256 screen had it),
-; silence the AY chips, and blank the ULA screen with opaque paper
-menu_clear:
-        call menu_quiet
-        call l2_game_mode               ; (zpolice.asm)
-        ld bc,$123B
-        xor a
-        out (c),a
-        ld hl,ULA_BMP                   ; (by DMA: layer2_cls.asm)
-        ld bc,$1800
-        xor a
-        call dma_fill
-        ld hl,ULA_ATTR
-        ld bc,$300
-        ld a,MENU_ATTR
-        jp dma_fill
 
 ; D = character row, E = column, C = attribute, HL -> text ending 0.
 ; Prints it; HL ends past the 0.

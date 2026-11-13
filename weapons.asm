@@ -77,8 +77,8 @@ update_weapons:
         jr .move
 .alive:
     IF DEBUG_KILLALL
-        call debug_killall              ; (debug: keys 0 and 9)
-        call debug_gun_cycle            ; (debug: key 8)
+        call debug_killall              ; (debug: keys 0, 9 and 8)
+        call debug_gun_cycle            ; (debug: key 7)
     ENDIF
         call wpn_select                 ; (slots can be chosen when landed)
         call gun_aim                    ; and the centre gun tilted
@@ -631,13 +631,16 @@ aa_try:
         call aa_in
         ret nc
         ld a,(iy+15)                    ; half its height: a ghoul half as
-        ld c,ZHIT_H/2                   ; tall, a lich twice
-        cp ZT_GHOUL
+        ld c,ZHIT_H/2                   ; tall, a lich twice (the devil: its
+        cp ZT_GHOUL                     ; chest)
         jr nz,.nh
         ld c,ZHIT_H/4
 .nh:    cp ZT_LICH
-        jr nz,.hh
+        jr nz,.hd
         ld c,LICH_H/2
+.hd:    cp ZT_DEVIL
+        jr nz,.hh
+        ld c,DEVIL_AIM_H
 .hh:    ld a,c
         ld (aa_half),a
         ld l,(iy+21)                    ; its middle, from the muzzle
@@ -711,8 +714,9 @@ round_side:
 ; the reticule moves to where it was drawn (+32, +33) at RET_STEP pixels a
 ; frame, and after LOCK_TIME frames on it (within LOCK_NEAR) the target is
 ; locked (2): the lock tone, and the reticule stays on it.  The target lost
-; (killed, out of view, out of range) it searches again.  Then the drawn
-; marks are cleared for this frame's drawing.
+; (killed, out of view, out of range) it searches again.  With a target,
+; K_TARGET (M) moves to the next one (lk_next).  Then the drawn marks are
+; cleared for this frame's drawing.
 ;------------------------------------------------------------------------------
 lock_update:
         call sel_slot
@@ -726,8 +730,12 @@ lock_update:
         jr z,.find
         call lk_rec
         call lk_valid
-        jr nc,.have
-        call lk_lose                    ; the target lost
+        jr c,.lost
+        ld a,K_TARGET                   ; the next target?
+        call key_pressed
+        call nz,lk_next
+        jr .have
+.lost:  call lk_lose                    ; the target lost
 .find:  call lk_nearest                 ; a new one?
         cp $FF
         jr z,.wander
@@ -815,6 +823,33 @@ lk_lose:
         ld (lock_tgt),a
         xor a
         ld (lock_state),a
+        ld (lock_t),a
+        ret
+
+; K_TARGET: the next target after lock_tgt (by index, round the list: the
+; first after the last) that lk_valid takes, drawn last frame and in range;
+; it locks on afresh (locking, lock_t 0: LOCK_TIME again).  Back round to
+; the current one, none: the lock is kept.  IY = the target's record.
+lk_next:
+        ld a,(lock_tgt)
+        ld (ln_i),a
+.lp:    ld a,(ln_i)
+        inc a
+        cp NMON
+        jr c,.in
+        xor a                           ; (round to the first)
+.in:    ld (ln_i),a
+        ld hl,lock_tgt
+        cp (hl)
+        jr z,lk_rec                     ; back to it: no other
+        call lk_rec
+        call lk_valid
+        jr c,.lp
+        ld a,(ln_i)
+        ld (lock_tgt),a
+        ld a,1                          ; locking
+        ld (lock_state),a
+        xor a
         ld (lock_t),a
         ret
 
@@ -1876,12 +1911,12 @@ wpn_select:
 
     IF DEBUG_KILLALL
 ;------------------------------------------------------------------------------
-; Debug: key 8 changes the centre slot's gun, machine gun -> laser -> chain
+; Debug: key 7 changes the centre slot's gun, machine gun -> laser -> chain
 ; gun -> machine gun (anything else there: the machine gun), with its full
 ; (infinite) load, and selects the centre slot
 ;------------------------------------------------------------------------------
 debug_gun_cycle:
-        ld hl,KB_8
+        ld hl,KB_7
         call key_code_pressed
         ret z
         ld hl,wpn_slots                 ; the centre slot: type, ammo
@@ -1901,25 +1936,45 @@ debug_gun_cycle:
         jp las_reset                    ; (no beam carried over)
 
 ;------------------------------------------------------------------------------
-; Debug: key 0 kills every monster at once (zombies, ghouls, ghosts and
-; banshees, none left fading) and counts every human still in the city or
-; aboard as rescued.  zombie_update then finds the wave wiped out: the next
-; wave, or after the last the level complete.
-; Key 9 does the same and ends the level, on to the next one: the wave
-; becomes the level's last (level_complete_screen moves level on one, or
-; after the last level the game is complete).
+; Debug: key 0 kills every enemy of the current wave at once (zombies and
+; its specials, none left fading: dk_monsters); the humans are left as they
+; are.  zombie_update then finds the wave wiped out: the next wave, or after
+; the last the level complete.
+; Key 9 picks a level instead (debug_level_select, zpolice.asm: Q / A and
+; SPACE, over the view).
+; Key 8 kills them all, counts every human still in the city or aboard as
+; rescued, and ends the level, on to the final boss: the wave
+; becomes the level's last, the level the one before the
+; last (so level complete moves on to LEVEL_LAST), and that level starts at
+; its last wave, the devil's (resume_wave $FF: next_level keeps it to the
+; level's waves, as a save game's).
 ;------------------------------------------------------------------------------
 debug_killall:
-        ld hl,KB_9
+        ld hl,KB_8
         call key_code_pressed
-        jr z,.k0
-        ld a,(level_cur+LV_WAVES)
+        jr z,.k9
+        ld a,LEVEL_LAST-1
+        ld (level),a
+        ld a,$FF
+        ld (resume_wave),a
+        jr .end
+.k9:    ld hl,KB_9
+        call key_code_pressed
+        jp nz,debug_level_select        ; (zpolice.asm: back here if not)
+        jr .k0
+.end:   ld a,(level_cur+LV_WAVES)
         ld (wave_number),a              ; its last wave
         jr .all
 .k0:    ld hl,KB_0
         call key_code_pressed
         ret z
-.all:   ld ix,zombies
+        jr dk_monsters
+.all:   call dk_monsters
+        jr dk_humans
+
+; Every monster record gone (zombies and specials), none attacking
+dk_monsters:
+        ld ix,zombies
         ld b,NMON
 .z:     push bc
         call zblip_off                  ; (map.asm)
@@ -1933,6 +1988,10 @@ debug_killall:
 .a:     ld (hl),FALSE
         inc hl
         djnz .a
+        ret
+
+; Every human still in the city or aboard: rescued (key 8)
+dk_humans:
         ld ix,humans
         ld b,HUMAN_MAX
 .h:     push bc
@@ -2555,8 +2614,26 @@ bullet_step:
         ld (ix+B_STATE),2               ; show the impact, then free it
 .burst: ld a,(ix+B_KIND)                ; a rocket, missile or shell bursts
         or a
-        ret z
-        jp rocket_blast
+        jp nz,rocket_blast
+        ld a,(ix+B_DMG)                 ; a chain gun's round (the linked
+        cp CHAIN_DMG                    ; ones' too): a spark
+        ret nz
+        ld l,(ix+B_X)
+        ld h,(ix+B_X+1)
+        ld (ps_x),hl
+        ld l,(ix+B_Y)
+        ld h,(ix+B_Y+1)
+        ld (ps_y),hl
+        ld l,(ix+B_Z)
+        ld h,(ix+B_Z+1)
+        ld (ps_z),hl
+        ld hl,FIRE_COL0 | SPARK_LIFE<<8
+        ld (ps_col),hl
+        xor a
+        ld (ps_fire),a
+        ld c,1
+        jp part_spray
+SPARK_LIFE      equ 3               ; frames: bright, gone at once
 
 ; HL = S7.8 direction component -> HL = path distance s between cell
 ; boundaries along that axis, 256 * 256 / |c|  ($FFFF = never)
@@ -2769,7 +2846,11 @@ cell_zombies:
         ld a,(b_pr)                     ; (a proximity shell: within b_pr
         or a                            ; of it instead)
         jr nz,.wd
-        ld a,(iy+15)                    ; (a lich: twice as wide)
+        ld a,(iy+15)                    ; (a lich: twice as wide; the devil
+        cp ZT_DEVIL                     ; a square)
+        ld a,DEVIL_HIT_R
+        jr z,.wd
+        ld a,(iy+15)
         cp ZT_LICH
         ld a,ZHIT_R
         jr nz,.wd
@@ -2793,9 +2874,12 @@ cell_zombies:
         jr nz,.zn
         ld de,ZHIT_H+1
         ld a,(iy+15)                    ; a ghoul: half as tall,
-        cp ZT_LICH                      ; a lich twice
-        jr nz,.zg
+        cp ZT_LICH                      ; a lich twice, the devil its height
+        jr nz,.zd
         ld de,LICH_H+1
+.zd:    cp ZT_DEVIL
+        jr nz,.zg
+        ld de,DEVIL_H+1
 .zg:    cp ZT_GHOUL
         jr nz,.zh
         ld de,ZHIT_H/2+1
@@ -2849,10 +2933,15 @@ zdamage:
         ld a,(iy+15)                    ; a walker (zombie, fast, ghoul) hit:
         cp ZT_GHOST                     ; a splat (the interrupt plays it; each
         jr nc,.hurt                     ; cuts the last)
+        ld a,(dv_hum)                   ; (not over the devil's whine)
+        or a
+        jr nz,.hurt
         ld a,SFX_SPLAT
         ld (sfx3_req),a
 .hurt:  ld a,(iy+15)
         cp ZT_LICH
+        jr z,.lich
+        cp ZT_DEVIL                     ; (the devil: 16 bits too)
         jr z,.lich
         ld a,(iy+18)
         sub c
@@ -2888,7 +2977,12 @@ zdamage:
         ret
 .ghost: ld (ix+16),GM_DYING             ; (still drawn, and marked, while it
         ld (ix+17),GHOST_FADE_FRAMES    ; fades: specials.asm)
-        pop ix
+        cp ZT_DEVIL
+        jr nz,.gx
+        ld (ix+17),DV_DIE_FR            ; the devil sinks (devil.asm)
+        ld a,SFX_BOOM_MISSILE
+        ld (sfx2_req),a
+.gx:    pop ix
         ret
 
 ;------------------------------------------------------------------------------
@@ -2971,7 +3065,13 @@ rocket_blast:
         ld a,(iy+16)
         cp GM_DYING
         jr z,.zn                        ; a ghost fading out
-        ld l,(iy+0)
+        ld a,(iy+15)
+        cp ZT_DEVIL
+        jr nz,.zb
+        call rb_devil                   ; (its body: tall and wide)
+        jr nc,.zn
+        jr .zh
+.zb:    ld l,(iy+0)
         ld h,(iy+1)
         ld de,(rb_x)
         call rb_near
@@ -2986,6 +3086,7 @@ rocket_blast:
         ld d,(iy+22)
         call rb_near
         jr nc,.zn
+.zh:
         pop bc
         push bc
         ld a,(rb_dmg)
@@ -3144,6 +3245,39 @@ rb_near:
         inc de
         or a
         sbc hl,de
+        ret
+
+; The devil IY within a blast (rb_x/y/z, rb_r)?  Carry set if so: its body
+; DEVIL_HIT_R either side of it and DEVIL_H up from its feet, plus rb_r
+rb_devil:
+        ld hl,(rb_r)
+        push hl
+        ld de,DEVIL_HIT_R
+        add hl,de
+        ld (rb_r),hl                    ; across: its half width further
+        ld l,(iy+0)
+        ld h,(iy+1)
+        ld de,(rb_x)
+        call rb_near
+        jr nc,.x
+        ld l,(iy+2)
+        ld h,(iy+3)
+        ld de,(rb_z)
+        call rb_near
+        jr nc,.x
+        pop hl                          ; up: from its middle, its half height
+        push hl                         ; further
+        ld de,DEVIL_H/2
+        add hl,de
+        ld (rb_r),hl
+        ld l,(iy+21)
+        ld h,(iy+22)
+        add hl,de
+        ex de,hl
+        ld hl,(rb_y)
+        call rb_near
+.x:     pop hl
+        ld (rb_r),hl                    ; (rb_r as it was; the flags kept)
         ret
 
 ; HL = s -> HL = height of the path there, y0 + s * slope, the drop (or

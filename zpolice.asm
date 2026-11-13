@@ -58,6 +58,11 @@
 ; doesn't have DMA+ yet.  The .nex then also asks for core 3.03.00: on an older
 ; core DMA+'s commands would be misread, not ignored.
         ;DEFINE REAL_HARDWARE
+    IFDEF REAL_HARDWARE                 ; (said in the build's output)
+        DISPLAY "REAL_HARDWARE set: the build for a real Next (DMA+, core 3.03.00 or later)"
+    ELSE
+        DISPLAY "REAL_HARDWARE not set: the CSpect build (plain zxnDMA, no DMA+)"
+    ENDIF
 
 ; DRAW_LINES: outline building faces with EDGE_COL vectors.  Comment it out for solid-colour buildings only; the HUD
 ; is always drawn.  Can also be set from the command line: -DDRAW_LINES
@@ -554,7 +559,8 @@ START_SALVAGE   equ 0
 
 ; Debug: key 0 kills every monster and rescues every human left, so the
 ; next wave starts (after the last, the level ends); key 9 the same, on to
-; the next level.  Off in a release.
+; the next level; key 8 the same, on to the final boss (the last level's
+; last wave).  Key 7 changes the centre gun.  Off in a release.
     IFDEF RELEASE
 DEBUG_KILLALL   equ 0
     ELSE
@@ -601,6 +607,13 @@ FB_TRAIL_COL    equ FIRE_COL6
 FB_TRAIL        equ 26          ; 2 m behind it
 BULLET_COL      equ 31
 LASER_COL       equ 35
+DEVIL_EYE       equ 171         ; the devil's eyes (set as they charge: devil.asm)
+DEVIL_COL0      equ 188         ; the devil's own colours (family 47): white,
+DEVIL_COL1      equ 189         ;   pale blue,
+DEVIL_COL2      equ 190         ;   blue,
+DEVIL_COL3      equ 191         ;   its dark blue outline (black in thermal)
+BOLT_COL        equ 175         ; its lightning: the core,
+BOLT_COL2       equ 179         ;   and the glow
 MAP_BG          equ 39
 MAP_ZOMBIE      equ HUD_COL     ; zombie blips on the city map: bright green
 HUMAN_COL       equ 43
@@ -899,7 +912,6 @@ boot_stack:
         INCLUDE "l2_pallets.asm"        ; (checks on the fixed colour slots)
         INCLUDE "levels.asm"            ; the current level's record
         INCLUDE "text.asm"              ; text screens: menu, load-out
-        INCLUDE "sfx_data.asm"          ; the sound effects (sfx_tick plays them)
         INCLUDE "layer2_cls.asm"        ; zxnDMA equates, the fill block, dma_fill
 
 ;==============================================================================
@@ -916,6 +928,12 @@ start:
                                         ; (interrupts.asm; still disabled)
         nextreg CODE_MMU,PAGE_FILE      ; the SD card's default drive
         call fh_init                    ; (file_handler.asm)
+    IFDEF REAL_HARDWARE
+        ld hl,sg_home                   ; the save game's folder, made if it
+        call fh_mkdir                   ; isn't there (/home first: the
+        ld hl,sg_folder                 ; folder's parent must be; an error,
+        call fh_mkdir                   ; it's there already, is fine)
+    ENDIF
         nextreg LOGIC_MMU,PAGE_LEVEL    ; the figures' graphics
         call gfx_load                   ; (level_load.asm)
         nextreg LOGIC_MMU,PAGE_KEYDEF   ; the saved key and joystick
@@ -1098,8 +1116,16 @@ next_level:
         call ula_init                   ; ULA: FPS overlay, panel, city map
         call zombie_init                ; place the zombies on the streets
         call human_init                 ; and the humans to rescue
+        ld a,1<<WP_START                ; PREPARE FOR COMBAT after the first
+        ld (wave_prep),a                ; frame (wave_prepare; the devil adds
+                                        ; its graphics, WP_DEVIL)
         nextreg LOGIC_MMU,PAGE_SPECIAL  ; and the level's special monsters
         call spec_init                  ; (specials.asm)
+        call gfx_stale                  ; figure pages to read back: no
+        jr c,.gk                        ; figures until they are
+        xor a
+        ld (gfx_ok),a
+.gk:
 
 ;==============================================================================
 ; Main loop
@@ -1122,6 +1148,14 @@ main_loop:
         call zombie_update              ; walk the zombies (page at $2000)
         nextreg LOGIC_MMU,PAGE_SPECIAL  ; and fly the special monsters
         call spec_update                ; (specials.asm)
+        ld a,(dv_dark_req)              ; the devil hurt: the palette darker
+        or a                            ; (level_load.asm)
+        jr z,.nd
+        xor a
+        ld (dv_dark_req),a
+        nextreg LOGIC_MMU,PAGE_LEVEL
+        call vis_dark
+.nd:
         nextreg LOGIC_MMU,PAGE_WEAPONS  ; weapons logic at $C000
         call update_weapons             ; fire, move rounds, hits
         call human_update               ; map dots, rescues (page at $7000)
@@ -1153,6 +1187,7 @@ main_loop:
         call draw_city                  ; also calls vtick once per building
         call draw_bullets               ; machine gun tracers
         call draw_particles             ; zombie bursts
+        call draw_bolt                  ; the devil's lightning (city2.asm)
         call draw_gunsight
         call draw_reticule              ; the missile lock (city2.asm)
         nextreg ULA_MMU,PAGE_ULA0       ; the ULA screen back at $8000
@@ -1168,7 +1203,103 @@ main_loop:
     ENDIF
         nextreg CODE_MMU,PAGE_SPRITES   ; the HUD sprites (humans, compass)
         call hud_sprites                ; (hud_sprites.asm), with the new frame
+        ld a,(wave_prep)                ; a level's first frame, or the
+        or a                            ; devil's wave: PREPARE FOR COMBAT,
+        call nz,wave_prepare            ; the graphics
         jp main_loop
+
+;------------------------------------------------------------------------------
+; After a frame (its view shown) that started a level (WP_START: no figures
+; drawn if their pages are being read back) or the devil's wave (WP_DEVIL:
+; it isn't drawn yet): PREPARE FOR COMBAT over the view (as PAUSED is)
+; while
+;   * at a level's start, the figures' pages a screen's background copy
+;     (shared_pg) or the devil's graphics (devil_gfx) went over are read
+;     back from the figures' file (gfx_stale, gfx_reload);
+;   * in the devil's wave, its graphics go over the other monsters' pages
+;     (devil_load: from the figures' kept pages on, gfx_keep);
+; (one can't be read: the SD card's at fault, the load error screen), and
+; for WPREP_TICKS interrupts (2 s) at least from its start (isr_ticks; the
+; interrupts are off while the SD card is read, so a long read adds to it).
+; Then the box goes and the game runs.
+;------------------------------------------------------------------------------
+WPREP_ROW       equ 7               ; ULA character row and column of the box
+WPREP_COL       equ 6
+WPREP_TICKS     equ 100             ; at least 2 s (interrupts)
+WP_START        equ 0               ; wave_prep bits: a level's start,
+WP_DEVIL        equ 1               ;   the devil's wave
+wave_prepare:
+        ld a,(wave_prep)
+        ld (wp_what),a
+        xor a
+        ld (wave_prep),a
+        ld hl,0
+        ld (isr_ticks),hl               ; (one instruction: no tearing)
+        ld hl,txt_wprep
+        ld de,WPREP_ROW<<8 | WPREP_COL
+        ld c,PAUSE_ATTR
+        call menu_print
+        nextreg LOGIC_MMU,PAGE_LEVEL    ; (level_load.asm)
+        ld a,(wp_what)
+        bit WP_START,a
+        jr z,.dv
+        call gfx_stale                  ; pages to read back?
+        jr c,.fresh
+        call gfx_reload
+        jr c,.err
+.fresh: xor a                           ; the figures' pages all theirs
+        ld (shared_pg),a
+        ld (devil_gfx),a
+.dv:    ld a,(wp_what)
+        bit WP_DEVIL,a
+        jr z,wp_wait
+        call devil_load                 ; its graphics over the others'
+        jr nc,wp_wait
+.err:   nextreg LOGIC_MMU,PAGE_MENU     ; couldn't: the SD card's at fault
+        jp load_error_screen            ; (menu.asm)
+wp_wait:                                ; (tests: zptest skips the wait here)
+        ld hl,(isr_ticks)
+        ld de,WPREP_TICKS
+        or a
+        sbc hl,de
+        jr c,wp_wait
+        ld hl,txt_wprep_off             ; the box gone: the view again
+        ld de,WPREP_ROW<<8 | WPREP_COL
+        ld c,VIEW_ATTR
+        jp menu_print
+
+txt_wprep:      db " PREPARE FOR COMBAT ", 0
+txt_wprep_off:  db "                    ", 0
+        ASSERT txt_wprep_off - txt_wprep == $ - txt_wprep_off
+wave_prep:      db 0                    ; wave_prepare after this frame: bits
+                                        ; WP_START, WP_DEVIL
+wp_what:        db 0                    ; (wave_prepare: what it's for)
+
+; A = the first figure page to read back from the figures' file at a
+; level's start: a screen's background copy took the shared ones
+; (shared_pg), the devil's graphics went over those from the kept ones on
+; (devil_gfx, gfx_keep).  Carry set if none (or no graphics at all).
+gfx_stale:
+        ld c,GFX_PAGES_MAX
+        ld a,(shared_pg)
+        or a
+        jr z,.d
+        ld c,GFX_SHARED
+.d:     ld a,(devil_gfx)
+        or a
+        jr z,.c
+        ld a,(gfx_keep)
+        cp c
+        jr nc,.c
+        ld c,a
+.c:     ld a,(gfx_pages)
+        or a
+        scf
+        ret z                           ; (no graphics)
+        dec a                           ; its last page before the first stale
+        cp c                            ; one: carry, none to read
+        ld a,c
+        ret
 
 ;==============================================================================
 ; Frames per second, shown on the ULA layer above Layer 2.
@@ -1333,6 +1464,26 @@ shake_big_xy:
 shake_tab:  dw shake_xy                 ; the table shake_tick uses
 shake_t:    db 0                        ; frames of shake left (0: none)
 gfx_ok:     db 0                        ; 1: the figures' graphics are loaded
+gfx_pages:  db 0                        ;   in this many pages (gfx_load),
+gfx_keep:   db 0                        ;   the kept figures' in those before
+                                        ;   this one (the devil's go after)
+devil_gfx:  db 0                        ; 1: the devil's graphics are over the
+                                        ; other monsters' (devil_load)
+dv_dark:    db 0                        ; the normal palette's darkening (the
+dv_dark_req: db 0                       ;   devil hurt), 1: to apply (vis_dark)
+dv_hum:     db 0                        ; 1: the devil's charging whine plays
+                                        ; (on the splats' voice: they wait)
+bolt_up:    db 0                        ; 1: it went up into the sky (out of range)
+bolt_hit:   db 0                        ; 1: it stopped at a building, at
+bolt_end:   dw 0, 0, 0                  ;   (x, y, z): the VTOL behind it safe
+bolt_spd:   db 0                        ; its hit: the speed braked down to
+bolt_t:     db 0                        ; the devil's lightning: frames to draw
+                                        ; it (draw_bolt; devil.asm)
+spin_rate:  dw 0                        ; its hit: the VTOL's spin a frame (8.8,
+spin_t:     db 0                        ;   signed), frames of it left, and
+bolt_brake: db 0                        ;   1: braked to bolt_spd (player.asm)
+shared_pg:  db 0                        ; 1: the load-out's background copy has
+                                        ; the figures' last pages (PAGE_L320_BG)
 
 ;------------------------------------------------------------------------------
 ; Wait until the raster is outside the display area (line >= 192)
@@ -1543,6 +1694,135 @@ txt_unpaused2:  db "                  ", 0
 txt_pause_quit: db " X: QUIT, NO SAVE ", 0
         ASSERT $ - txt_pause_quit == txt_save_fail - txt_pause_save
 
+    IFNDEF RELEASE
+;------------------------------------------------------------------------------
+; Debug, key 9 (debug_killall, weapons.asm): pick a level.  LEVEL SELECT nn
+; over the view, as PAUSED is, from the next level (this one if the last).
+; Q up, A down (fixed keys; held, they repeat), 1 to LEVEL_LAST.  SPACE goes
+; there: the load-out screen, then the level from its first wave (the one
+; being played is left, no level complete).  9 again carries on with this
+; one.  Nothing moves meanwhile.  Needs the input page in slot 7.
+;------------------------------------------------------------------------------
+DLS_ROW         equ 7               ; ULA character row and column of the box
+DLS_COL         equ (32-(txt_dls_end-txt_dls))/2
+DLS_ROW2        equ 9               ; and of the keys' line
+DLS_COL2        equ (32-(txt_dls_keys_end-txt_dls_keys))/2
+DLS_REPEAT      equ 20              ; Q / A held: frames before repeating,
+DLS_RATE        equ 3               ; then a level every this many frames
+
+debug_level_select:
+        ld a,(level)                    ; from the next level
+        cp LEVEL_LAST
+        jr nc,.l
+        inc a
+.l:     ld (dls_level),a
+        xor a
+        ld (dls_hold),a
+.draw:  call dls_show
+.w:     call menu_frame
+        call kbd_scan
+        ld hl,KB_9                      ; carry on with this level
+        call key_code_pressed
+        jr nz,.back
+        ld hl,KB_SPACE                  ; go
+        call key_code_pressed
+        jr nz,.go
+        ld hl,KB_Q
+        call dls_key
+        jr z,.dn
+        ld a,(dls_level)
+        cp LEVEL_LAST
+        jr nc,.w
+        inc a
+        ld (dls_level),a
+        jr .draw
+.dn:    ld hl,KB_A
+        call dls_key
+        jr z,.w
+        ld a,(dls_level)
+        cp 2
+        jr c,.w
+        dec a
+        ld (dls_level),a
+        jr .draw
+.go:    ld a,(dls_level)                ; that level, from its first wave
+        ld (level),a
+        ld a,1
+        ld (resume_wave),a
+        ld sp,stack_top
+        jp loadout_go
+.back:  ld hl,txt_dls_off               ; the box gone: the view again
+        ld de,DLS_ROW<<8 | DLS_COL
+        ld c,VIEW_ATTR
+        call menu_print
+        ld hl,txt_dls_keys_off
+        ld de,DLS_ROW2<<8 | DLS_COL2
+        ld c,VIEW_ATTR
+        jp menu_print
+
+; The box, with dls_level's number
+dls_show:
+        ld a,(dls_level)
+        ld b,'0'
+.t:     cp 10
+        jr c,.u
+        sub 10
+        inc b
+        jr .t
+.u:     add a,'0'
+        ld hl,dls_num
+        ld (hl),b
+        inc hl
+        ld (hl),a
+        ld hl,txt_dls
+        ld de,DLS_ROW<<8 | DLS_COL
+        ld c,PAUSE_ATTR
+        call menu_print
+        ld hl,txt_dls_keys
+        ld de,DLS_ROW2<<8 | DLS_COL2
+        ld c,PAUSE_ATTR
+        jp menu_print
+
+; HL = a key code (KB_...): NZ to step a level: just pressed, or held
+; DLS_REPEAT frames, then every DLS_RATE.  Z: not.
+dls_key:
+        call key_code_pressed
+        jr z,.held
+        xor a
+        ld (dls_hold),a
+        inc a                           ; (NZ)
+        ret
+.held:  ld a,h                          ; down?
+        ld de,key_now
+        add de,a
+        ld a,(de)
+        and l
+        ret z
+        ld a,(dls_hold)
+        inc a
+        cp DLS_REPEAT
+        jr c,.wait
+        ld a,DLS_REPEAT-DLS_RATE        ; step, then DLS_RATE more frames
+        ld (dls_hold),a
+        or a                            ; (NZ)
+        ret
+.wait:  ld (dls_hold),a
+        xor a
+        ret
+
+txt_dls:        db " LEVEL SELECT "
+dls_num:        db "00 ", 0
+txt_dls_end:
+txt_dls_off:    db "                 ", 0
+        ASSERT $ - txt_dls_off == txt_dls_end - txt_dls
+txt_dls_keys:   db " Q/A: LEVEL  SPACE: GO  9: BACK ", 0
+txt_dls_keys_end:
+txt_dls_keys_off: db "                                ", 0
+        ASSERT $ - txt_dls_keys_off == txt_dls_keys_end - txt_dls_keys
+dls_level:      db 0                    ; the level shown
+dls_hold:       db 0                    ; frames Q / A held (dls_key)
+    ENDIF
+
 ;------------------------------------------------------------------------------
 ; Save games: ZPDATA/SAVEGAME.ZPS (beside the level files), one game.  Written
 ; by save and quit (game_pause: save_game), read by CONTINUE on the main menu
@@ -1680,7 +1960,13 @@ continue_game:
 .w:     ld (resume_wave),a
         jp next_level
 
+    IFDEF REAL_HARDWARE                 ; (a real Next: in the home folder,
+sg_home:    db "/home", 0               ;   made at start-up if need be)
+sg_folder:  db "/home/ZPSave", 0
+sg_name:    db "/home/ZPSave/SAVEGAME.ZPS", 0
+    ELSE
 sg_name:    db "ZPDATA/SAVEGAME.ZPS", 0
+    ENDIF
 sg_magic:   db "ZPSV"
 sg_dir:     db 0
 resume_wave: db 1                       ; next_level's first wave (1, or a
@@ -2231,6 +2517,8 @@ stack_top:
         MMU CODE_SLOT e, PAGE_AUDIO, CODE_ADDR
         ORG CODE_ADDR
         INCLUDE "audio.asm"
+        INCLUDE "sound.asm"             ; the players (the interrupt calls them)
+        INCLUDE "sfx_data.asm"          ; the sound effects (sfx_tick plays them)
         DISPLAY "Audio end: ",/A,$
 
 ;==============================================================================
@@ -2323,7 +2611,11 @@ city_map:   ds GRID*GRID                ; each cell's code and marks
     IFDEF RELEASE
         SAVENEX OPEN "release_tmp/zpolice.nex", boot, boot_stack
     ELSE
+      IFDEF TEST_HW                     ; (tests/test_hardware.py's build)
+        SAVENEX OPEN "tests/hw.nex", boot, boot_stack
+      ELSE
         SAVENEX OPEN "zpolice.nex", boot, boot_stack
+      ENDIF
     ENDIF
     IFDEF REAL_HARDWARE
         SAVENEX CORE 3,3,0

@@ -41,8 +41,9 @@ SPEC_GHOST      equ 0
 SPEC_BANSHEE    equ 1
 SPEC_GHOUL      equ 2
 SPEC_LICH       equ 3
-SPEC_IDS        equ 4               ; (how many types)
-SPEC_CLUSTER    equ 4               ; not a monster: the wave's zombies spawn in
+SPEC_DEVIL      equ 4               ; the final boss (devil.asm): alone, last
+SPEC_IDS        equ 5               ; (how many types)
+SPEC_CLUSTER    equ 5               ; not a monster: the wave's zombies spawn in
                                     ; this many clusters (zcluster, zombie.asm)
         ASSERT SPEC_CLUSTER >= SPEC_IDS ; (spec_wave skips it)
 SPEC_NONE       equ 255

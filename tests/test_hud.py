@@ -101,7 +101,7 @@ def test_frame():
         vis = [cpu.spr_attr[first + k][3] & 0x80 for k in range(n)]
         zp.check(all(vis), "the frame's sprites aren't all shown")
         zp.check(cpu.spr_attr[first][0] == 32 and cpu.spr_attr[first][1] == 32, "the corner isn't at the view's")
-        top = cpu.spr_attr[first + 6]
+        top = cpu.spr_attr[first + 4]
         zp.check((top[4] >> 3) & 3 == 3, "the top edge isn't stretched")
     finally:
         sd.close()

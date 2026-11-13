@@ -41,9 +41,10 @@ initgame:
         or %01010010                    ; bit 6: no RAM / I/O contention,
         nextreg $08,a                   ; bit 4: internal speaker on,
                                         ; bit 1: turbo sound on
-        nextreg $09,0                   ; Peripheral 4: AY stereo (not
-                                        ; mono), no sprite id lockstep, HDMI
-                                        ; audio on, no scanlines
+        nextreg $09,AY_MONO_ENGINES     ; Peripheral 4: the engines' AY mono
+                                        ; (centred), the others stereo; no
+                                        ; sprite id lockstep, HDMI audio on,
+                                        ; no scanlines
         nextreg $CC,0                   ; DMA Interrupt Enable 0: no NMI, line
                                         ; or ULA interrupt stops a DMA transfer
         nextreg $CD,0                   ; DMA Interrupt Enable 1: nor a CTC

@@ -55,6 +55,16 @@ KEEP = {15, 19,                         # HUD_COL, HUD_WARN (gunsight)
         59, 63, 67, 71, 75, 79, 83, 87,     # zombie burst particles
         131, 135, 139, 143, 147, 151, 155, 159, 163, 167}   # fire particles
 GROUND_IDX = 7                          # GROUND_COL: the roads
+# The devil's colours (gentables.py FIXED: DEVIL_COL0..3: white, pale blue,
+# blue, its dark blue outline) by vision mode: thermal black and dark greys
+# (a cold shape), night vision green bright greens, monochrome light greys.
+# Its eyes (DEVIL_EYE) black: the game sets them as they charge (red in
+# thermal, white in night vision: devil.asm dv_eye).
+# (sprites/devil_palette.json: spritefile.load_devil_palette, which the
+# sprite editor shows and edits)
+_DP = sf.load_devil_palette()
+DEVIL_VISION = {m: {**{e: _DP[e][m] for e in sf.DEVIL_ENTRIES}, sf.DEVIL_EYE_ENTRY: (0, 0, 0)}
+                for m in ("NVG", "NVM", "THM")}
 
 # The roads, by mode
 ROAD = {"NVG": (0, 1, 0), "NVM": (2, 2, 2), "THM": (0, 0, 1)}
@@ -98,6 +108,8 @@ def vision(normal, mode):
             out.append(tuple(c))
         elif i == GROUND_IDX:
             out.append(ROAD[mode])
+        elif i in DEVIL_VISION.get(mode, {}):
+            out.append(DEVIL_VISION[mode][i])
         elif sf.SPR_PAL0 <= i < sf.SPR_PAL0 + sf.COLOURS:
             out.append(tuple(FIGURES[mode][i - sf.SPR_PAL0]) if i > sf.SPR_PAL0 else (0, 0, 0))
         else:

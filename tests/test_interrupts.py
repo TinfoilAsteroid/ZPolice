@@ -77,5 +77,40 @@ def test_stress():
     compare("stress")
 
 
+
+def test_sound_page():
+    """An interrupt plays the sounds from the audio page, mapped into slot 7
+    for them, then puts back the page there and the main code's selected
+    NextReg (it may be between its OUT $243B and its IN / OUT $253B)"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.start_game(cpu)
+        zp.frames(cpu, 2)
+        zp.run_until(cpu, lambda: cpu.iff and cpu.mmu[7] != sym["PAGE_AUDIO"], "a moment to interrupt")
+        mmu7, pc0, sp0 = cpu.mmu[7], cpu.pc, cpu.sp
+        cpu.nr_sel = 0x1F                           # (the raster line, mid-read)
+        cpu.wr(sym["sfx_req"], sym["SFX_MG"])
+        cpu.ay.pop(2, None)
+        cpu.interrupt()
+        zp.run_until(cpu, lambda: cpu.pc == pc0 and cpu.sp == sp0, "the interrupt's return",
+                     limit=200_000)
+        cpu.step()
+        zp.check(cpu.mmu[7] == mmu7, f"slot 7: page {cpu.mmu[7]}, not {mmu7} as before")
+        zp.check(cpu.nr_sel == 0x1F, f"the selected NextReg ${cpu.nr_sel:02X}, not $1F")
+        zp.check(any(cpu.ay.get(2, [0] * 16)), "the machine gun's sound not played (AY 2)")
+        zp.check(cpu.rd16(sym["sfx_ptr"]) != 0, "the sound not playing on")
+
+
+
+def test_engines_mono():
+    """The engines' AY (select %11: the hardware's AY 0) mono, in the centre
+    (NextReg $09 bit 5); the effects' chips (AY 1, AY 2) stereo"""
+    with zp.SD() as sd:
+        cpu = zp.machine(sd)
+        zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_MAINMENU"]), "the main menu")
+        nr9 = cpu.nextreg.get(0x09, 0)
+        zp.check(nr9 & 0xE0 == 0x20, f"NextReg $09 = ${nr9:02X}: not the engines' AY alone mono")
+
+
 if __name__ == "__main__":
     zp.main(globals())

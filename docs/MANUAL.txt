@@ -47,6 +47,7 @@ Weapons
   1-5    select a weapon slot
   R / F  tilt the centre gun up / down
   V      recentre the centre gun
+  M      missile pod: lock on to the next target in view
 
 Upgrades, once you've earned them
 
@@ -141,7 +142,7 @@ The city map
   Green             a zombie or ghoul
   White, grey       a ghost
   Yellow            a banshee
-  Flashing red      a lich
+  Flashing red      a lich, or the devil
   Red               a monster attacking
 
 
@@ -159,6 +160,19 @@ Banshees   Faster, deadlier ghosts, which also attack the base.
 Liches     A city's boss, in the last wave of its last level (every 5th
            level). Twice a zombie's height and very tough, with fireballs
            that reach 200 metres. Each city's is harder than the last.
+The devil  The final boss, at the end of the last level: ten storeys tall,
+           rising from the entrance to hell and hunting you through the
+           streets, the ground shaking at every step, crushing any
+           zombie or human under its feet. Low buildings, the
+           terraces, barricades, even the landing pad: it walks through
+           them and they fall. Its eyes glow blue over 10 seconds,
+           and for the last 3 you hear it charging, a rising whine. If
+           you're more than 160 metres away the lightning goes up into
+           the sky; nearer, it strikes you with a crackling zap.
+           Hide behind a building: the bolt stops there and brings it
+           down instead. A strike does 10 damage, and it
+           throws you round, tips your nose and halves your speed. Keep
+           moving, and keep out of its reach while its eyes glow.
 
 A building between you and a ghost or banshee hides you from it.
 
@@ -256,4 +270,5 @@ SAVING
 
 Pause with BREAK, then press S to save and quit. There's one save game, and
 saving again replaces it. Continue on the main menu brings it back, at the
-start of the wave you were on.
+start of the wave you were on. On a Next it's kept in /home/ZPSave on the
+SD card (the game makes the folder the first time it starts).

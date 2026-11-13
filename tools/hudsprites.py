@@ -47,7 +47,7 @@ REQUIRED = [
                 "the curve is black, the border's colour"),
     ("FRM_CRN_P", "Viewport frame: the bottom corners (mirrored to fit). Outside the "
                   "curve is the panel's colour, $6D in hud.asm: keep them the same"),
-    ("FRM_CRN_S", "Viewport frame: rounds the panel's bottom corners (mirrored to fit)"),
+    ("FRM_CRN_S", "Not used now (it rounded the panel's bottom corners, over the city map)"),
     ("FRM_H", "Viewport frame: the top edge. Only the top rows are seen as lines: "
               "it's stretched 8 times across"),
     ("FRM_V", "Viewport frame: the side edges (the right one mirrored), stretched "

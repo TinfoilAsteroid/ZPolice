@@ -39,6 +39,8 @@
 ;   fh_save      HL = name, DE = address, BC = length (created / replaced)
 ;   fh_exists    HL = name -> carry clear if the file exists
 ;   fh_delete    HL = name
+;   fh_mkdir     HL = name: make the folder (its parent must exist; carry,
+;                A = the error, if it can't: it's there already, say)
 ;==============================================================================
 
 ; esxDOS function codes (the byte after RST $08)
@@ -50,6 +52,7 @@ F_WRITE         equ $9E
 F_SEEK          equ $9F
 F_FSTAT         equ $A1
 F_UNLINK        equ $AD
+F_MKDIR         equ $AA
 
 ; F_OPEN modes (B)
 FA_READ         equ $01             ; read
@@ -232,6 +235,18 @@ fh_delete:
         pop ix
         ld a,(fh_drive)
         ESXDOS F_UNLINK
+        pop ix
+        ret
+
+;------------------------------------------------------------------------------
+; HL -> name: make the folder
+;------------------------------------------------------------------------------
+fh_mkdir:
+        push ix
+        push hl
+        pop ix
+        ld a,(fh_drive)
+        ESXDOS F_MKDIR
         pop ix
         ret
 

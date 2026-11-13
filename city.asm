@@ -1344,9 +1344,27 @@ fill_poly:
 
         ld a,(face_col)                 ; shaded colour of this face
         ld (l2_cls_byte),a              ; DMA source byte for long spans
+    IFDEF REAL_HARDWARE
+        ld c,a                          ; DMA+: the fill value (the spans'
+        ld a,DDMA_FILL_VALUE            ; fill mode, and the rectangles')
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,c
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld d,a
+        ld e,a                          ; PUSH pair for short spans
+      IFDEF NO_BLOCKS
+        jp fill_spans                   ; (-DNO_BLOCKS: spans only, to compare)
+      ELSE
+        ld a,(pitch)                    ; level flight: runs of equal rows as
+        or a                            ; rectangles (the walls' edges are
+        jp z,fill_blocks                ; upright on the screen); pitched they
+        jp fill_spans                   ; lean, and rows rarely repeat
+      ENDIF
+    ELSE
         ld d,a
         ld e,a                          ; PUSH pair for short spans
         jp fill_spans
+    ENDIF
 
 ; Walk an edge (D=xa, E=ya) -> (B=xb, C=yb), yb > ya, into table page A.
 ; Bresenham style: x += q each row, fractional r/dy accumulated in a biased
@@ -1657,6 +1675,39 @@ draw_line:
 ; (port A) is the fixed byte l2_cls_byte.  Zero-length fills are skipped.
 ;==============================================================================
 clear_screen:
+    IFDEF REAL_HARDWARE
+        ; DMA+: the sky and the ground as two filled rectangles in the
+        ; buffer at seg_base (dd_rect): no paging, one set-up each
+        call span_arm                   ; (the DMA as the spans want it after)
+        ld a,(horizon)                  ; sky rows = clamp(hz, 0, VIEW_H)
+      IFDEF SKY_IS_WALL
+        inc a                           ; (and the horizon row: see below)
+      ENDIF
+        cp VIEW_H+1
+        jr c,.hs
+        ld a,VIEW_H
+.hs:    ld (cs_sky),a
+        or a
+        jr z,.hg
+        ld b,a                          ; sky: (0, 0), 256 x sky rows
+        ld d,0
+      IFDEF SKY_IS_WALL
+        ld a,WALL_FAMILY*4+SHADE_FACE
+      ELSE
+        ld a,SKY_COL
+      ENDIF
+        call dd_band
+.hg:    ld a,(cs_sky)                   ; ground: under it, to VIEW_H
+        cp VIEW_H
+        jr z,.hd
+        ld d,a
+        neg
+        add a,VIEW_H
+        ld b,a
+        ld a,GROUND_COL
+        call dd_band
+.hd:    jp dd_spans                     ; (the rectangles' flags off again)
+    ENDIF
         ld c,0                          ; C = first row of the section
 .sec:   ld a,c
         call seg_map
@@ -1708,11 +1759,289 @@ clear_screen:
         ; Leave the DMA ready for fill_spans: length high byte 0, so each span
         ; only reloads length low, destination, LOAD and ENABLE.  fill_poly
         ; puts each building's colour in the source byte l2_cls_byte.
-.spans: ld a,DMA_WR0_LEN_HI
+.spans:
+    IFDEF REAL_HARDWARE
+        jp span_arm
+    ELSE
+        ld a,DMA_WR0_LEN_HI
         out (IO_DATAGEAR_DMA_PORT),a
         xor a
         out (IO_DATAGEAR_DMA_PORT),a
         ret
+    ENDIF
+
+    IFDEF REAL_HARDWARE
+;------------------------------------------------------------------------------
+; DMA+ (real hardware: docs/ZXNDDMA.md)
+;------------------------------------------------------------------------------
+; The DMA set up for the spans: reset, port A the fixed byte l2_cls_byte (not
+; read: fill mode), length 0 (each span reloads its low byte), port B
+; counting up, continuous, stop at the end; fill mode on (fill_poly sends
+; each face's colour as the fill value).  Then fill_spans' short reload
+; (length low, destination, load, enable) is all a span needs.
+span_arm:
+        ld hl,sa_cmds
+        ld bc,SA_N<<8 | IO_DATAGEAR_DMA_PORT
+        otir
+        ret
+sa_cmds:    db DMA_DISABLE, DMA_RESET
+            db DMA_WRO_BLOCK_PORTA_A2B_XFR
+            dw l2_cls_byte, 0
+            db DMA_WR1_P1FIXED_MEMORY, DMA_WR2_P2INC_MEMORY
+            db DMA_WR4_CONT_MODE
+            dw 0
+            db DMA_STOP_AT_END
+            db DDMA_MODE, DDMA_FLAG_FILL
+SA_N        equ $ - sa_cmds
+
+; A filled rectangle in the Layer 2 buffer being drawn (seg_base: its first
+; 8K page; 256x192, a row 256 bytes on), by its physical address, so with no
+; paging: E = x, D = y, C = width (0 = 256), B = height (1 or more), A =
+; colour.  Port B: $40000 + seg_base * $2000 + y * 256 + x, stride 256, 2D,
+; fill.  (Not the X,Y form on the hidden screen: the level's start clears
+; both buffers before NextReg $13 is set.)  Over the spans' set-up
+; (span_arm); leaves the rectangle's flags on: dd_spans puts the spans'
+; back.
+dd_rect:
+        push af
+        ld a,DDMA_ROW_LEN               ; row length: the width
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,c
+        out (IO_DATAGEAR_DMA_PORT),a
+        or a
+        ld a,0
+        jr nz,.w
+        inc a                           ; (0: 256)
+.w:     out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_ROWS                  ; rows: the height
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,b
+        out (IO_DATAGEAR_DMA_PORT),a
+        xor a
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_FILL_VALUE            ; the colour
+        out (IO_DATAGEAR_DMA_PORT),a
+        pop af
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,(seg_base)                 ; the address: bits 23:16 = 4 +
+        ld l,a                          ; seg_base / 8,
+        rrca
+        rrca
+        rrca
+        and 31
+        add a,4
+        ld h,a
+        ld a,l                          ; 15:8 = (seg_base & 7) * 32 + y
+        and 7
+        rrca
+        rrca
+        rrca
+        add a,d
+        jr nc,.nc
+        inc h
+.nc:    ld l,a
+        ld a,DDMA_B_EXT
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,h
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DMA_WR4_CONT_MODE          ; 7:0 = x
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,e
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,l
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_B_STRIDE              ; a row on: 256
+        out (IO_DATAGEAR_DMA_PORT),a
+        xor a
+        out (IO_DATAGEAR_DMA_PORT),a
+        inc a
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_MODE                  ; physical, 2D, fill
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_RECT
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DMA_LOAD
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DMA_ENABLE
+        out (IO_DATAGEAR_DMA_PORT),a    ; (the CPU waits while it fills)
+        ret
+
+; Full-width rows D .. D+B-1 (B 1 or more) filled with A, as rectangles of at
+; most DD_MAX_ROWS rows: each DMA burst holds the bus (and the 50 Hz
+; interrupt, the sound) no longer than the old clear's 8K sections did
+DD_MAX_ROWS     equ 32
+dd_band:
+        ld (db_col),a
+.lp:    ld a,b
+        cp DD_MAX_ROWS+1
+        jr c,.n
+        ld a,DD_MAX_ROWS
+.n:     ld c,a                          ; this piece's rows
+        ld a,b
+        sub c
+        push af                         ; (the rest)
+        ld b,c
+        push de
+        ld e,0
+        ld c,0                          ; (256 wide)
+        ld a,(db_col)
+        call dd_rect
+        pop de
+        pop af
+        ret z
+        ld b,a
+        ld a,d
+        add a,DD_MAX_ROWS
+        ld d,a
+        jr .lp
+db_col:     db 0                        ; dd_band: the colour
+
+; The spans' flags back after rectangles: fill mode, MMU addresses, no 2D
+dd_spans:
+        ld a,DDMA_MODE
+        out (IO_DATAGEAR_DMA_PORT),a
+        ld a,DDMA_FLAG_FILL
+        out (IO_DATAGEAR_DMA_PORT),a
+        ret
+
+;------------------------------------------------------------------------------
+; Block fill (in place of fill_spans): the face's rows fy0..fy1 (its edges in
+; TA / TB, after the edge walk), DE = its colour pair, the DMA's fill value
+; its colour (fill_poly).  Rows are taken in runs: a run goes on while each
+; row's left and right x are the last row's.  A run of BLOCK_ROWS rows or
+; more, BLOCK_W pixels wide or more, is one DMA+ rectangle (dd_rect: no
+; paging, one set-up); the rows between such runs go to fill_spans as they
+; are.  The same pixels as fill_spans alone: the render tests hold.
+;------------------------------------------------------------------------------
+    IFDEF BLOCK_ROWS_SET            ; (-DBLOCK_ROWS_SET=n, -DBLOCK_W_SET=n:
+BLOCK_ROWS      equ BLOCK_ROWS_SET  ;   to try others)
+    ELSE
+BLOCK_ROWS      equ 4               ; a rectangle: at least this many rows,
+    ENDIF
+    IFDEF BLOCK_W_SET
+BLOCK_W         equ BLOCK_W_SET
+    ELSE
+BLOCK_W         equ 8               ;   this many pixels wide
+    ENDIF
+fill_blocks:
+        ld (fb_de),de
+        ld a,(fy1)
+        ld (fb_end),a
+        ld a,(fy0)
+        ld (fb_s),a                     ; the first row not drawn yet
+        ld c,a                          ; C = the run's first row
+        xor a
+        ld (fb_rect),a                  ; (no rectangle yet: no flags to undo)
+.run:   ld l,c                          ; its edges: D = TA, E = TB
+        ld h,high TA
+        ld d,(hl)
+        inc h
+        ld e,(hl)
+        dec h
+        ld a,(fb_end)                   ; B = the rows after it to look at
+        sub c
+        jr z,.last
+        cp DD_MAX_ROWS                  ; (a run of DD_MAX_ROWS at most: a
+        jr c,.b                         ; DMA burst no longer than 8K)
+        ld a,DD_MAX_ROWS-1
+.b:     ld b,a
+.ext:   inc l                           ; on while both edges are the same
+        ld a,(hl)
+        cp d
+        jr nz,.brk
+        inc h
+        ld a,(hl)
+        dec h
+        cp e
+        jr nz,.brk
+        djnz .ext
+.last:  inc l                           ; (to the last row: L one past it)
+.brk:   ld a,l                          ; the run: rows C .. L-1
+        ld (fb_next),a
+        sub c
+        cp BLOCK_ROWS
+        jr c,.next                      ; too few: spans
+        ld b,a                          ; B = rows
+        ld a,d                          ; width - 1 = |TA - TB|: left = min
+        sub e
+        jr nc,.w
+        neg
+        ld e,d                          ; (TA left)
+.w:     cp BLOCK_W-1
+        jr c,.next                      ; too narrow: spans
+        inc a                           ; width (256: 0)
+        ld (fb_w),a
+        ld a,e
+        ld (fb_x),a
+        ld a,b
+        ld (fb_rows),a
+        ld a,c                          ; the rows before it, as spans
+        ld (fb_y0),a
+        ld (fb_upto),a
+        call fb_spans
+        ld a,(fb_x)                     ; the run: one rectangle
+        ld e,a
+        ld a,(fb_y0)
+        ld d,a
+        ld a,(fb_w)
+        ld c,a
+        ld a,(fb_rows)
+        ld b,a
+        ld a,(fb_de)
+        call dd_rect
+        ld a,1
+        ld (fb_rect),a
+        ld a,(fb_next)                  ; drawn to here
+        ld (fb_s),a
+.next:  ld a,(fb_next)                  ; on from the row after the run
+        ld c,a
+        ld hl,fb_end
+        dec a
+        cp (hl)
+        jr c,.run
+        ld a,(fb_end)                   ; the rest as spans
+        inc a
+        ld (fb_upto),a
+        call fb_spans
+        ld a,(fb_rect)                  ; the spans' flags back, if a
+        or a                            ; rectangle changed them
+        ret z
+        jp dd_spans
+
+; Rows fb_s..fb_upto-1 (if any) by fill_spans, the spans' flags first (a
+; rectangle may have set its own); fb_s on to fb_upto
+fb_spans:
+        ld a,(fb_upto)
+        ld hl,fb_s
+        cp (hl)
+        ret z
+        ret c
+        dec a
+        ld (fy1),a
+        ld a,(hl)
+        ld (fy0),a
+        ld a,(fb_rect)
+        or a
+        call nz,dd_spans
+        xor a
+        ld (fb_rect),a
+        ld de,(fb_de)
+        call fill_spans
+        ld a,(fb_upto)
+        ld (fb_s),a
+        ret
+
+fb_de:      dw 0                        ; fill_blocks: the colour pair,
+fb_s:       db 0                        ;   the first row not drawn,
+fb_end:     db 0                        ;   the last row (fy1),
+fb_next:    db 0                        ;   the row after a run,
+fb_y0:      db 0                        ;   a rectangle's top row,
+fb_x:       db 0                        ;   its left x,
+fb_w:       db 0                        ;   width (0: 256),
+fb_rows:    db 0                        ;   rows,
+fb_upto:    db 0                        ;   spans up to (not) this row,
+fb_rect:    db 0                        ;   1: a rectangle's flags are on
+    ENDIF
 
 
 ;==============================================================================

@@ -6,16 +6,13 @@ LEVEL 19
 CITY 4
 NAME NEW YORK
 ZOMBIES 25
-WAVES 4
+WAVES 1
 FAST 10
 VIEW 8
 
 ; special monsters, one line a wave (1 is the level's start): WAVE n,
-; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, CLUSTERS
-WAVE 1 GHOST 5
-WAVE 2 BANSHEE 2
-WAVE 3
-WAVE 4 BANSHEE 2
+; then up to 5 type / count pairs; types: GHOST, BANSHEE, GHOUL, LICH, DEVIL, CLUSTERS
+WAVE 1 GHOST 4 BANSHEE 4
 
 ; cells of the city's map changed for this level: x z code family
 CHANGES 0

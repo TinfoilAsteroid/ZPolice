@@ -40,7 +40,7 @@
 ;   +4  bits 4-3 x scale, bits 2-1 y scale (0..3 = x1, x2, x4, x8), 0 y bit 8
 ;==============================================================================
 
-SPR_COUNT       equ 44          ; sprites in the shadow table (max 128)
+SPR_COUNT       equ 42          ; sprites in the shadow table (max 128)
 SPR_HW          equ 128         ; hardware sprites
 SPR_ATTR        equ 5           ; attribute bytes per sprite
 SPR_PATTERNS    equ 64          ; 8-bit 16x16 patterns in pattern memory

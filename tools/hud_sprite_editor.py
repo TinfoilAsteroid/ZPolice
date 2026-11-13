@@ -64,8 +64,7 @@ def frame_layout(names):
     return [("FRM_H", L + 16, T_, 8, 1, False, False), ("FRM_H", L + 16 + 32, T_, 8, 1, False, False),
             ("FRM_V", L, T_ + 16, 1, 4, False, False), ("FRM_V", R, T_ + 16, 1, 4, True, False),
             ("FRM_CRN", L, T_, 1, 1, False, False), ("FRM_CRN", R, T_, 1, 1, True, False),
-            ("FRM_CRN_P", L, B, 1, 1, False, True), ("FRM_CRN_P", R, B, 1, 1, True, True),
-            ("FRM_CRN_S", L, B + 16, 1, 1, False, True), ("FRM_CRN_S", R, B + 16, 1, 1, True, True)]
+            ("FRM_CRN_P", L, B, 1, 1, False, True), ("FRM_CRN_P", R, B, 1, 1, True, True)]
 
 
 def usage(name):
