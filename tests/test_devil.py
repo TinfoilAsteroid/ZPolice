@@ -521,8 +521,28 @@ def test_death_ends_the_game():
         alive = [a for a in others if cpu.rd(a + 10) & 1]
         zp.check(not alive, f"{len(alive)} monsters still alive with it dying")
         zp.check(cpu.rd(sym["level_done"]) == 0, "the level over before it has sunk")
-        zp.run_until(cpu, lambda: cpu.pc == sym["game_complete_screen"], "the congratulations",
-                     limit=200 * zp.FRAME_T)
+        zp.run_until(cpu, lambda: cpu.pc == sym["game_complete_screen"] and cpu.mmu[6] == sym["PAGE_MENU"],
+                     "the congratulations", limit=200 * zp.FRAME_T)
+    finally:
+        sd.close()
+
+
+def test_congratulations_not_shaken():
+    """The level over mid-shake (the devil's footfalls, a wreck): the
+    congratulations screen is shown with Layer 2's scroll back at 0"""
+    sd, cpu = devil_game()
+    try:
+        cpu.wr(sym["level_done"], 1)
+        zp.run_until(cpu, lambda: cpu.pc == sym["level_complete_screen"]
+                     and cpu.mmu[6] == sym["PAGE_LEVELEND"], "the level's end")
+        cpu.set_nextreg(0x16, 255)                  # (shake_xy's, mid-shake)
+        cpu.set_nextreg(0x17, 191)
+        cpu.wr(sym["shake_t"], 3)
+        zp.run_until(cpu, lambda: cpu.pc == sym["space_wait"] and cpu.mmu[6] == sym["PAGE_MENU"],
+                     "the congratulations", limit=40 * zp.FRAME_T)
+        sc = (cpu.nextreg.get(0x16), cpu.nextreg.get(0x17))
+        zp.check(sc == (0, 0), f"Layer 2 scrolled {sc} on the congratulations")
+        zp.check(cpu.rd(sym["shake_t"]) == 0, "still shaking")
     finally:
         sd.close()
 

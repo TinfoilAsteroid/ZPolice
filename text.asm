@@ -20,9 +20,11 @@ screen320:
         nextreg L320_MMU,PAGE_L320
         jp l320_screen
 
-; No HUD sprites, silence (the engines off), and the input page in slot 7
-; (the screens read the keys)
+; No HUD sprites, silence (the engines off), no screen shake (a level can
+; end mid-shake: Layer 2's scroll left set would move a whole 320x256
+; screen), and the input page in slot 7 (the screens read the keys)
 menu_quiet:
+        call shake_off                  ; (zpolice.asm: the scroll back to 0)
         nextreg CODE_MMU,PAGE_SPRITES
         call spr_hide_all
         call spr_update
