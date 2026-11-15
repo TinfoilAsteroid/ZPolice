@@ -116,6 +116,8 @@ sfx2_req:   db 0                        ; voice 2 (AY 3 A/B, explosions): the sa
 sfx2_ptr:   dw 0
 sfx3_req:   db 0                        ; voice 3 (AY 3 C, splats): the same
 sfx3_ptr:   dw 0
+sfx4_req:   db 0                        ; voice 4 (AY 2 C, the base's warnings:
+sfx4_ptr:   dw 0                        ;   base_beep, zombie.asm): the same
 sv_sel:     db 0                        ; sfx_voice: its AY chip
 eng_cur:    dw 0                        ; the engines' speed, 1/ENG_FRAC steps
 isr_sel:    db 0                        ; the main code's selected NextReg,

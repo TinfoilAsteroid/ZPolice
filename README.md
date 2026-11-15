@@ -449,12 +449,13 @@ channels (`audio.asm`); AY 2 and 3 are free for sound effects and music.
 ## Sound effects
 
 Sound effects play from the interrupt routine (`sfx_tick`, sound.asm),
-on three voices, so none cuts another: the weapons on AY 2, explosions on
-AY 3's channels A and B, and splats on AY 3's channel C. The engines keep
-AY 1. (Music would need AY 3 back.)
+on four voices, so none cuts another: the weapons on AY 2's channels A and
+B, explosions on AY 3's channels A and B, splats on AY 3's channel C, and
+the base's warnings on AY 2's channel C. The engines keep AY 1. (Music would need AY 3 back.)
 * **Asking for one:** the game puts the sound's number in a voice's request
   byte: `sfx_req` for the weapons, `sfx2_req` for explosions, `sfx3_req` for
-  splats (`ld a,SFX_MG` / `ld (sfx_req),a`). That's one byte, so it is safe from any page at any time,
+  splats, `sfx4_req` for the base's warnings (`ld a,SFX_MG` /
+  `ld (sfx_req),a`). That's one byte, so it is safe from any page at any time,
   and only the interrupt writes the AY chips (see "Interrupts"). Each voice
   plays one sound at a time: a new one cuts the last (`sfx_voice`).
 * **Format:** a sound is a list of steps, one per interrupt (20 ms). Each
@@ -541,6 +542,20 @@ AY 1. (Music would need AY 3 back.)
   * fading from 13 over 10 steps: 260 ms in all.
 
   It replaces any explosion playing.
+* **Base warnings (`SFX_WARN_LOW`, `SFX_WARN_MID`, on AY 2 channel C, voice
+  4, `sfx4_req`):** a beep each time the base is hit (`base_beep`,
+  zombie.asm, from `base_damage` and `barr_damage`: zombies, specials, the
+  devil's tread, a blast), while the tile or barricade still stands:
+  * a terrace tile or a barricade: a low beep, about 440 Hz
+    (`WARN_LOW_TONE` 249);
+  * the landing pad: a mid beep, about 1.3 kHz (`WARN_MID_TONE` 83).
+
+  Each is 80 ms at volume 12, then 40 ms quiet. A low beep is only asked
+  for when no warning is playing, so many hits close together are still
+  heard as separate beeps; the pad's always is, cutting a low one. AY 2's
+  mixers (`SFX_MIX_*` but `SFX_MIX_BOOM`, AY 3's) keep tone C on and the
+  weapons' sounds no longer touch channel C, so the warnings play with
+  them.
 * **Room:** the player is in slot 1 with the interrupt routine (about 100
   bytes left); the sounds are in the resident page.
 

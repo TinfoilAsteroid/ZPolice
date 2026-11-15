@@ -11,8 +11,9 @@
 ; AY 1 is the VTOL's engines: engine_start here, then the interrupt routine
 ; plays them (engine_tick, interrupts.asm).  AY 2 is the weapons' sound
 ; effects, AY 3 explosions: the game asks for one with ld a,SFX_n / ld
-; (sfx_req),a (AY 2), ld (sfx2_req),a (AY 3's A and B) or ld (sfx3_req),a
-; (AY 3's C), and the interrupt plays it (sfx_tick).  (Music would need AY 3
+; (sfx_req),a (AY 2's A and B), ld (sfx2_req),a (AY 3's A and B), ld
+; (sfx3_req),a (AY 3's C) or ld (sfx4_req),a (AY 2's C: the base's
+; warnings), and the interrupt plays it (sfx_tick).  (Music would need AY 3
 ; back.)  The interrupt writes the AY ports while eng_on is 1,
 ; so code here writes them only with eng_on 0 (or interrupts off).
 ;
@@ -93,16 +94,21 @@ SFX_CHARGE      equ 14              ; the devil charging its lightning: a
                                     ; rising whine (AY 3 channel C, sfx3_req)
 SFX_BOLT        equ 15              ; its lightning: a crackling zap, then
                                     ; thunder (AY 3, sfx2_req)
-SFX_LAST        equ 15              ; (sfx_table, sfx_data.asm)
+SFX_WARN_LOW    equ 16              ; the base's warnings (AY 2 C, sfx4_req):
+                                    ;   a terrace or barricade hit, a low beep;
+SFX_WARN_MID    equ 17              ;   the landing pad hit, a mid one
+SFX_LAST        equ 17              ; (sfx_table, sfx_data.asm)
 SFX_STEP        equ $FE             ; end of a step: the next, next interrupt
 SFX_END         equ $FF             ; end of the sound
-SFX_MIX_NOISE_A_TONE_B equ AY_NO_TONE_A|AY_NO_TONE_C|AY_NO_NOISE_B|AY_NO_NOISE_C
+; AY 2's mixers keep tone C on (and its noise off): channel C is the
+; warnings' (voice 4), so the weapons' sounds leave it alone
+SFX_MIX_NOISE_A_TONE_B equ AY_NO_TONE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A noise only, B tone only
-SFX_MIX_TONE_AB equ AY_NO_TONE_C|AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
+SFX_MIX_TONE_AB equ AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A and B tones only
-SFX_MIX_NOISE_A equ AY_NO_TONE_A|AY_NO_TONE_B|AY_NO_TONE_C|AY_NO_NOISE_B|AY_NO_NOISE_C
+SFX_MIX_NOISE_A equ AY_NO_TONE_A|AY_NO_TONE_B|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A noise only
-SFX_MIX_TONE_A  equ AY_NO_TONE_B|AY_NO_TONE_C|AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
+SFX_MIX_TONE_A  equ AY_NO_TONE_B|AY_NO_NOISE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; mixer: A tone only
 SFX_MIX_BOOM    equ AY_NO_TONE_A|AY_NO_NOISE_B|AY_NO_NOISE_C
                                     ; AY 3's mixer: A noise, B tone (the
@@ -131,11 +137,13 @@ init_audio:
         ld (sfx_req),a                  ; and no sound effect asked for or
         ld (sfx2_req),a                 ; playing, on any voice
         ld (sfx3_req),a
+        ld (sfx4_req),a
         ld h,a
         ld l,a
         ld (sfx_ptr),hl
         ld (sfx2_ptr),hl
         ld (sfx3_ptr),hl
+        ld (sfx4_ptr),hl
         ld a,AY_CHIP_3
         call ay_init_chip
         ld a,AY_CHIP_2

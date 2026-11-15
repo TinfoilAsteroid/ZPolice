@@ -723,6 +723,7 @@ base_damage:
         ld a,(hl)
         or a
         ret z                           ; (already gone)
+        call base_beep                  ; (the warning: pad or terrace)
         sub c
         jr z,.dead
         jr c,.dead
@@ -757,6 +758,35 @@ base_damage:
         ld (hl),GROUND_COL
         ld a,MAP_BG
         jp map_pix                      ; and on the map (map.asm)
+
+; Base tile or barricade (E, D) hit: the warning beep (voice 4: sfx4_req,
+; interrupts.asm).  The landing pad's, SFX_WARN_MID, always (over a low
+; one); a terrace tile's or a barricade's, SFX_WARN_LOW, only when no
+; warning is playing, so that many hits are still heard as beeps.  Keeps
+; everything but the flags (A too).
+base_beep:
+        push af
+        push hl
+        ld a,e
+        cp PAD_X
+        jr nz,.low
+        ld a,d
+        cp PAD_Z
+        jr nz,.low
+        ld a,SFX_WARN_MID               ; the pad
+        jr .req
+.low:   ld hl,(sfx4_ptr)                ; a warning playing (or asked for):
+        ld a,h                          ; let it be
+        or l
+        jr nz,.x
+        ld a,(sfx4_req)
+        or a
+        jr nz,.x
+        ld a,SFX_WARN_LOW
+.req:   ld (sfx4_req),a
+.x:     pop hl
+        pop af
+        ret
 
 ; New game: the pad and terrace whole, at full strength
 base_init:
@@ -882,6 +912,7 @@ barr_damage:
         ld a,(hl)
         or a
         ret z                           ; (already gone)
+        call base_beep                  ; (the warning: a barricade's low one)
         sub c
         jp z,base_damage.dead
         jp c,base_damage.dead

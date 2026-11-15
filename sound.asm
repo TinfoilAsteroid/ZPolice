@@ -158,6 +158,9 @@ sfx_tick:
         call sfx_voice
         ld hl,sfx3_req                  ; splats, AY 3 (C)
         ld a,AY_SELECT|AY_LEFT|AY_RIGHT|AY_CHIP_3
+        call sfx_voice
+        ld hl,sfx4_req                  ; the base's warnings, AY 2 (C)
+        ld a,AY_SELECT|AY_LEFT|AY_RIGHT|AY_CHIP_2
         ; fall through
 
 ; HL -> a voice (its request byte, then its sound's next step, a word: 0

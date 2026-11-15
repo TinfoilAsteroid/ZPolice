@@ -65,12 +65,15 @@ sfx_table:
         dw sfx_lock                     ; SFX_LOCK
         dw sfx_charge                   ; SFX_CHARGE
         dw sfx_bolt                     ; SFX_BOLT
+        dw sfx_warn_low                 ; SFX_WARN_LOW
+        dw sfx_warn_mid                 ; SFX_WARN_MID
         ASSERT SFX_MG == 1 && SFX_LASER == 2 && SFX_CHAIN == 3
         ASSERT SFX_ROCKET == 4 && SFX_MISSILE == 5 && SFX_AUTOCANNON == 6
         ASSERT SFX_BOOM_ROCKET == 7 && SFX_BOOM_MISSILE == 8
         ASSERT SFX_BOOM_AUTOCANNON == 9 && SFX_BOOM_PROX == 10 && SFX_SPLAT == 11
         ASSERT SFX_CRASH == 12 && SFX_LOCK == 13
         ASSERT SFX_CHARGE == 14 && SFX_BOLT == 15
+        ASSERT SFX_WARN_LOW == 16 && SFX_WARN_MID == 17
         ASSERT ($ - sfx_table)/2 == SFX_LAST
 
 ; The machine gun, heavy: a sharp crack (bright noise) dropping into a deep
@@ -80,7 +83,6 @@ MG_THUMP        equ 1563            ; tone period: 109375 / 1563 = 70 Hz
 sfx_mg:
         db AY_MIXER, SFX_MIX_NOISE_A_TONE_B
         db AY_TONE_B, low MG_THUMP, AY_TONE_B+1, high MG_THUMP
-        db AY_VOL_C, 0
         db AY_NOISE, 4, AY_VOL_A, 13, AY_VOL_B, 11, SFX_STEP     ; crack
         db AY_NOISE, 18, AY_VOL_A, 10, AY_VOL_B, 9, SFX_STEP     ; boom
         db AY_NOISE, 26, AY_VOL_A, 6, AY_VOL_B, 5, SFX_STEP
@@ -94,7 +96,6 @@ CHAIN_THUMP     equ MG_THUMP*4/5    ; 1250: 87.5 Hz
 sfx_chain:
         db AY_MIXER, SFX_MIX_NOISE_A_TONE_B
         db AY_TONE_B, low CHAIN_THUMP, AY_TONE_B+1, high CHAIN_THUMP
-        db AY_VOL_C, 0
         db AY_NOISE, 3, AY_VOL_A, 13, AY_VOL_B, 11, SFX_STEP     ; crack
         db AY_NOISE, 14, AY_VOL_A, 10, AY_VOL_B, 9, SFX_STEP     ; boom
         db AY_NOISE, 21, AY_VOL_A, 6, AY_VOL_B, 5, SFX_STEP
@@ -111,7 +112,6 @@ AUTOCANNON_THUMP equ 3646           ; 109375 / 3646 = 30 Hz
 sfx_autocannon:
         db AY_MIXER, SFX_MIX_NOISE_A_TONE_B
         db AY_TONE_B, low AUTOCANNON_THUMP, AY_TONE_B+1, high AUTOCANNON_THUMP
-        db AY_VOL_C, 0
         db AY_NOISE, 8, AY_VOL_A, 15, AY_VOL_B, 13, SFX_STEP     ; crack
         db AY_NOISE, 31, AY_VOL_A, 12, AY_VOL_B, 11, SFX_STEP    ; boom
         db AY_NOISE, 31, AY_VOL_A, 8, AY_VOL_B, 7, SFX_STEP
@@ -122,7 +122,7 @@ sfx_autocannon:
 ; fading over 200 ms, brightening then darkening as it goes
 sfx_rocket:
         db AY_MIXER, SFX_MIX_NOISE_A
-        db AY_VOL_B, 0, AY_VOL_C, 0
+        db AY_VOL_B, 0
         SFX_WOOSH 12, 7
         SFX_WOOSH 9, 11
         SFX_WOOSH 7, 13
@@ -139,7 +139,7 @@ sfx_rocket:
 ; before it fades
 sfx_missile:
         db AY_MIXER, SFX_MIX_NOISE_A
-        db AY_VOL_B, 0, AY_VOL_C, 0
+        db AY_VOL_B, 0
         SFX_WOOSH 14, 6
         SFX_WOOSH 11, 10
         SFX_WOOSH 9, 12
@@ -232,12 +232,28 @@ sfx_bolt:
         SFX_CRACKLE 2, 12, 300, 4
         SFX_BOOM 15, 24                 ; (its own mixer, rumble: the thunder)
 
+; The base's warnings (voice 4, AY 2 channel C: AY 2's mixer keeps its tone
+; on): a beep, 80 ms, then 40 ms quiet so that hits close together still
+; sound as beeps.  Low (about 440 Hz) for a terrace tile or a barricade
+; hit, mid (about 1.3 kHz) for the landing pad.
+WARN_LOW_TONE   equ 249             ; 109375 / 249 = 439 Hz
+WARN_MID_TONE   equ 83              ; 109375 / 83 = 1318 Hz
+    MACRO SFX_WARN p
+        db AY_TONE_C, low (p), AY_TONE_C+1, high (p)
+        db AY_VOL_C, 12, SFX_STEP, SFX_STEP, SFX_STEP, SFX_STEP
+        db AY_VOL_C, 0, SFX_STEP, SFX_STEP, SFX_END
+    ENDM
+sfx_warn_low:
+        SFX_WARN WARN_LOW_TONE
+sfx_warn_mid:
+        SFX_WARN WARN_MID_TONE
+
 ; The missile lock: two short high beeps (about 1.5 kHz, channel A), 80 ms
 ; each with 40 ms between
 LOCK_TONE       equ 73              ; tone period: 109375 / 73 = 1.5 kHz
 sfx_lock:
         db AY_MIXER, SFX_MIX_TONE_A
-        db AY_VOL_B, 0, AY_VOL_C, 0
+        db AY_VOL_B, 0
         db AY_TONE_A, low LOCK_TONE, AY_TONE_A+1, high LOCK_TONE
         db AY_VOL_A, 12, SFX_STEP, SFX_STEP, SFX_STEP, SFX_STEP
         db AY_VOL_A, 0, SFX_STEP, SFX_STEP
@@ -279,7 +295,6 @@ sfx_splat:
 ; B), fading over 140 ms
 sfx_laser:
         db AY_MIXER, SFX_MIX_TONE_AB
-        db AY_VOL_C, 0
         SFX_ZAP 40, 13
         SFX_ZAP 55, 13
         SFX_ZAP 75, 12

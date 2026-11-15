@@ -190,6 +190,197 @@ Things to watch:
   1.5 fps at 14-18 fps. Projecting corners (~29% of a frame) is still the
   largest cost, and DMA+ doesn't touch it.
 
+## Timing: real time instead of frame counting (2026-11-15, to review)
+
+See docs/CTC.md. The game logic runs once per rendered frame. Every speed is
+in units a frame and every interval is a count of frames, tuned for 14 fps
+(`NOMINAL_FPS`). So game time follows the frame rate: a busy view slows the
+whole game, and a sparse one speeds it up (facing a wall: 34-46 fps, 2-3
+times too fast). The fix is to time things by a real clock.
+
+**The approach: one master clock, software timers. No CTC channel per
+feature.**
+- There are dozens of timers: one per weapon, per monster, per human, per
+  effect. The CTC has 4 channels (8 on some cores), and every interrupt
+  costs 100-200 T.
+- So use one master tick counter, and a "ready at" time stamp for each
+  timer, compared when it matters.
+- The clock starts as the 50 Hz frame interrupt's `isr_ticks`, which
+  already exists. It moves to a CTC channel only if 20 ms proves too
+  coarse.
+- CTC channels go only to things that need a rate of their own: the
+  sound, and profiling.
+
+Converting a tuned value from frames at 14 fps to milliseconds:
+ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
+
+### 1. Foundation
+- [ ] **The game clock** (resident, `game_now`):
+  - a 16-bit tick count advanced by the interrupt only while playing;
+  - stopped while paused, on the menu screens, in the debug level select,
+    on the load-out screen, and while a level loads;
+  - a `TICK_HZ` constant, and an `MS n` macro that turns milliseconds into
+    ticks, so that changing the clock (50 Hz `isr_ticks`, later a 200 Hz
+    or 1 kHz CTC tick) re-scales every interval at build time;
+  - reading it atomically: DI/EI around the two bytes, or read twice and
+    compare.
+- [ ] **Timer helpers:**
+  - `TIMER_SET var, ticks` (`var = now + ticks`);
+  - `TIMER_DUE var`: carry clear when `now - var >= 0`, a signed 16-bit
+    compare that is safe across the wrap. That allows intervals up to
+    32767 ticks: 11 minutes at 50 Hz, 32 s at 1 kHz.
+  - For rates (gunfire), add the interval to the old ready time, not to
+    `now`, so the average rate holds when frames are long.
+- [ ] **The frame's elapsed time** `dt`:
+  - ticks since the last rendered frame, worked out once a frame in
+    `main_loop`;
+  - clamped to 1..`DT_MAX` (about 150 ms), so a long stall (a load, a
+    debug key) doesn't teleport anything;
+  - kept with a fraction (8.8) so that movement at 50 Hz ticks averages
+    right: at 14 fps a frame is 3.57 ticks.
+- [ ] **Tests:**
+  - give the emulator's tests a way to drive `game_now` themselves (poke
+    it, or a mode where it advances a fixed amount a frame), so that the
+    tests stay deterministic;
+  - add a test helper, `zp.advance(cpu, ms)`.
+- [ ] **Save games:** store timers as time remaining, not as absolute
+  ticks, or restart them on loading. Bump `SG_VERSION`.
+
+### 2. Weapons: rate of fire, cool-down, reloading
+- [ ] **`gun_wait`** becomes a "ready at" time, with the intervals in ms:
+  - `GUN_INTERVAL` 4 frames: 285 ms;
+  - `CHAIN_INTERVAL` 1: 71 ms;
+  - `ROCKET_INTERVAL` / `MISSILE_INTERVAL` 7: 500 ms;
+  - `AUTOCANNON_INTERVAL` / `PROX_INTERVAL` 16: 1.14 s;
+  - `BOMB_INTERVAL` 14: 1 s.
+
+  The chain gun is the case to watch: at 14 fps it fires once a frame. At
+  a lower frame rate a fixed rate means firing 2 rounds some frames, or
+  capping at 1 a frame. Decide which.
+- [ ] **The linked chain guns' alternation** (`lk_fired`): per round, as
+  now, timed by the shared ready time.
+- [ ] **Pulse laser:** `LASER_ON` 3 frames of beam, `LASER_COOL` 8 frames
+  of cool-down. Make it 214 ms on and 570 ms cooling. Its damage is "per
+  beam frame on a target" (`LASER_DMG`): make it damage per tick of beam,
+  or a fixed total per pulse, so it doesn't depend on the frame rate.
+- [ ] **Reloading on the pad** (`pad_service`):
+  - `WCFG_RELOAD`, `LINK_RELOAD` 1;
+  - `ROCKET_RELOAD` 15 frames: 1.07 s a rocket;
+  - `MISSILE_RELOAD` 30: 2.1 s;
+  - `AUTOCANNON_RELOAD` 7: 0.5 s;
+  - `BOMB_RELOAD` 30: 2.1 s;
+  - repairs per frame on the pad;
+  - `DISEMBARK` (one passenger off a second, already defined as
+    `NOMINAL_FPS` frames).
+- [ ] **Missile lock:** `LOCK_TIME` (2 s, 28 frames) as time.
+  `RET_STEP` / `RET_WANDER` (the reticule's pixels a frame) by `dt`.
+- [ ] **Weapon slot flash** `WFLASH` (5 frames): optional (visual).
+
+### 3. Movement (by `dt`)
+- [ ] **The VTOL** (player.asm) first, because the player feels it most:
+  - `SPEED_MAX` / `SPEED_MIN` / `BOOST_SPEED` (units a frame),
+    `CLIMB_RATE`, `YAW_RATE` / `YAW_FINE`, the strafe
+    (`STRAFE_D_HALVES`);
+  - the acceleration per frame of the speed keys (`SPEED_STEP`,
+    `AIRBRAKE_STEP`);
+  - the pitch damper (`PDAMP_FRAMES`, `PDAMP_MIN`), `GUN_TILT_STEP`.
+
+  Its building collisions test one frame's move. With a long `dt`, test
+  in sub-steps of at most a normal frame's move, so it can't pass through
+  a wall.
+- [ ] **Rounds:**
+  - `BULLET_STEP` 457, `ROCKET_STEP` 137, `MISSILE_STEP` 68 and `FB_STEP`
+    182 units a frame;
+  - `BOMB_SPEED` and `BOMB_STEEPEN` (5 frames a step);
+  - `MISSILE_TURN` (3 degrees a frame);
+  - the fireball's flight (14 frames) and the rounds' range (in frames).
+
+  Their hit tests already sweep the frame's whole path (`B_PX`): keep
+  that with the longer paths.
+- [ ] **Zombies:**
+  - `zspeed` (`ZSPEED_INIT`, units a frame) and the decision interval
+    `zsteps` (`ZSTEPS_INIT`, every 10 frames);
+  - standing still when stuck, `ZWAIT` 100 frames (7 s);
+  - their walking animation steps.
+- [ ] **Specials:**
+  - ghosts: `GHOST_CLIMB`, `GHOST_DECIDE` (30 frames), roaming;
+  - banshees' and ghouls' speeds (`zcalc_step`);
+  - the lich (4 × a zombie's speed);
+  - the devil: `DV_STEP_FR` (24 frames a step), `DV_STEP_U`, `DV_SINK`.
+- [ ] **Humans:** `HUMAN_RUN` / `HUMAN_FLEE` (9 units a frame),
+  `FLEE_TIME` (a second).
+- [ ] **The wreck:** `DEAD_SPIN`, `DEAD_FALL_MAX`.
+- [ ] **Particles:** velocities and `PART_GRAV` per frame. They are visual
+  only, so this is the lowest priority: they could stay per rendered
+  frame.
+
+### 4. Attacks and the monsters' timing
+- [ ] **Zombies hitting** the base, barricades and humans: `ZHIT_FRAMES`
+  5 (357 ms). This is the base's real damage rate: at 30 fps the base
+  takes twice the damage per second it does at 14. It is the first of
+  these to fix: it affects fairness the most.
+- [ ] **Ghosts' blows:** `GHOST_HIT_FRAMES` 10 (714 ms).
+- [ ] **Banshees' attack rate** and anything else counted per frame in
+  specials.asm.
+- [ ] **A lich's shots:** `LICH_WAIT` / `LICH_FRAMES` (now `LICH_RATE` 150
+  frames less 5 a city: 10.7 s down to 7.5 s at 14 fps). Make them ms.
+  (Did the 150 frames mean 3 s? At 14 fps they are 10.7 s.)
+- [ ] **The devil:**
+  - `DV_CHARGE_T` / `DV_HUM_T` already count `isr_ticks` (real time);
+  - `BOLT_FRAMES`, `SPIN_FR` (the VTOL's spin when hit), `DV_DIE_FR` and
+    `DV_DIE_PARTS` are per frame: make the spin and the death last a fixed
+    time.
+- [ ] **Waves and levels:**
+  - `DEAD_PAUSE` (50 frames on the ground before GAME OVER: 3.6 s at 14
+    fps, meant as about 2 s?);
+  - the screen shake (`SHAKE_LEN` 6 frames, `shake_big`) as time;
+  - `HUM_FLASH` (the humans' status flash);
+  - `GHOST_FADE_FRAMES`;
+  - `PREPARE FOR COMBAT` already uses `isr_ticks` (`WPREP_TICKS`).
+
+### 5. CTC channels for specific jobs
+- [ ] **Model the CTC in `tools/nexsim.py`** first: the channel ports,
+  timer and counter modes, chaining, `$C5` / `$C9`, and hardware IM 2
+  mode (`$C0`) with its vectors. Test it against the two worked examples
+  in docs/CTC.md.
+- [ ] **Hardware IM 2 mode for the game** (`$C0` bit 0):
+  - replace the 257-entry, `$xyxy` table with a 32-byte, 16-entry one
+    (taylorza's layout): the frame interrupt at entry 11, the CTC
+    channels at 3-10. That frees most of a page in the zombie page.
+  - Every routine already ends `ei` / `reti`.
+  - Check the `$243B` read-back the frame routine relies on, on real
+    hardware.
+- [ ] **A CTC master clock** (only if 50 Hz is too coarse):
+  - channel 0 as a 10 kHz timer, chained into channel 1 counting to 200 Hz
+    (5 ms) or 1 kHz;
+  - a minimal routine: its own stack, as `im2_routine` (the span filler
+    borrows SP), count `game_now`, no paging, `ei` / `reti`;
+  - `TICK_HZ` changes, and every interval follows.
+  - Decide whether `$CD` lets it interrupt DMA bursts (`dv_flush`, the
+    fills): ticks are otherwise merged during a long burst.
+- [ ] **Sound on its own CTC channel:**
+  - run `engine_tick` / `sfx_tick` at 100 Hz from a CTC channel instead
+    of the 50 Hz frame interrupt, for smoother engine slides and finer
+    effect steps (sounds rewritten at 10 ms a step);
+  - the frame interrupt then only counts frames;
+  - later, sample playback (speech, a siren) on a DAC from a CTC channel.
+- [ ] **Profiling on real hardware:**
+  - a free-running 10 kHz CTC count (or reading a channel's counter
+    directly) to time the parts of a frame in 0.1 ms steps;
+  - show them with `DRAW_FPS`, to tune the renderer on the real Next
+    rather than the emulator.
+- [ ] **Measure the CTC clock once on a real Next:** CTC ticks against 50
+  frame interrupts, in VGA 0 and HDMI. Confirm 28 MHz.
+
+### Suggested order
+1. The game clock on `isr_ticks`, the helpers, the test hooks (§1).
+2. The attack rates (`ZHIT_FRAMES` and the specials': the base's
+   fairness) and the weapons' rates, reloads and cool-downs (§2, §4). No
+   new hardware set-up is needed.
+3. The VTOL's and the rounds' movement by `dt` (§3), then the monsters'.
+4. CTC in nexsim, hardware IM 2 mode, then a CTC clock or sound channel if
+   step 3 shows 50 Hz is too coarse (§5).
+
 ## Open points from the level files (2026-10-27)
 
 - More in the level complete (to come).
