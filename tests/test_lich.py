@@ -30,7 +30,7 @@ def hp(cpu, r):
     return cpu.rd(r + 18) + 256 * cpu.rd(r + sym["LICH_HP_HI"])
 
 
-def game(level=5):
+def game(level=36):                      # (city 8: a lich in wave 1)
     sd = zp.SD()
     cpu = zp.machine(sd)
     zp.start_game(cpu, level)
@@ -72,42 +72,42 @@ def drop(cpu, kind, x, z, y=2):
     cpu.wr(B + sym["B_STATE"], 1)
 
 
-def test_spawns_in_the_last_wave():
-    sd, cpu = game(5)                   # city 1: one wave
-    try:
-        zp.check(len(liches(cpu)) == 1, "no lich on level 5")
-        r = liches(cpu)[0]
-        zp.check(hp(cpu, r) == 25, f"city 1: {hp(cpu, r)} hit points, not 25")
-        zp.check(cpu.rd(r + sym["LICH_FRAMES"]) == 150, "city 1: not 150 frames a shot")
-    finally:
-        sd.close()
-    sd, cpu = game(4)
-    try:
-        zp.check(not liches(cpu), "a lich before the city's last level")
-    finally:
-        sd.close()
-    for lv, h, rate in ((10, 30, 145), (45, 65, 110)):     # (level 50's last: the devil)
+def city_lich(city):
+    """A lich's hit points and frames between shots in this city (lich_init)"""
+    hp = sym["LICH_HP"] + sym["LICH_HP_STEP"] * (city - 1)
+    rate = max(sym["LICH_RATE"] - sym["LICH_RATE_STEP"] * (city - 1), sym["LICH_RATE_MIN"])
+    return hp, rate
+
+
+def test_spawns_with_its_wave():
+    """A lich comes with a wave that lists one (the level files), its hit
+    points and rate of fire its city's"""
+    for lv, city, wave, n in ((36, 8, 1, 1), (32, 7, 2, 1), (46, 10, 1, 8)):
         sd, cpu = game(lv)
         try:
-            zp.check(not liches(cpu), f"level {lv}: a lich before the last wave")
-            cpu.wr(sym["wave_number"], cpu.rd(sym["level_cur"] + sym["LV_WAVES"]) - 1)
-            for i in range(NMON):
-                cpu.wr(rec(i) + 10, 0)
-            zp.frames(cpu, 2)
-            zp.check(len(liches(cpu)) == 1, f"level {lv}: no lich in the last wave")
-            r = liches(cpu)[0]
-            zp.check(hp(cpu, r) == h, f"level {lv}: {hp(cpu, r)} hit points, not {h}")
-            zp.check(cpu.rd(r + sym["LICH_FRAMES"]) == rate, f"level {lv}: not {rate} frames a shot")
+            if wave > 1:
+                zp.check(not liches(cpu), f"level {lv}: a lich before wave {wave}")
+                cpu.wr(sym["wave_number"], wave - 1)
+                for i in range(NMON):
+                    cpu.wr(rec(i) + 10, 0)
+                zp.frames(cpu, 2)
+            ls = liches(cpu)
+            zp.check(len(ls) == n, f"level {lv} wave {wave}: {len(ls)} liches, not {n}")
+            h, rate = city_lich(city)
+            for r in ls:
+                zp.check(hp(cpu, r) == h, f"level {lv}: {hp(cpu, r)} hit points, not {h}")
+                zp.check(cpu.rd(r + sym["LICH_FRAMES"]) == rate, f"level {lv}: not {rate} frames a shot")
         finally:
             sd.close()
 
 
 def test_walks_at_four_times():
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         cpu.wr(r + 7, 0)                # walking,
-        cpu.wr(r + 11, 100)             # no decisions for a while
+        cpu.wr(sym["zdec_i"], (r - sym["zombies"]) // sym["ZREC"])    # (its decision
+                                        # just taken: none for NMON frames)
         cpu.wr(r + 16, 0)
         cpu.wr(r + 4, 1)                # along +x
         cpu.wr(r + sym["LICH_WAIT"], 200)
@@ -121,7 +121,7 @@ def test_walks_at_four_times():
 
 
 def test_range():
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         y = sym["MAX_Y"]
@@ -140,7 +140,7 @@ def test_range():
 def test_aims_ahead():
     """Lateral motion at 20 units a frame, 1000 units away: aimed straight at
     the VTOL it would be 6 degrees behind."""
-    sd, cpu = game(5)
+    sd, cpu = game()
     errs = []
     spd = 20
     try:
@@ -174,7 +174,7 @@ def test_aims_ahead():
 
 
 def test_flight_ends_in_the_air():
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         cpu.wr(r + sym["LICH_WAIT"], 200)
@@ -184,21 +184,24 @@ def test_flight_ends_in_the_air():
         cpu.wr16(B + sym["B_COS"], 0)
         cpu.wr16(B + sym["B_SLOPE"], 0)
         cpu.wr16(B + sym["B_S"], sym["FB_STEP"])
-        cpu.wr(B + sym["B_TGT"], sym["FB_FRAMES"])
+        cpu.wr(B + sym["B_TGT"], sym["FB_TICKS"])
         n = 0
         while cpu.rd(B + sym["B_STATE"]) == 1 and n < 30:
             zp.frames(cpu, 1)
             n += 1
         d = cpu.rd16(B + sym["B_X"]) - x0
-        zp.check(n == sym["FB_FRAMES"], f"flew {n} frames, not {sym['FB_FRAMES']}")
-        zp.check(abs(d - 2560) < 30, f"flew {d} units, not 2560 (200 m)")
+        frames = -(-sym["FB_TICKS"] // sym["CLK_TEST_DT"])     # its ticks, in the tests' frames
+        zp.check(n == frames, f"flew {n} frames, not {frames}")
+        zp.check(abs(d - frames * sym["FB_STEP"]) < 30, f"flew {d} units, not {frames * sym['FB_STEP']}")
+        real = sym["FB_TICKS"] * sym["FB_STEP"] * sym["ASSUMED_FPS"] / sym["TICK_HZ"]
+        zp.check(abs(real - 2560) < 60, f"in real time {real:.0f} units, not about 2560 (200 m)")
         zp.check(cpu.rd(B + sym["B_STATE"]) == 2, "no burst at the end of its flight")
     finally:
         sd.close()
 
 
 def test_hits_the_vtol():
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         cpu.wr(r + 0, 128)                  # the middle of its street cell,
@@ -214,7 +217,7 @@ def test_hits_the_vtol():
 
 def test_burst():
     """FB_DMG to the VTOL and the base, and a human, nothing to monsters."""
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         cpu.wr(r + sym["LICH_WAIT"], 200)
@@ -249,7 +252,7 @@ def test_burst():
 
 
 def test_big_hit_points_and_box():
-    sd, cpu = game(5)
+    sd, cpu = game()
     try:
         r = only_lich(cpu)
         cpu.wr(r + sym["LICH_WAIT"], 200)
@@ -287,7 +290,7 @@ def test_big_hit_points_and_box():
 
 def test_forty_zombies_and_the_lich():
     """A full wave of zombies leaves the specials their own records."""
-    sd, cpu = game(10)
+    sd, cpu = game(32)                  # (wave 2: a lich among its specials)
     try:
         cpu.wr(sym["level_cur"] + sym["LV_ZOMBIES"], 40)
         for i in range(NMON):

@@ -1,7 +1,7 @@
-"""A wave's CLUSTERS (levels 2 and 4: 4, with 40 zombies; the middle wave of
-every 3rd level): the first zombies, the parents, are placed at random, the
-rest in turn within 2 tiles of each on x and z, on streets; in other waves
-they are spread over the city.
+"""A wave's CLUSTERS (as the level files give them: CLUSTERS n in a WAVE
+line): the first n zombies, the parents, are placed at random, the rest in
+turn within 2 tiles of each on x and z, on streets; in other waves they are
+spread over the city.
 """
 import os
 import sys
@@ -11,7 +11,21 @@ from zptest import sym
 
 ZREC, NZOMB = sym["ZREC"], sym["NZOMB"]
 TILE = 256
-CLUSTERS = 4
+sys.path.insert(0, os.path.join(zp.ROOT, "tools"))
+import levelfile as lf  # noqa: E402
+
+CL = lf.SPEC_NAMES.index("CLUSTERS")
+
+
+def level(lv):
+    with open(os.path.join(zp.ROOT, "levels", f"LEVEL{lv:02d}.TXL"), encoding="latin-1") as f:
+        return lf.level_parse(f.read())
+
+
+def clusters(lv, wave):
+    """The clusters level lv's wave has (0: none)"""
+    sp = level(lv)["waves_specials"][wave - 1]
+    return sum(n for t, n in sp if t == CL)
 
 
 def zombies(cpu):
@@ -24,63 +38,61 @@ def zombies(cpu):
     return out
 
 
-def far(zs):
-    """The furthest any zombie is from its parent, on x or z."""
-    return max(max(abs(x - zs[i % CLUSTERS][0]), abs(z - zs[i % CLUSTERS][1]))
-               for i, (x, z) in enumerate(zs))
+def far(zs, n):
+    """The furthest any zombie is from its parent (n clusters), on x or z."""
+    return max(max(abs(x - zs[i % n][0]), abs(z - zs[i % n][1])) for i, (x, z) in enumerate(zs))
+
+
+def check_clustered(cpu, what, n):
+    zs = zombies(cpu)
+    d = far(zs, n)
+    zp.note(f"{what}: {n} clusters, the furthest from its parent: {d / TILE:.2f} tiles")
+    zp.check(d <= 2 * TILE + 8, f"{what}: one {d / TILE:.2f} tiles from its parent")
+    cm = sym["city_map"]
+    bad = [(x, z) for x, z in zs if cpu.rd(cm + (z >> 8) * 64 + (x >> 8)) & sym["CELL_CODE"]]
+    zp.check(not bad, f"{what}: zombies in buildings: {bad}")
+    if n > 1:
+        ps = zs[:n]
+        apart = max(max(abs(a[0] - b[0]), abs(a[1] - b[1])) for a in ps for b in ps)
+        zp.check(apart > 4 * TILE, f"{what}: the parents aren't spread out")
 
 
 def test_clusters():
-    for lv in (2, 4):
+    """The levels whose first wave has clusters"""
+    lvs = [lv for lv in range(1, 51) if clusters(lv, 1)][:3]
+    zp.check(lvs, "no level starts with clusters")
+    for lv in lvs:
         with zp.SD() as sd:
             cpu = zp.machine(sd)
             zp.start_game(cpu, lv)
             zs = zombies(cpu)
-            zp.check(len(zs) == 40, f"level {lv}: {len(zs)} zombies, not 40")
-            d = far(zs)
-            zp.note(f"level {lv}: the furthest from its parent: {d / TILE:.2f} tiles")
-            zp.check(d <= 2 * TILE + 8, f"level {lv}: one {d / TILE:.2f} tiles from its parent")
-            cm = sym["city_map"]
-            bad = [(x, z) for x, z in zs if cpu.rd(cm + (z >> 8) * 64 + (x >> 8)) & sym["CELL_CODE"]]
-            zp.check(not bad, f"level {lv}: zombies in buildings: {bad}")
-            ps = zs[:CLUSTERS]
-            apart = max(max(abs(a[0] - b[0]), abs(a[1] - b[1])) for a in ps for b in ps)
-            zp.check(apart > 4 * TILE, f"level {lv}: the parents aren't spread out")
+            want = min(level(lv)["values"][0], NZOMB)
+            zp.check(len(zs) == want, f"level {lv}: {len(zs)} zombies, not {want}")
+            check_clustered(cpu, f"level {lv}", clusters(lv, 1))
 
 
 def test_no_clusters_elsewhere():
+    """A wave without clusters: spread over the city"""
+    lv = next(lv for lv in range(1, 51) if not clusters(lv, 1) and level(lv)["values"][0] >= 10)
     with zp.SD() as sd:
         cpu = zp.machine(sd)
-        zp.start_game(cpu, 1)
-        zp.check(far(zombies(cpu)) > 8 * TILE, "level 1's zombies are clustered")
+        zp.start_game(cpu, lv)
+        zp.check(far(zombies(cpu), 1) > 8 * TILE, f"level {lv}'s zombies are clustered")
 
 
-def test_every_third_level():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, os.path.join(root, "tools"))
-    import levelfile as lf
-    cl = lf.SPEC_NAMES.index("CLUSTERS")
-    for lv in range(1, 51):
-        if lv in (2, 4):
-            continue                    # (the trial)
-        with open(os.path.join(root, "levels", f"LEVEL{lv:02d}.TXL"), encoding="latin-1") as f:
-            d = lf.level_parse(f.read())
-        ws = [w for w, sp in enumerate(d["waves_specials"], 1) if any(t == cl for t, _ in sp)]
-        want = [(len(d["waves_specials"]) + 1) // 2] if lv % 3 == 0 else []
-        zp.check(ws == want, f"level {lv}: clusters on waves {ws}, not {want}")
-
-
-def test_only_the_middle_wave():
+def test_a_later_wave():
+    """Clusters in a later wave only: that wave's zombies clustered"""
+    lv, w = next((lv, w) for lv in range(1, 51) for w in range(2, len(level(lv)["waves_specials"]) + 1)
+                 if clusters(lv, w) and not clusters(lv, 1))
     with zp.SD() as sd:
         cpu = zp.machine(sd)
-        zp.start_game(cpu, 12)          # 3 waves: the second
-        zp.check(far(zombies(cpu)) > 8 * TILE, "wave 1 is clustered")
+        zp.start_game(cpu, lv)
+        cpu.wr(sym["wave_number"], w - 1)
         for i in range(sym["NMON"]):
             cpu.wr(sym["zombies"] + i * ZREC + 10, 0)
         zp.frames(cpu, 2)
-        zp.check(cpu.rd(sym["wave_number"]) == 2, "not on wave 2")
-        d = far(zombies(cpu))
-        zp.check(d <= 2 * TILE + 8, f"wave 2: one {d / TILE:.2f} tiles from its parent")
+        zp.check(cpu.rd(sym["wave_number"]) == w, f"level {lv}: not on wave {w}")
+        check_clustered(cpu, f"level {lv} wave {w}", clusters(lv, w))
 
 
 if __name__ == "__main__":

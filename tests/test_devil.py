@@ -134,7 +134,7 @@ def test_vision_modes():
         for mode, want in ((3, 0x1C0), (1, 0x1FF), (2, 0x1FF), (0, 0x01F)):   # (normal: electric blue)
             cpu.wr(r + sym["DV_EYES"], 1)
             cpu.wr16(r + sym["DV_T0"], 0)
-            cpu.wr16(sym["isr_ticks"], sym["DV_CHARGE_T"] - 1)
+            cpu.wr16(sym["game_now"], sym["DV_CHARGE_T"] - 1 - sym["CLK_TEST_DT"])   # (the frame adds its ticks)
             cpu.wr(sym["vision_mode"], mode)
             zp.frames(cpu, 1)
             eye = cpu.palettes.get(1, {}).get(sym["DEVIL_EYE"], 0)
@@ -324,7 +324,7 @@ def test_charges_and_fires():
         bx, bz = HX, HZ - 2                         # a tall building in the way
         cpu.wr(cell_ptr(bx, bz), 15)
         cpu.wr(cell_ptr(bx, bz) - sym["city_map"] + sym["city_col"], 4)
-        ticks = sym["isr_ticks"]
+        ticks = sym["game_now"]
         cpu.wr(r + sym["DV_EYES"], 0)               # (resting since 0: long enough)
         cpu.wr16(r + sym["DV_T0"], 0)
         cpu.wr16(ticks, 1000)
@@ -387,7 +387,7 @@ def test_charges_and_fires():
         k = sym["PITCH_KICK"]
         zp.check(cpu.rd(sym["pitch"]) in (k, 256 - k), f"the nose not pitched {k}: {cpu.rd(sym['pitch'])}")
         zp.check(cpu.rd(sym["bolt_brake"]) == 1 and cpu.rd(sym["bolt_spd"]) == 5, "not braking to half (5)")
-        zp.frames(cpu, sym["SPIN_FR"] + 1)
+        zp.frames(cpu, -(-sym["SPIN_FR"] // sym["CLK_TEST_DT"]) + 1)
         sp_ = cpu.rd(sym["speed"])
         zp.check(cpu.rd(sym["spin_t"]) == 0, "still spinning")
         zp.check(cpu.rd(sym["bolt_brake"]) == 0 and 3 <= sp_ <= 5, f"speed {sp_}: not braked to about half of 10")
@@ -400,7 +400,7 @@ def test_spin():
     sd, cpu = devil_game()
     try:
         r = only_devil(cpu)
-        ticks = sym["isr_ticks"]
+        ticks = sym["game_now"]
         turns = []
         for k in range(4):
             look_at(cpu, 1024, 100)
@@ -409,7 +409,7 @@ def test_spin():
             cpu.wr16(ticks, 2000 + k)
             zp.frames(cpu, 1)
             y0 = cpu.rd(sym["yaw"])
-            zp.frames(cpu, sym["SPIN_FR"] + 1)
+            zp.frames(cpu, -(-sym["SPIN_FR"] // sym["CLK_TEST_DT"]) + 1)
             d = (cpu.rd(sym["yaw"]) - y0 + 128) % 256 - 128
             turns.append(d)
             cpu.wr(sym["vtol_hp"], 50)
@@ -428,7 +428,7 @@ def test_sky_bolt_drawn():
         cpu.wr(r + 7, 1)
         cpu.wr(r + sym["DV_EYES"], 1)
         cpu.wr16(r + sym["DV_T0"], 0)
-        cpu.wr16(sym["isr_ticks"], sym["DV_CHARGE_T"] + 5)
+        cpu.wr16(sym["game_now"], sym["DV_CHARGE_T"] + 5)
         zp.frames(cpu, 1)
         zp.check(cpu.rd(sym["bolt_up"]) == 1, "not fired up")
         rows = [y for y, row in enumerate(shown(cpu)) if sym["BOLT_COL"] in row]
@@ -444,7 +444,7 @@ def test_out_of_range():
     try:
         r = only_devil(cpu)
         zp.set_camera(cpu, 32 * 256 << 8, 32 * 256 << 8, 60)     # (the pad: 20 tiles off)
-        ticks = sym["isr_ticks"]
+        ticks = sym["game_now"]
         cpu.wr(r + sym["DV_EYES"], 0)
         cpu.wr16(r + sym["DV_T0"], 0)
         cpu.wr16(ticks, 5000)

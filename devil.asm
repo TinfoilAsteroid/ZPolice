@@ -34,7 +34,7 @@
 ; 3 -x), +5 its legs' frame, +7 1: stuck (nowhere to go), +11 the frame in
 ; its step, +16 mode (0 walking, GM_DYING), +17 frames left sinking,
 ; +21,+22 its feet (below the ground as it sinks), DV_EYES (0 resting,
-; 1 charging) and DV_T0 (isr_ticks when that began).
+; 1 charging) and DV_T0 (game_now when that began).
 ;==============================================================================
 
 DEVIL_HP        equ 1000
@@ -47,7 +47,8 @@ DV_CHARGE_T     equ 500             ; interrupts charging (10 s),
 DV_HUM_T        equ 150             ;   the last of them whining (3 s: SFX_CHARGE)
 DV_REST_T       equ 100             ; and resting after a shot (2 s)
 BOLT_DMG        equ 10
-BOLT_FRAMES     equ 4               ; frames the bolt is drawn
+BOLT_FRAMES     equ (4*FT_N+ASSUMED_FPS)/FT_D   ; ticks the bolt is drawn
+                                    ; (4 frames: 14)
 DV_EYE_H        equ DEVIL_H*108/DEVIL_SRC_H     ; its eyes' height (row 20)
 DV_DIE_FR       equ 40              ; frames sinking, killed
 DEVIL_HIT_R     equ 100             ; its hit box: this far either side (8 m),
@@ -60,12 +61,13 @@ DV_TREAD_PARTS  equ 6               ; a zombie trodden on: its burst
 DV_KILL_PARTS   equ 2               ; each monster dying with it: its burst
 DV_DARK_HP      equ 100             ; its hit points a darker step
 DV_DIE_PARTS    equ 4               ; dying: fire every other frame
-SPIN_FR         equ 8               ; frames the VTOL's spin takes
+SPIN_FR         equ 32              ; ticks the VTOL's spin takes (0.64 s;
+                                    ; 256/SPIN_FR whole: spin_rate)
 SPIN_MIN        equ 5               ; 7 degrees (256 a turn)
 SPIN_RANGE      equ 27              ; .. up to 44 (31)
 PITCH_KICK      equ PMAX/2          ; the nose up or down this much (17 degrees)
 DV_EYES         equ 24              ; record: its eyes (0 resting, 1 charging),
-DV_T0           equ 25              ;   isr_ticks when that began (2)
+DV_T0           equ 25              ;   game_now when that began (2)
         ASSERT DV_T0+1 < 31 && LICH_HP_HI != DV_EYES && LICH_HP_HI != DV_T0
 
 ;------------------------------------------------------------------------------
@@ -116,8 +118,9 @@ devil_init:
         ld (ix+21),a
         ld (ix+22),a
         ld (ix+DV_EYES),a
-        ld (ix+DV_T0),a
-        ld (ix+DV_T0+1),a
+        ld hl,(game_now)                ; (its rest from now)
+        ld (ix+DV_T0),l
+        ld (ix+DV_T0+1),h
         ld (ix+18),low DEVIL_HP
         ld (ix+LICH_HP_HI),high DEVIL_HP
         ld (ix+10),1                    ; active
@@ -131,12 +134,23 @@ devil_init:
 ; coming down
 ;------------------------------------------------------------------------------
 dv_frame:
-        ld hl,bolt_t
-        ld a,(hl)
-        or a
-        jr z,.nb
-        dec (hl)
-.nb:    ld hl,cl_tog                    ; every other frame
+        ld a,(dt)                       ; the bolt: ticks to draw it
+        ld c,a
+        ld a,(bolt_t)
+        sub c
+        jr nc,.bt
+        xor a
+.bt:    ld (bolt_t),a
+        ld a,(fsteps)                   ; the buildings: a frame's worth at a
+        or a                            ; time
+        ret z
+.fl:    push af
+        call .fall
+        pop af
+        dec a
+        jr nz,.fl
+        ret
+.fall:  ld hl,cl_tog                    ; every other frame's worth
         ld a,(hl)
         xor 1
         ld (hl),a
@@ -191,10 +205,24 @@ dv_frame:
 ;------------------------------------------------------------------------------
 devil_move:
         call dv_darken
+        ld a,(fsteps)                   ; its steps (or sinking) a frame's
+        or a                            ; worth at a time
+        jr z,.ch
+        ld b,a
+.fl:    push bc
         ld a,(ix+16)
         cp GM_DYING
-        jp z,dv_dying
+        jr z,.dy
         call dv_walk
+        jr .fn
+.dy:    call dv_dying
+.fn:    pop bc
+        bit 0,(ix+10)
+        ret z                           ; (gone)
+        djnz .fl
+.ch:    ld a,(ix+16)
+        cp GM_DYING
+        ret z
         call dv_charge
         ld a,(zanim)                    ; its map blip, every 8 frames
         ld hl,sp_idx
@@ -461,14 +489,14 @@ dv_flatten:
 ; then (with the VTOL within DV_RANGE) charging DV_CHARGE_T, the eyes black
 ; to blue; charged, it fires when the VTOL is in range
 dv_charge:
-        ld hl,(isr_ticks)               ; the time since its state began
+        ld hl,(game_now)               ; the time since its state began
         ld e,(ix+DV_T0)
         ld d,(ix+DV_T0+1)
         or a
         sbc hl,de
         bit 7,h
         jr z,.t
-        ld hl,(isr_ticks)               ; (the count was reset: from now)
+        ld hl,(game_now)               ; (the count was reset: from now)
         ld (ix+DV_T0),l
         ld (ix+DV_T0+1),h
         ld hl,0
@@ -517,7 +545,7 @@ dv_charge:
 .at:    call dv_fire
 .rest:  ld (ix+DV_EYES),0               ; rest, then charge again
         call dv_eye_black
-.now:   ld hl,(isr_ticks)
+.now:   ld hl,(game_now)
         ld (ix+DV_T0),l
         ld (ix+DV_T0+1),h
         ret
@@ -702,7 +730,7 @@ dv_fire:
         jr c,.r
         sub SPIN_RANGE
 .r:     add a,SPIN_MIN
-        ld e,a                          ; a frame: angle * 256 / SPIN_FR
+        ld e,a                          ; a tick: angle * 256 / SPIN_FR
         ld d,256/SPIN_FR
         mul d,e
         bit 0,h                         ; either way

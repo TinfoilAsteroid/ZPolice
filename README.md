@@ -481,7 +481,7 @@ the base's warnings on AY 2's channel C. The engines keep AY 1. (Music would nee
     into a deep boom (period 18, then 26) as it fades;
   * channel B: a low thump, a tone of about 70 Hz (period 1563), fading
     with it (11, 9, 5, 2);
-  * then silent. The gun fires every `GUN_INTERVAL` (4) game frames, about
+  * then silent. The gun fires every `GUN_INTERVAL` (14) ticks, about
     a quarter of a second apart, so each round's sound is over before the
     next.
 * **Chain gun (`SFX_CHAIN`, `sfx_chain`):** the machine gun's sound 25%
@@ -586,6 +586,64 @@ Interrupts are on from the main menu onwards, in IM 2 (`interrupts.asm`),
   forced at the last moment before the `DI`), every frame's Layer 2 was
   identical to a run with none. (The emulator enables interrupts at `EI`
   at once; the test allows for the Z80's one-instruction delay.)
+
+## Game time
+
+The game used to count rendered frames: every speed was in units a frame
+and every interval a count of frames, tuned at 14 fps. So game time
+followed the frame rate. Now it follows a clock: the 50 Hz frame
+interrupt's ticks (`isr_ticks`). See docs/CTC.md for timers and TODO.md
+("Timing") for what's planned.
+
+* **Each frame** (`clock_step`, zpolice.asm, at the top of `main_loop`):
+  * `dt`: the ticks since the last frame, 0 to `DT_MAX` (8, 160 ms: a
+    stall doesn't jump the game). A 16-bit subtraction is right across the
+    counter's roll-over.
+  * `fs`: their frames' worth at `ASSUMED_FPS` (14), 8.8: dt × 14 / 50
+    (`fs_tab`, made at assembly). `fsinv`, its inverse.
+  * `fsteps`: whole frames' worth this frame (fs added up, the fraction
+    carried): 0, 1, sometimes 2.
+  * `game_now`: the game's own clock, +dt.
+* **Game time only passes in `main_loop`:** `clock_reset` starts the count
+  afresh after anything that holds it up: a level's start, the pause, the
+  PREPARE FOR COMBAT box (it sets `isr_ticks` back), the debug level select.
+* **`ASSUMED_FPS`** (zpolice.asm) is the frame rate the per-frame values
+  were tuned at: the one constant to re-balance the game (real hardware
+  renders faster than the emulator). `FT_N` / `FT_D` turn a tuned frame
+  count into ticks, rounded: (n × 100 + 14) / 28.
+* **Three ways things are timed:**
+  * **Scaled by fs** (smooth whatever the frame rate): the VTOL's speed,
+    turning (`yaw_step`), climbing, strafe, the wreck's spin and fall;
+    every round's path (`bullet_step`: `B_S` × fs, not the laser's beam);
+    a missile's turn (`msl_turn`); the zombies', ghouls' and a lich's walk
+    (`zcalc_step`, an 8-bit fraction kept in +6); the reticule's moves.
+    Helpers: `fs_mul` (a signed 16-bit × fs), `fs_amount` (a small amount,
+    its fraction kept), `mul_88`, `per_frame` (÷ fs: the VTOL's velocity a
+    frame, for a lich's aim).
+  * **Ticks** (counted down by dt, the overshoot carried so a rate holds):
+    the guns' intervals (`gun_wait`, `gun_rearm`), the laser (10 on, 6 off,
+    1 damage a tick of beam), the pad's reloads and repairs, the missile
+    lock (`LOCK_TIME` 100), a zombie's blows on the base (`ZHIT_FRAMES`
+    18), a bomb's steepening, a fireball's flight (`FB_TICKS`), the
+    devil's bolt (`BOLT_FRAMES` 14), its spin (`SPIN_FR` 32), its charge
+    (`game_now`), the empty-slot flash (`WFLASH` 5), the pause before
+    GAME OVER (`DEAD_PAUSE` 179).
+  * **Whole frames' worth** (`fsteps`: the per-frame code run that many
+    times): discrete steps and frame-tuned behaviour, so it keeps its
+    tuning: the speed keys, air brake, nose keys, pitch damper, boost
+    fuel, gun tilt; ghosts and banshees (`ghost_move`: deciding, flying,
+    blows, fading); humans (`human_update`: running, fleeing, getting off:
+    `DISEMBARK` 14, a second); the devil's steps and sinking; buildings it
+    brings down; the particles; the screen shake; a zombie's stuck wait
+    (`ZWAIT`) and the walk cycle (`zanim`); a lich's reload (`LICH_WAIT`,
+    150 frames' worth less 5 a city: 536 ticks won't fit a byte).
+  * Zombie decisions stay one record a frame (`zdec_i`): that spreads a
+    CPU cost, not a time.
+* **Tests** run without interrupts, so with no clock: `zptest.machine`
+  sets `clk_test` (not in the release build), and every frame is
+  `CLK_TEST_DT` (4) ticks and exactly one frame's worth (fs 1.0), so the
+  per-frame tests are unchanged and tick counts are `ticks / 4` frames.
+  tests/test_timing.py drives the real clock by hand.
 
 ## Controls
 
@@ -927,7 +985,7 @@ allows.
 * **Start:** you start landed on the pad (`PAD_X`, `PAD_Z`), facing north
   up the middle boulevard (`BASE_YAW` = 0).
 * **Disembarking:** when landed on the pad (speed 0, resting on it), the
-  passengers get off one every `DISEMBARK` frames (1 s at 14 fps). Each one
+  passengers get off one every `DISEMBARK` frames' worth (1 s). Each one
   counts as `saved`. The first gets off a second after landing.
 
 ### Landing and rescuing humans (`human.asm`)
@@ -1063,11 +1121,11 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
   weapons work again. Humans use the same test to board or get off.
 * **Repair and reload on the base pad (`pad_service`):** landed on the
   landing pad (the cell under it `PAD_CODE`), the VTOL gains 1 hit point
-  every `REPAIR_FRAMES` (5) frames up to `VTOL_HP` (50). Each slot's weapon
+  every `REPAIR_TICKS` (2) ticks up to `VTOL_HP` (50). Each slot's weapon
   gains a shot every its reload frames, up to its full load. The table is
   `wpn_cfg` (weapons.asm: full load and frames a shot per weapon type):
-  rockets 1 every 15 frames (`ROCKET_RELOAD`) up to 12, missiles 1 every
-  30 (`MISSILE_RELOAD`) up to 4, autocannon and proximity shells 1 every 7
+  rockets 1 every 50 ticks (`ROCKET_RELOAD`, 1 s) up to 12, missiles 1 every
+  100 (`MISSILE_RELOAD`, 2 s) up to 4, autocannon and proximity shells 1 every 20
   (`AUTOCANNON_RELOAD`, `PROX_RELOAD`) up to 50. The centre guns have infinite ammo and
   don't reload. The counts start afresh each landing, so the first hit
   point or shot takes the whole interval. Landing on a road or roof
@@ -1099,14 +1157,14 @@ player state as 2 bytes each: a type byte, then an ammo counter byte.
 The gun is the centre slot's `WPN_GUN`, with infinite ammo (`AMMO_INF`).
 `weapons.asm` is its own code page (`PAGE_WEAPONS`, page 4, at `$C000`),
 run each frame after the zombies move.
-* **Firing:** hold SPACE to fire one round every `GUN_INTERVAL` (4) frames.
+* **Firing:** hold SPACE to fire one round every `GUN_INTERVAL` (14) ticks.
   Up to `NBULLETS` (20) rounds, shared with the chain gun, can be in
   flight.
 * **Path:** rounds leave the ship's centre line 0.5 m below the camera
   (`GUN_DY`). They fly straight along the view direction, including pitch,
   at 500 m/s.
 * **Speed per frame:** like every other speed, this is applied per frame,
-  at the nominal 14 fps (`NOMINAL_FPS`): `BULLET_STEP` = 457 units, 36 m
+  at 14 fps (`ASSUMED_FPS`; scaled by the frame's length: "Game time"): `BULLET_STEP` = 457 units, 36 m
   per frame.
 
 **Collision:** each frame a round's path from its old position to its new
@@ -1195,7 +1253,7 @@ A zombie that is killed, by gun, laser, rocket or missile, sprays
 ### Chain gun
 Weapon type 3 (`WPN_CHAIN`), in the centre slot. It's the machine gun at 4×
 the rate of fire, with a random spread.
-* **Rate:** one round every `CHAIN_INTERVAL` (1) frame while SPACE is
+* **Rate:** one round every `CHAIN_INTERVAL` (4) ticks while SPACE is
   held, against the machine gun's one every 4.
 * **Spread:** each round's heading and climb are each turned by a random
   −`CHAIN_DEV`…+`CHAIN_DEV` (4) steps of 1/256 rad, about ±0.9° (half
@@ -1235,7 +1293,7 @@ CG L and LINKED CG R.
 * **Stats:** as the chain gun (a round every frame, `CHAIN_DMG`, the same
   ±0.9° spread), but each has its own `LINK_SHOTS` (200) rounds, taken from
   its own slot (`take_slot_ammo`). One run dry, the other fires on alone.
-  They reload on the pad 1 round a frame (`LINK_RELOAD`), and every level
+  They reload on the pad 1 round every 2 ticks (`LINK_RELOAD`), and every level
   end fills them.
 * **Straight ahead:** each fires along the view direction (the centre
   gun's tilt doesn't apply), from `LINK_OFF` (26 units, 2 m) to its side
@@ -1254,8 +1312,9 @@ CG L and LINKED CG R.
 
 ### Pulse laser
 Weapon type 2 (`WPN_LASER`), in the centre slot, with infinite ammo.
-* **Firing:** hold SPACE. The beam is on for `LASER_ON` (3) frames, then
-  cools for `LASER_COOL` (8) frames, and repeats while SPACE is held.
+* **Firing:** hold SPACE. The beam is on for `LASER_ON` (10) ticks, then
+  cools for `LASER_COOL` (6) ticks, doing `LASER_DMG` (1) a tick of beam on
+  a target, and repeats while SPACE is held.
   That's 0.1 s and 0.25 s as specified at 30 fps; at 14 fps it is 0.21 s
   and 0.57 s.
 * **Hitting:** each beam frame, the beam is traced from the muzzle along
@@ -1275,7 +1334,7 @@ the nose down to hit them. The same applies to the laser.
 ### Rocket pod
 Weapon type 4 (`WPN_ROCKETS`), on a wing pylon. A pod holds 12 rockets
 (`ROCKET_SHOTS`). Fitted in slot 2, key 2 selects it (the HUD letter R).
-* **Firing:** hold SPACE for one rocket every `ROCKET_INTERVAL` (7) frames.
+* **Firing:** hold SPACE for one rocket every `ROCKET_INTERVAL` (25) ticks.
   Each uses one of the pod's ammo.
 * **Flight:** rockets are rounds in the `bullets` pool, marked by `B_KIND`
   = `BK_ROCKET`. They fly straight along the view direction at 150 m/s
@@ -1355,19 +1414,19 @@ Weapon type 5 (`WPN_MISSILE`), on a wing pylon. A pod holds 4 missiles
   list (after the last, the first), that `lk_valid` takes: drawn last frame
   (in the front view) and within `LOCK_RANGE`, not fading out. It locks on
   afresh: locking (`lock_state` 1, `lock_t` 0), the reticule moving to it,
-  `LOCK_TIME` frames again. Round to the current one (no other target), the
+  `LOCK_TIME` (100) ticks again. Round to the current one (no other target), the
   lock is kept as it was. Once a press (`key_pressed`): held, it doesn't
   cycle again.
 
 ### Bomb
 Weapon type 6 (`WPN_BOMB`), on a wing pylon. A pod holds 1 bomb
-(`BOMB_SHOTS`), reloaded on the pad in 30 frames (`BOMB_RELOAD`); the HUD
+(`BOMB_SHOTS`), reloaded on the pad in 150 ticks (`BOMB_RELOAD`, 3 s); the HUD
 letter B. A salvage reward at 40.
 * **Dropping (`bomb_drop`):** SPACE releases one, straight ahead at the
   VTOL's speed + `BOMB_SPEED` (20) units a frame (at least 1: reversing,
-  less). At most one every `BOMB_INTERVAL` (14) frames.
+  less). At most one every `BOMB_INTERVAL` (50) ticks.
 * **Glide:** it leaves at `BOMB_ANGLE` below level, 10° (7 of the angle's
-  1.4° steps: 9.8°), keeps its speed, and every `BOMB_STEEPEN` (5) frames
+  1.4° steps: 9.8°), keeps its speed, and every `BOMB_STEEPEN` (18) ticks
   dives one step steeper (`bomb_steer`: the low byte of `B_PIT` counts the
   frames; its direction afresh, `rnd_dir`), to 79°, until it hits a
   building, a monster or the ground (`B_KIND` = `BK_BOMB`). From the
@@ -1566,7 +1625,7 @@ as one of that wave's specials.
     records (`NFIRE`) are the last of `bullets`, so the player's guns can't
     use them up. It passes through monsters (`cell_zombies`) and stops at a
     building, the ground, the VTOL (within `FB_HIT_R`, 24 units of its
-    path: `fb_step`) or after `FB_FRAMES` (14) frames, 200 m.
+    path: `fb_step`) or after `FB_TICKS` (50) ticks, 200 m.
   * **Burst:** wherever it stops (`rocket_blast`), `FB_DMG` (10) within
     `FB_R` (5 m) on each axis to the VTOL, humans and base tiles (landing
     pad, terrace, barricades), and none to monsters.
@@ -1665,11 +1724,11 @@ with that wave's zombies.
   the `htab` entry of its slot's code (`COLLAPSE_CODE` + 0..3; with all 4
   falling, straight to rubble). Only the map in memory changes. With
   nothing in the way, the VTOL takes `BOLT_DMG` (10), spins 7 to 44
-  degrees either way over `SPIN_FR` (8) frames (`spin_rate`, `spin_t`),
+  degrees either way over `SPIN_FR` (32) ticks (`spin_rate`, `spin_t`),
   its nose goes half way up or down (`PITCH_KICK`, `PMAX`/2), and it's
   braked as the air brake does to half the speed it had (`bolt_brake`,
   `bolt_spd`, player.asm; a boost is cut). Then `DV_REST_T` (2 s)
-  before it charges again. The bolt is drawn for `BOLT_FRAMES` (4) frames
+  before it charges again. The bolt is drawn for `BOLT_FRAMES` (14) ticks
   from its eyes as drawn to the bottom middle of the view, jagged afresh
   each frame, white (`BOLT_COL`) with a blue line beside (`BOLT_COL2`),
   with the heavy shake.
@@ -1721,7 +1780,7 @@ At 0 hit points (`vtol_hp`: ghost attacks, building crashes; both through
     crash sound and the heavy shake (`shake_big`, below).
   * **On the ground:** `WRECK_EMBERS` (2) every 4th frame until GAME OVER.
 * **Game over:** once on the ground (`dead_down`) it lies there for
-  `DEAD_PAUSE` (50, half the 100 it was) frames. Then the game is over: GAME OVER over the view,
+  `DEAD_PAUSE` (179) ticks. Then the game is over: GAME OVER over the view,
   VTOL DESTROYED (see "Game over"), until SPACE is pressed, then the main
   menu.
 * **Where:** `vtol_wreck` in `player.asm`. `newGame` resets it all.
@@ -1795,7 +1854,7 @@ transparent: the city map and the gauges.
     above and below its bar, in their cells (the bar's ink is black).
   * Asking for an unused slot (a new press of its key) doesn't select it.
     The current slot is kept, and the asked-for bar flashes amber and black,
-    `WFLASH` (5) frames each, 3 times (`C_AMBER`, paper 6).
+    `WFLASH` (5) ticks each, 3 times (`C_AMBER`, paper 6).
   * `draw_wpn` checks every column each frame and redraws one only when what
     it shows has changed (`wd_shown`; `ula_init` clears it). The cost is less
     than the old boxes' redraw of all five each frame.
@@ -3017,7 +3076,7 @@ so buildings in front of them hide them correctly.
   the plaza's ring road was never a choice, and zombies circled the
   terrace without attacking it.
   * It walks on until it is `ATTACK_R` (0.1 tile, 26 units) from the
-    tile's edge, then stops and hits it every `ZHIT_FRAMES` (5) frames for
+    tile's edge, then stops and hits it every `ZHIT_FRAMES` (18) ticks for
     1 damage.
   * Terrace tiles have `TERRACE_HP` (100) hit points, the pad `PAD_HP`
     (200), kept in `base_hp`.
@@ -3415,6 +3474,7 @@ by playing doesn't change the results.
 | `test_project.py` | building corners projected by `vproj` and `vproj_y` land on the same screen x and y as `vtx_proj` and the level shortcut `proj_y`: 4,064 corners, every shift of Z, the frustum's edges; `occ_pretest`'s `oz_sc` / `oz_sx` give `scale_comp`'s and `occ_sx`'s results for 1,581 Z and components |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_devil.py` | killed, every other monster dies at once and, once it has sunk, the congratulations; on level 50 the pad destroyed is no game over (level 1: it is); a chain gun round's hit gives one quick spark; 250 hit points off it, the normal palette 2 steps darker, and its hit points on the HUD in red; a building's burst wide; its colours in each vision mode (thermal black, its outline grey, eyes to red; night vision bright greens or light greys, eyes to white); its footfall kills the zombie and human underfoot, not those beyond; the devil alone in level 50's last wave, at the entrance to hell (a circle of road), 1000 hit points, its graphics over the pages from the kept ones on and the figures' own back at the next game's level; the level checks keep it last, alone and one; drawn at its projected size, and close to; it chases the VTOL half a tile a step (east, north, turned round for one behind), shaking the view at each footfall; it walks through a level 4 building (knocked down), round a level 5 one, over rubble; it knocks down a terrace tile and the pad on its way, with no game over; its colours white and blue, black in thermal, its eyes red there; in range its eyes charge (half blue half way; the whine only for the last 3 s, once), then the bolt: a building in the way stops it and comes down, the VTOL safe; with the rubble, the next hits: 10 damage, the nose half way, its speed braked to half, the crackling zap asked for, drawn, the nose pitched, the brake, a building in the way coming down a metre every 2 frames to rubble; spins of 15-90 degrees either way; no charge out of range; a rocket hurts it, killed it sinks and goes; `DEVIL.ZPB` up to date |
+| `test_timing.py` | `dt` (0..`DT_MAX`, right across the roll-over), `fs` and its inverse, `fsteps` adding up to `ASSUMED_FPS` a second, `game_now`, `clock_reset` after a pause; the machine gun's rate the same at 2 and 7 ticks a frame |
 | `test_zombie_moves.py` | decisions one record a frame (`zdec_i` round after 47); walking at a building between decisions it never comes within `ZMARGIN` of it and turns 90 degrees, left and right both happening; a base tile ahead: it goes for it; road ahead: it walks on |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 25 hit points and 150 frames a shot in city 1, 30 and 145 in city 2, 65 and 110 in city 9; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |
 | `test_debug_keys.py` | debug key 0 kills the wave's monsters, leaving the humans as they were, so it moves on a wave, and on the last wave completes the level; key 9's level select (Q / A step, stopping at 1 and 50 and repeating when held; SPACE starts the level shown at wave 1; 9 goes back to the game as it was); key 0 wave by wave to LEVEL n COMPLETE; key 8 from level 10 brings level 50's last wave, the devil's |

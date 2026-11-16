@@ -89,6 +89,10 @@ def machine(sd, interrupts=False):
         cpu.stepi = stepi
     else:
         cpu.stepi = cpu.step
+        if "clk_test" in sym:           # no interrupts, no clock: every frame
+            run_until(cpu, lambda: cpu.pc == sym["start"], "start")   # CLK_TEST_DT
+            cpu.wr(sym["clk_test"], 1)  # ticks, a whole frame (after the boot
+                                        # stub has put the resident page in)
     return cpu
 
 

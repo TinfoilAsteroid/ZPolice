@@ -360,11 +360,14 @@ draw_wpn:
         ld c,a
 .nf:    ld a,c
         ld (wd_flash),a
-        ld hl,wflash_t                  ; count the flash down
+        ld hl,wflash_t                  ; count the flash down (ticks)
+        ld a,(dt)
+        ld c,a
         ld a,(hl)
-        or a
-        jr z,.go
-        dec (hl)
+        sub c
+        jr nc,.ws
+        xor a
+.ws:    ld (hl),a
 .go:    ld b,0                          ; box position, left to right
 .lp:    push bc
         ld a,b

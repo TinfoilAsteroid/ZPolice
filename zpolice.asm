@@ -245,7 +245,7 @@ WPN_LINK_L      equ 3           ; key 4: just left of the centre slot
 WPN_LINK_R      equ 4           ; key 5: just right of it
 ; Weapon type details: wpn_cfg, WCFG_SIZE bytes per type (wpn_cfg_ptr)
 WCFG_LOAD       equ 0           ; full load (AMMO_INF: infinite)
-WCFG_RELOAD     equ 1           ; frames to reload a shot on the pad (0: none)
+WCFG_RELOAD     equ 1           ; ticks to reload a shot on the pad (0: none)
 WCFG_SLOTS      equ 2           ; the slots it may be fitted in: bit n =
                                 ; slot n (0 = the centre slot, key 1)
 WCFG_SIZE       equ 3
@@ -287,16 +287,33 @@ B_TGT           equ 27          ; a missile: the monster it tracks ($FF none);
                                 ; a fireball: its frames left
 B_YAW           equ 28          ;   its heading, 8.8 (yaw units: 256 a turn)
 B_PIT           equ 30          ;   and climb, 8.8 signed (as pitch)
-NOMINAL_FPS     equ 14          ; frame rate the per-frame speeds assume
+; Game time (clock_step): ticks of the 50 Hz frame interrupt (isr_ticks).
+; Per-frame values (speeds, steps) were tuned at ASSUMED_FPS frames a
+; second: each frame they are scaled by fs, the frames' worth of the ticks
+; it took (dt * ASSUMED_FPS / TICK_HZ, 8.8); intervals are counted in ticks.
+; Changing ASSUMED_FPS re-balances the game (real hardware runs faster
+; than the emulator the values were tuned on).
+TICK_HZ         equ 50          ; clock ticks a second
+ASSUMED_FPS     equ 14          ; the frame rate the per-frame values assume
+NOMINAL_FPS     equ ASSUMED_FPS ; (the old name)
+DT_MAX          equ 8           ; most ticks a frame counts for (160 ms: a
+                                ; stall doesn't jump the game)
+CLK_TEST_DT     equ 4           ; (tests, clk_test: ticks a frame, and fs a
+                                ;  whole frame)
+; n frames at ASSUMED_FPS in ticks, rounded: (n*FT_N + ASSUMED_FPS) / FT_D
+FT_N            equ 2*TICK_HZ
+FT_D            equ 2*ASSUMED_FPS
 BULLET_MS       equ 500         ; muzzle velocity, m/s
 BULLET_STEP     equ BULLET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 457 units/frame
 GUN_DY          equ -6          ; muzzle 0.5 m below the camera
-GUN_INTERVAL    equ 4           ; machine gun: frames between rounds
+GUN_INTERVAL    equ (4*FT_N+ASSUMED_FPS)/FT_D   ; machine gun: ticks between
+                                ; rounds (4 frames: 14)
 ; Chain gun: 4x the machine gun's rate, one round every CHAIN_INTERVAL
 ; frames.  Each round's heading and climb are turned by a random
 ; -CHAIN_DEV..+CHAIN_DEV steps of 1/256 rad (0.22 deg): +/-0.9 degrees
 ; (half the +/-2 it was, 9 steps, 2026-11-10: 4.5 can't be).
-CHAIN_INTERVAL  equ 1           ; chain gun: frames between rounds
+CHAIN_INTERVAL  equ 4           ; chain gun (and the linked ones): ticks
+                                ; between rounds (80 ms)
 ; Linked chain guns (WPN_LCHAIN_L / _R, slots WPN_LINK_L / _R only): chain
 ; guns, firing straight ahead (no centre gun tilt) from LINK_OFF to the
 ; left / right of the centre line.  Either selected fires every one fitted.
@@ -306,7 +323,7 @@ CHAIN_INTERVAL  equ 1           ; chain gun: frames between rounds
 ; assist (aim_probe, as the centre gun's).
 LINK_OFF        equ 26          ; 2 m (25.6 units)
 LINK_SHOTS      equ 200         ; rounds each
-LINK_RELOAD     equ 1           ; frames a round, reloading on the pad
+LINK_RELOAD     equ 2           ; ticks a round, reloading on the pad
 ; The gunsights show where the rounds are SIGHT_RANGE ahead (the projection:
 ; 128 pixels * offset / distance): the muzzles are GUN_DY below the camera
 ; (and the linked guns LINK_OFF to the side), so the crosshairs sit that
@@ -349,8 +366,8 @@ AIM_COLS        equ AIM_DEV/2+12    ; only monsters drawn this near the gun's
 ; (Frame counts as specified; at 14 fps they last 0.21 s and 0.57 s.)  Each
 ; beam frame it is traced from the muzzle along the view direction to the
 ; first thing it meets, at most LASER_RANGE away.
-LASER_ON        equ 3           ; beam frames
-LASER_COOL      equ 8           ; cool-down frames
+LASER_ON        equ 10          ; beam ticks
+LASER_COOL      equ 6           ; cool-down ticks
 LASER_RANGE     equ 1536        ; 120 m (the draw distance)
 ZHIT_R          equ 3           ; zombie hit box: 0.5 m wide (half 3.2 units)
 ZHIT_H          equ 26          ; and 2 m tall
@@ -359,7 +376,7 @@ ZHIT_H          equ 26          ; and 2 m tall
 ; tiles TERRACE_HP / PAD_HP; humans HUMAN_HP)
 GUN_DMG         equ 4           ; machine gun, per round
 CHAIN_DMG       equ 2           ; chain gun, per round
-LASER_DMG       equ 1           ; pulse laser, per beam frame on a target
+LASER_DMG       equ 1           ; pulse laser, per beam tick on a target
 
 ; Rocket pod (WPN_ROCKETS, on a wing pylon): ROCKET_SHOTS rockets, one every
 ; ROCKET_INTERVAL frames while SPACE is held, flying straight along the view
@@ -370,7 +387,8 @@ LASER_DMG       equ 1           ; pulse laser, per beam frame on a target
 ROCKET_SHOTS    equ 12          ; a full pod
 ROCKET_MS       equ 150         ; m/s
 ROCKET_STEP     equ ROCKET_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 137 units/frame
-ROCKET_INTERVAL equ 7           ; frames between rockets (0.5 s)
+ROCKET_INTERVAL equ (7*FT_N+ASSUMED_FPS)/FT_D   ; ticks between rockets
+                                ; (7 frames: 25, 0.5 s)
 ROCKET_LEN      equ 13          ; drawn 1 m long (white),
 ROCKET_TRAIL    equ 19          ; then a yellow trail to 1.5 m behind it
 BLAST_R         equ 64          ; 5 m
@@ -397,12 +415,13 @@ MISSILE_PARTS   equ 20
 ; x, y and z axes, the VTOL too (and the terrace, barricades and pad), and
 ; sprays BOMB_PARTS particles.
 BOMB_SHOTS      equ 1           ; a pod holds one
-BOMB_RELOAD     equ 30          ; frames to reload it on the pad
-BOMB_INTERVAL   equ 14          ; frames between bombs (about a second)
+BOMB_RELOAD     equ 150         ; ticks to reload it on the pad (3 s)
+BOMB_INTERVAL   equ (14*FT_N+ASSUMED_FPS)/FT_D  ; ticks between bombs (1 s)
 BOMB_SPEED      equ 20          ; units a frame more than the VTOL's speed
 BOMB_ANGLE      equ 7           ; 10 degrees below level at the start: 7
                                 ; angle steps of 1.4 (9.8 degrees)
-BOMB_STEEPEN    equ 5           ; frames between steps steeper
+BOMB_STEEPEN    equ (5*FT_N+ASSUMED_FPS)/FT_D   ; ticks between steps
+                                ; steeper (5 frames: 18)
 BOMB_R          equ 2*TILE_UNITS    ; 2 tiles (40 m)
 BOMB_DMG        equ 30
 BOMB_PARTS      equ 30
@@ -411,7 +430,8 @@ BOMB_PARTS      equ 30
 FB_MS           equ 200         ; m/s
 FB_STEP         equ FB_MS*TILE_UNITS/(TILE_M*NOMINAL_FPS)  ; 182 units/frame
 FB_RANGE        equ 10*TILE_UNITS   ; 200 m: its flight, and the lich's range
-FB_FRAMES       equ (FB_RANGE+FB_STEP/2)/FB_STEP    ; 14
+FB_FRAMES       equ (FB_RANGE+FB_STEP/2)/FB_STEP    ; 14 (frames' flight)
+FB_TICKS        equ (FB_FRAMES*FT_N+ASSUMED_FPS)/FT_D   ; its flight in ticks
 FB_R            equ 5*TILE_UNITS/TILE_M ; 5 m: 64 units
 FB_DMG          equ 10
 FB_PARTS        equ 15
@@ -419,8 +439,8 @@ FB_DEV          equ 7           ; its spread: 7/256 rad = 1.57 degrees
 FB_HIT_R        equ 24          ; it hits the VTOL this near its path: 1.9 m
         ASSERT FB_FRAMES <= NFIRE*LICH_RATE_MIN ; (a record free for each shot)
 LICH_HP_HI      equ 23          ; a lich's record: its hit points' high byte,
-LICH_WAIT       equ 24          ;   frames to its next shot,
-LICH_FRAMES     equ 25          ;   frames between shots
+LICH_WAIT       equ 24          ;   frames to its next shot (whole frames'
+LICH_FRAMES     equ 25          ;   worth, fsteps), frames between shots
 LICH_MOUTH      equ 3*LICH_H/4  ; fireballs start this high: its head
 ; Missile lock (lock_update, weapons.asm): with the missile pod selected, a
 ; square reticule wanders near the view's centre (RET_WANDER_R) until a
@@ -432,7 +452,7 @@ LICH_MOUTH      equ 3*LICH_H/4  ; fireballs start this high: its head
 ; is more than LOCK_RANGE tiles away (along x or z) it stops tracking and
 ; flies straight on.
 LOCK_RANGE      equ 8*TILE_UNITS    ; 8 tiles (160 m)
-LOCK_TIME       equ 2*NOMINAL_FPS   ; frames on the target to lock (2 s)
+LOCK_TIME       equ 100         ; ticks on the target to lock (2 s)
 MISSILE_TURN    equ 546         ; 3 degrees a frame (8.8: 3*256*256/360)
 MSL_PITCH_MAX   equ 56          ; its climb kept within +-79 degrees
 MSL_AIM_Y       equ ZOMBIE_H/2  ; aimed at the target's middle (feet + 1 m)
@@ -449,7 +469,7 @@ LOCK_NEAR       equ 3           ;   on the target within this many pixels
 ; everything within AUTOCANNON_R (3 m) on each axis, and AUTOCANNON_PARTS
 ; orange particles.
 AUTOCANNON_SHOTS equ 50         ; a full magazine
-AUTOCANNON_INTERVAL equ GUN_INTERVAL*4  ; frames between shells (16)
+AUTOCANNON_INTERVAL equ GUN_INTERVAL*4  ; ticks between shells (56)
 AUTOCANNON_R    equ 3*TILE_UNITS/TILE_M ; 3 m: 38 units
 AUTOCANNON_DMG  equ 4
 AUTOCANNON_PARTS equ 3
@@ -469,10 +489,10 @@ PROX_PARTS      equ AUTOCANNON_PARTS
 ; is repaired and its pods reloaded (pad_service, weapons.asm): 1 hit point
 ; every REPAIR_FRAMES frames up to VTOL_HP, and each slot's weapon 1 shot
 ; every its reload frames (wpn_cfg, WCFG_RELOAD) up to its full load.
-REPAIR_FRAMES   equ 5
-ROCKET_RELOAD   equ 15          ; frames a rocket
-MISSILE_RELOAD  equ 30          ; frames a missile
-AUTOCANNON_RELOAD equ 7         ; frames an autocannon shell
+REPAIR_TICKS    equ 2           ; ticks a hit point
+ROCKET_RELOAD   equ 50          ; ticks a rocket (1 s)
+MISSILE_RELOAD  equ 100         ; ticks a missile (2 s)
+AUTOCANNON_RELOAD equ 20        ; ticks an autocannon shell
 PROX_RELOAD     equ AUTOCANNON_RELOAD   ; and a proximity shell
 
 ; Humans to rescue (human.asm)
@@ -501,7 +521,8 @@ VTOL_HP         equ 50          ; the VTOL's hit points (ghosts attack it)
 ; main menu.
 DEAD_SPIN       equ $0800           ; 8 yaw units a frame: a turn in 32
 DEAD_FALL_MAX   equ 8               ; units a frame (11 m/s at 14 fps)
-DEAD_PAUSE      equ 50              ; frames on the ground before GAME OVER (was 100)
+DEAD_PAUSE      equ (50*FT_N+ASSUMED_FPS)/FT_D  ; ticks on the ground before
+                                    ; GAME OVER (50 frames: 179)
 ; The crash (wreck_fx, weapons.asm): fire bursts (fire_burst) WRECK_AHEAD in
 ; front of the camera, so they're seen: WRECK_BOOM particles as it is
 ; destroyed (and a shake), WRECK_DEBRIS every other frame as it falls (the
@@ -581,7 +602,8 @@ ZBIAS_BASE      equ 48          ; junction bias towards the pad, percent:
 ZBIAS_STEP      equ 2           ; 48 + 2 * level (50% on level 1),
 ZBIAS_MAX       equ 95          ; at most 95%
 ATTACK_R        equ 26          ; a zombie attacks a base tile from 0.1 tile (2 m)
-ZHIT_FRAMES     equ 5           ; one hit every 5 frames, 1 damage each
+ZHIT_FRAMES     equ (5*FT_N+ASSUMED_FPS)/FT_D   ; a hit every 18 ticks (5
+                                ; frames), 1 damage each
 TERRACE_HP      equ 100         ; hit points of each green terrace tile
 NBARR           equ 30          ; barricades (terrace away from the base): at
 BARR_REC        equ 3           ;   most this many, each x, z, hit points
@@ -692,7 +714,7 @@ WPN_ROW         equ WPN_NUM_ROW+1   ; WPN_COL0, every 2nd: its slot number,
 WPN_BAR         equ 3               ; an 8x24 bar of its ammo, one digit a row,
 WPN_LTR_ROW     equ WPN_ROW+WPN_BAR ; then its weapon's letter
 WPN_COL0        equ 11
-WFLASH          equ 5               ; empty slot requested: flash frames
+WFLASH          equ 5               ; empty slot requested: flash ticks
 
 ; City map on the right of the panel: 32x32 cells at 2x2 pixels = 64x64,
 ; pixel columns MAP_X..MAP_X+63, rows 128..191.  North (+Z) is up.
@@ -1074,6 +1096,7 @@ next_level:
         ld (wave_number),a              ; save game's: continue_game)
         ld a,1
         ld (resume_wave),a              ; (once)
+        call clock_reset                ; game time from now
         xor a
         ld (boost_on),a                 ; (not boosting: start_state's speed)
         ld (level_done),a
@@ -1131,6 +1154,7 @@ next_level:
 ; Main loop
 ;==============================================================================
 main_loop:
+        call clock_step                 ; this frame's time: dt, fs, fsteps
         nextreg CODE_MMU,PAGE_INPUT     ; input at $E000, while the logic runs
         call kbd_scan                   ; all key and joystick banks
         ld a,K_PAUSE                    ; paused until the pause control is
@@ -1263,6 +1287,7 @@ wp_wait:                                ; (tests: zptest skips the wait here)
         or a
         sbc hl,de
         jr c,wp_wait
+        call clock_reset                ; (no game time passed meanwhile)
         ld hl,txt_wprep_off             ; the box gone: the view again
         ld de,WPREP_ROW<<8 | WPREP_COL
         ld c,VIEW_ATTR
@@ -1421,8 +1446,11 @@ shake_tick:
         ld a,(shake_t)
         or a
         ret z
-        dec a
-        ld (shake_t),a
+        ld hl,fsteps                    ; (frames' worth)
+        sub (hl)
+        jr nc,.k
+        xor a
+.k:     ld (shake_t),a
         ld hl,(shake_tab)
         jr nz,.t
         ld de,shake_xy                  ; (the last: the usual table again)
@@ -1444,6 +1472,185 @@ shake_big:
         ld (shake_t),a
         ret
 
+;------------------------------------------------------------------------------
+; Game time.  Once a frame (main_loop) clock_step works out:
+;   dt      the ticks (isr_ticks, 50 Hz) since the last frame, 0..DT_MAX
+;           (at most DT_MAX: a stall doesn't jump the game);
+;   fs      the frames' worth of them at ASSUMED_FPS, 8.8 (fs_tab): what
+;           per-frame speeds are scaled by (fs_mul, fs_amount);
+;   fsteps  whole frames' worth this frame (fs added up, fraction kept):
+;           how many times a per-frame step (a key's speed change, a
+;           damping step) happens this frame, 0, 1, 2 ...;
+;   game_now  the game's own clock (+dt), only while it runs.
+; Intervals count down by dt.  Game time only passes in main_loop: after
+; anything that holds it up (a pause, PREPARE FOR COMBAT, a level's load)
+; clock_reset starts the count afresh.  The tests run without interrupts:
+; with clk_test set (zptest), every frame is CLK_TEST_DT ticks and one whole
+; frame (fs 1.0).
+;------------------------------------------------------------------------------
+clock_step:
+    IFNDEF RELEASE
+        ld a,(clk_test)
+        or a
+        jr z,.real
+        ld hl,256                       ; (a whole frame)
+        ld (fsinv),hl
+        ld a,CLK_TEST_DT
+        jr .set
+.real:
+    ENDIF
+        call clk_read                   ; HL = isr_ticks
+        ld de,(clk_last)
+        ld (clk_last),hl
+        or a
+        sbc hl,de                       ; ticks since (16-bit: right across
+        ld a,h                          ; the roll-over too)
+        or a
+        jr nz,.max
+        ld a,l
+        cp DT_MAX+1
+        jr c,.ok
+.max:   ld a,DT_MAX
+.ok:    ld hl,fsinv_tab
+        add hl,a
+        add hl,a
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (fsinv),de
+        ld hl,fs_tab
+        add hl,a
+        add hl,a
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ex de,hl
+.set:   ld (dt),a
+        ld (fs),hl
+        ld hl,(game_now)
+        add hl,a
+        ld (game_now),hl
+        ld hl,(fs)
+        ld a,(fs_acc)                   ; whole frames: fs added up
+        add a,l
+        ld (fs_acc),a
+        ld a,h
+        adc a,0
+        ld (fsteps),a
+        ret
+
+; Start counting game time afresh from now (nothing passed meanwhile)
+clock_reset:
+        call clk_read
+        ld (clk_last),hl
+        ret
+
+; HL = isr_ticks, read whole (the interrupt may change it between the
+; bytes: read until two reads agree)
+clk_read:
+        ld hl,(isr_ticks)
+        ld de,(isr_ticks)
+        ld a,l
+        cp e
+        jr nz,clk_read
+        ld a,h
+        cp d
+        jr nz,clk_read
+        ret
+
+; HL = HL * fs >> 8: a signed per-frame amount -> this frame's (|HL| * fs
+; under 65536).  Preserves IX, IY.
+fs_mul:
+        ld de,(fs)
+        ; fall through
+
+; HL = HL * DE >> 8: HL signed, DE an unsigned 8.8 factor under 8.0 (the
+; result under 32768).  Preserves IX, IY.
+mul_88:
+        ld a,h
+        or a                            ; (S: the sign)
+        push af
+        call abs_hl
+        ld (m88_f),de
+        push hl
+        ld a,e                          ; |x| * the factor's fraction, >> 8
+        ld d,l
+        mul d,e
+        ld c,d
+        pop hl
+        push hl
+        ld a,(m88_f)
+        ld e,a
+        ld d,h
+        mul d,e
+        ld a,e
+        add a,c
+        ld l,a
+        ld a,d
+        adc a,0
+        ld h,a
+        pop de                          ; + |x| * its whole part
+        ld a,(m88_f+1)
+        or a
+        jr z,.s
+.w:     add hl,de
+        dec a
+        jr nz,.w
+.s:     pop af
+        ret p
+        jp neg_hl
+
+; HL = a change over this frame -> its rate a frame (at ASSUMED_FPS):
+; HL / fs (fsinv).  Preserves IX, IY.
+per_frame:
+        ld de,(fsinv)
+        jr mul_88
+
+; A = a per-frame amount (0..255), HL -> its fraction byte (kept between
+; frames): A = the whole units this frame (amount * fs + the fraction, the
+; new fraction kept; amount * fs under 65536).  Preserves IX, IY, BC.
+fs_amount:
+        push bc
+        push hl
+        ld b,a
+        ld d,a
+        ld a,(fs)
+        ld e,a
+        mul d,e                         ; DE = amount * fraction of fs
+        ld a,(fs+1)
+        ld c,a
+        ld a,d
+.w:     dec c                           ; + amount * whole frames of fs
+        jp m,.d
+        add a,b
+        jr .w
+.d:     ld d,a                          ; DE = amount * fs, 8.8
+        pop hl
+        ld a,(hl)
+        add a,e
+        ld (hl),a                       ; the fraction kept
+        ld a,d
+        adc a,0                         ; the whole units
+        pop bc
+        ret
+
+; fs for dt = 0..DT_MAX ticks: dt * ASSUMED_FPS / TICK_HZ frames, 8.8;
+; and its reciprocal (0 for dt 0)
+fs_tab:
+FS_I    DEFL 0
+        DUP DT_MAX+1
+        dw (FS_I*ASSUMED_FPS*256 + TICK_HZ/2) / TICK_HZ
+FS_I    DEFL FS_I+1
+        EDUP
+fsinv_tab:
+        dw 0
+FS_I    DEFL 1
+        DUP DT_MAX
+        dw (TICK_HZ*256 + FS_I*ASSUMED_FPS/2) / (FS_I*ASSUMED_FPS)
+FS_I    DEFL FS_I+1
+        EDUP
+        ASSERT TICK_HZ*256/ASSUMED_FPS < 8*256  ; (mul_88: under 8.0)
+
 ; Stop any shake: the view back in place
 shake_off:
         ld hl,shake_xy
@@ -1461,6 +1668,17 @@ shake_big_xy:
         db 0,0, 1,0, 256-1,1, 1,192-1, 256-2,1, 2,192-1, 256-2,2, 2,192-2
         db 256-3,2, 3,192-2, 256-3,3, 3,192-3, 256-4,3, 4,192-3, 256-4,4, 4,192-4
         ASSERT $ - shake_big_xy == 2*SHAKE_BIG_LEN
+dt:         db 0                        ; clock_step: this frame's ticks,
+fs:         dw 0                        ;   their frames' worth (8.8),
+fsteps:     db 0                        ;   whole frames' worth,
+fs_acc:     db 0                        ;   (the fraction carried)
+game_now:   dw 0                        ;   the game's clock
+clk_last:   dw 0                        ;   isr_ticks at the last frame
+fsinv:      dw 0                        ;   1/fs (per_frame)
+m88_f:      dw 0                        ; (mul_88: the factor)
+    IFNDEF RELEASE
+clk_test:   db 0                        ; tests: frames of CLK_TEST_DT ticks
+    ENDIF
 shake_tab:  dw shake_xy                 ; the table shake_tick uses
 shake_t:    db 0                        ; frames of shake left (0: none)
 gfx_ok:     db 0                        ; 1: the figures' graphics are loaded
@@ -1477,7 +1695,7 @@ bolt_up:    db 0                        ; 1: it went up into the sky (out of ran
 bolt_hit:   db 0                        ; 1: it stopped at a building, at
 bolt_end:   dw 0, 0, 0                  ;   (x, y, z): the VTOL behind it safe
 bolt_spd:   db 0                        ; its hit: the speed braked down to
-bolt_t:     db 0                        ; the devil's lightning: frames to draw
+bolt_t:     db 0                        ; the devil's lightning: ticks to draw
                                         ; it (draw_bolt; devil.asm)
 spin_rate:  dw 0                        ; its hit: the VTOL's spin a frame (8.8,
 spin_t:     db 0                        ;   signed), frames of it left, and
@@ -1671,7 +1889,8 @@ game_pause:
         ld hl,txt_unpaused2
         ld de,PAUSE_ROW2<<8 | PAUSE_COL2
         ld c,VIEW_ATTR
-        jp menu_print
+        call menu_print
+        jp clock_reset                  ; (no game time passed paused)
 .save:  call save_game                  ; (pages the file handler in)
         jr c,.fail
 .quit:  ld sp,stack_top                  ; saved, or quit: the main menu
@@ -1758,7 +1977,8 @@ debug_level_select:
         ld hl,txt_dls_keys_off
         ld de,DLS_ROW2<<8 | DLS_COL2
         ld c,VIEW_ATTR
-        jp menu_print
+        call menu_print
+        jp clock_reset
 
 ; The box, with dls_level's number
 dls_show:

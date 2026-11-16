@@ -114,7 +114,7 @@ ZMARGIN         equ 16          ; keep at least this far from walls: 1.25 m
 ZC_TRIES        equ 16          ; zcluster: places to try near the parent
 ZC_R            equ 2*TILE_UNITS ;  within 2 tiles of it on x and z
         ASSERT 383+128 <= ZC_R          ; (zc_axis)
-ZWAIT           equ 100         ; frames to stand still when stuck
+ZWAIT           equ 100         ; frames' worth to stand still when stuck
 ZOMBIE_H        equ 26          ; height: 2 m (the same as the hit box, ZHIT_H)
 GHOUL_H         equ ZOMBIE_H/2  ; a ghoul's height: 1 m
 LICH_H          equ 2*ZOMBIE_H  ; a lich's height: 4 m
@@ -388,8 +388,10 @@ zombie_update:
 .done:  ld a,1
         ld (level_done),a
 .alive:
+        ld a,(fsteps)                   ; (the walk cycle: frames' worth)
         ld hl,zanim
-        inc (hl)
+        add a,(hl)
+        ld (hl),a
         ld hl,ZOMBIE_H                  ; height vector (0, H cosP, H sinP)
         ld de,(cos_p)
         call fmul
@@ -496,7 +498,11 @@ zmove:
         ld a,(ix+7)
         or a
         jr z,.go
-        dec (ix+7)                      ; standing still
+        ld hl,fsteps                    ; standing still (frames' worth)
+        sub (hl)
+        jr nc,.sw
+        xor a
+.sw:    ld (ix+7),a
         ret
 .go:    call zcalc_step
         ld a,(zdec_i)                   ; this record's decision frame?
@@ -618,17 +624,21 @@ zcalc_step:
         add a,a
         jr .reg
 .fast:  add a,a                         ; fast zombie: twice the speed
-.reg:   add a,(ix+6)
-        ld c,a
-        and 15
-        ld (ix+6),a                     ; keep the fraction
-        ld a,c
-        rrca
-        rrca
-        rrca
-        rrca
-        and 15
+.reg:   push bc                         ; a frame's worth (fs), in 8.8: the
+        ld l,a                          ; fraction (+6, 1/256 units) kept
+        ld h,0
+        add hl,hl                       ; (4.4 -> 8.8)
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        call fs_mul
+        ld a,(ix+6)
+        add a,l
+        ld (ix+6),a
+        ld a,h
+        adc a,0
         ld (zstep),a
+        pop bc
         ret
 
 ; Move zombie IX A units along its heading
@@ -677,9 +687,19 @@ zattack:
         call zflag                      ; attack flag on, map dot red
         ld (hl),TRUE
         call zblip_red                  ; (map.asm)
-.hit:   dec (ix+17)
-        ret nz
-        ld (ix+17),ZHIT_FRAMES
+.hit:   ld a,(dt)                       ; a hit every ZHIT_FRAMES ticks
+        ld c,a
+        ld a,(ix+17)
+        sub c
+        jr z,.h1
+        jr c,.h1
+        ld (ix+17),a
+        ret
+.h1:    add a,ZHIT_FRAMES               ; (the next on from when this was due)
+        jr z,.h2
+        jp p,.h3
+.h2:    ld a,1
+.h3:    ld (ix+17),a
         jp base_hit
 .gone:  ld a,(ix+16)
         ld (ix+16),0                    ; destroyed: walk on (towards the pad)

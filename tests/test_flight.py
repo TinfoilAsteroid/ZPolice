@@ -23,10 +23,12 @@ def test_building_crash():
         seen = {"shake": False, "crunch": False}
         flips = []
         cpu.on_flip = lambda b: flips.append(1)
-        while len(flips) < 26:
+        while len(flips) < 300:         # (real time: the frames' rate varies)
             cpu.stepi()
             seen["shake"] |= cpu.rd(sym["shake_t"]) > 0
             seen["crunch"] |= cpu.rd(sym["sfx2_req"]) == sym["SFX_CRASH"]
+            if seen["shake"] and seen["crunch"] and cpu.rd(sym["vtol_hp"]) < hp0:
+                break
         shook, crunch = seen["shake"], seen["crunch"]
         zp.check(cpu.rd(sym["cam_z"] + 2) <= z, f"flew into the building at cell {x},{z + 1}")
         zp.check(cpu.rd(sym["vtol_hp"]) < hp0, "no damage")

@@ -63,11 +63,36 @@
 ; S7.8 heading at firing and slope = tan(pitch) in S7.8.
 ;==============================================================================
 
+; A = the ticks between this weapon's shots: the next due that many on
+; from when this one was (gun_ovs: past due by up to a frame), so the rate
+; holds whatever the frames' length; at least a tick away
+gun_rearm:
+        ld hl,gun_ovs
+        add a,(hl)
+        jr z,.one
+        jp p,.s
+.one:   ld a,1
+.s:     ld (gun_wait),a
+        ret
+
 ;------------------------------------------------------------------------------
 ; Per frame: fire, then move every round in flight
 ;------------------------------------------------------------------------------
 update_weapons:
-        call part_update                ; age and move the burst particles
+        ld hl,MISSILE_TURN              ; this frame's turns (msl_steer)
+        call fs_mul
+        ld (msl_turn),hl
+        call neg_hl
+        ld (msl_turn_n),hl
+        ld a,(fsteps)                   ; the burst particles: aged and moved
+        or a                            ; a whole frame's worth at a time
+        jr z,.np
+.pp:    push af
+        call part_update
+        pop af
+        dec a
+        jr nz,.pp
+.np:
         ld a,(vtol_dead)
         or a
         jr z,.alive
@@ -123,13 +148,18 @@ update_weapons:
 ; ammo, and a free round
 ;------------------------------------------------------------------------------
 gun_fire:
-        ld hl,gun_wait
-        ld a,(hl)
-        or a
-        jr z,.ready
-        dec (hl)                        ; still cycling
+        ld a,(dt)                       ; the ticks to the next shot, down
+        ld c,a
+        ld a,(gun_wait)
+        sub c
+        jr z,.due
+        jp m,.due
+        ld (gun_wait),a                 ; still cycling
         ret
-.ready: ld a,K_FIRE
+.due:   ld (gun_ovs),a                  ; (0, or the ticks past due)
+        xor a
+        ld (gun_wait),a
+        ld a,K_FIRE
         call key_held
         ret z                           ; fire not pressed
         call sel_slot
@@ -156,8 +186,8 @@ gun_fire:
         ret c
         call take_ammo
         ret c
-        ld a,GUN_INTERVAL-1
-        ld (gun_wait),a
+        ld a,GUN_INTERVAL
+        call gun_rearm
         ld hl,BULLET_STEP
         call spawn_round
         call aim_apply
@@ -170,8 +200,8 @@ gun_fire:
         ret c
         call take_ammo
         ret c
-        ld a,ROCKET_INTERVAL-1
-        ld (gun_wait),a
+        ld a,ROCKET_INTERVAL
+        call gun_rearm
         ld hl,ROCKET_STEP
         call spawn_round
         ld (ix+B_KIND),BK_ROCKET        ; no direct damage: its blast
@@ -186,8 +216,8 @@ gun_fire:
         ret c
         call take_ammo
         ret c
-        ld a,MISSILE_INTERVAL-1
-        ld (gun_wait),a
+        ld a,MISSILE_INTERVAL
+        call gun_rearm
         ld hl,MISSILE_STEP
         call spawn_round
         ld (ix+B_KIND),BK_MISSILE       ; no direct damage: its blast
@@ -213,8 +243,8 @@ gun_fire:
         ret c
         call take_ammo
         ret c
-        ld a,AUTOCANNON_INTERVAL-1
-        ld (gun_wait),a
+        ld a,AUTOCANNON_INTERVAL
+        call gun_rearm
         ld hl,BULLET_STEP
         call spawn_round
         ld a,(sh_kind)
@@ -225,8 +255,8 @@ gun_fire:
         ASSERT PROX_INTERVAL == AUTOCANNON_INTERVAL
 .linked: ; a linked chain gun selected: every one fitted fires a round,
         ; LINK_OFF to the left / right, from its own ammo (LINK_SHOTS)
-        ld a,CHAIN_INTERVAL-1
-        ld (gun_wait),a
+        ld a,CHAIN_INTERVAL
+        call gun_rearm
         xor a
         ld (lk_fired),a
         ld a,(wpn_slots+2*WPN_LINK_L)
@@ -270,8 +300,8 @@ gun_fire:
         ret c
         call take_ammo
         ret c
-        ld a,CHAIN_INTERVAL-1
-        ld (gun_wait),a
+        ld a,CHAIN_INTERVAL
+        call gun_rearm
         ld a,SFX_CHAIN                  ; its sound (the interrupt plays it)
         ld (sfx_req),a
         ; fall through
@@ -755,12 +785,18 @@ lock_update:
         ld a,b
         ld (ret_y),a
         jr lk_clear
-.move:  ld e,RET_STEP
+.move:  push bc
+        ld a,RET_STEP                   ; (pixels a frame's worth)
+        ld hl,ret_frac
+        call fs_amount
+        pop bc
+        ld e,a
         call ret_toward
         jr nc,lk_clear                  ; not on it yet
-        ld hl,lock_t
-        inc (hl)
-        ld a,(hl)
+        ld hl,lock_t                    ; ticks on it
+        ld a,(dt)
+        add a,(hl)
+        ld (hl),a
         cp LOCK_TIME
         jr c,lk_clear
         ld a,2                          ; locked
@@ -773,7 +809,12 @@ lock_update:
         ld c,a
         ld a,(wnd_y)
         ld b,a
-        ld e,RET_WANDER
+        push bc
+        ld a,RET_WANDER
+        ld hl,ret_frac
+        call fs_amount
+        pop bc
+        ld e,a
         call ret_toward
         jr nc,lk_clear
         call zrand                      ; there: somewhere new, within
@@ -1121,8 +1162,8 @@ bomb_drop:
         ret c
         call take_ammo
         ret c
-        ld a,BOMB_INTERVAL-1
-        ld (gun_wait),a
+        ld a,BOMB_INTERVAL
+        call gun_rearm
         ld a,(speed)                    ; (signed: reversing, less)
         add a,BOMB_SPEED
         jp p,.pos
@@ -1141,7 +1182,7 @@ bomb_drop:
         ld (ix+B_YAW),a
         ld a,(yaw)
         ld (ix+B_YAW+1),a
-        ld (ix+B_PIT),BOMB_STEEPEN      ; (the low byte: frames to steeper)
+        ld (ix+B_PIT),BOMB_STEEPEN      ; (the low byte: ticks to steeper)
         ld (ix+B_PIT+1),-BOMB_ANGLE & $FF   ; gliding down
         call rnd_dir
         ld a,SFX_ROCKET                 ; (a release woosh)
@@ -1152,13 +1193,19 @@ bomb_drop:
 
         ASSERT BOMB_ANGLE < MSL_PITCH_MAX && BOMB_STEEPEN > 0
 
-; Bomb IX, before its step: every BOMB_STEEPEN frames (B_PIT's low byte
+; Bomb IX, before its step: every BOMB_STEEPEN ticks (B_PIT's low byte
 ; counts them down) its climb one angle step steeper (B_PIT's high byte),
 ; to -MSL_PITCH_MAX, and its direction afresh
 bomb_steer:
-        dec (ix+B_PIT)
-        ret nz
-        ld (ix+B_PIT),BOMB_STEEPEN
+        ld a,(dt)
+        ld c,a
+        ld a,(ix+B_PIT)
+        sub c
+        jr z,.st
+        jr c,.st
+        ld (ix+B_PIT),a
+        ret
+.st:    ld (ix+B_PIT),BOMB_STEEPEN
         ld a,(ix+B_PIT+1)
         cp -MSL_PITCH_MAX & $FF
         ret z                           ; as steep as it goes
@@ -1216,19 +1263,19 @@ ms_turn:
         sbc hl,de                       ; HL = the turn (wrapping: signed)
         bit 7,h
         jr nz,.neg
-        ld bc,MISSILE_TURN
+        ld bc,(msl_turn)                ; (MISSILE_TURN a frame's worth)
         or a
         sbc hl,bc
         add hl,bc
         jr c,.ok
-        ld hl,MISSILE_TURN
+        ld hl,(msl_turn)
         jr .ok
-.neg:   ld bc,-MISSILE_TURN
+.neg:   ld bc,(msl_turn_n)
         or a
         sbc hl,bc
         add hl,bc
         jr nc,.ok
-        ld hl,-MISSILE_TURN
+        ld hl,(msl_turn_n)
 .ok:    ld de,(ms_old)
         add hl,de
         ex de,hl
@@ -1242,7 +1289,8 @@ ms_turn:
         ld a,1
         ld (ms_chg),a
         ret
-        ASSERT MISSILE_TURN < 64*256    ; (under a quarter turn a frame)
+        ASSERT MISSILE_TURN*DT_MAX*ASSUMED_FPS/TICK_HZ < 64*256 ; (under a
+                                        ; quarter turn a frame)
 
 ; HL = x, DE = z (signed) -> A = the angle of (x, z) from +z towards +x,
 ; 256 a turn (as yaw: 64 = +x).  0 for (0, 0).  For a climb, HL = dy and
@@ -1478,6 +1526,11 @@ round_climb:
 ; turns them).
 ;------------------------------------------------------------------------------
 gun_aim:
+        ld a,(fsteps)                   ; a step a frame's worth
+        or a
+        jr z,.sight
+        ld b,a
+.t:     push bc
         ld a,K_GUN_UP
         call key_held
         jr z,.dn
@@ -1498,10 +1551,10 @@ gun_aim:
         ld (gun_tilt),a
 .ct:    ld a,K_GUN_CTR
         call key_held
-        jr z,.sight
+        jr z,.tn
         ld a,(gun_tilt)
         or a
-        jr z,.sight
+        jr z,.tn
         jp m,.neg
         sub GUN_CTR_STEP                ; tilted up: down towards 0
         jp p,.st
@@ -1511,6 +1564,8 @@ gun_aim:
         jp m,.st
         xor a
 .st:    ld (gun_tilt),a
+.tn:    pop bc
+        djnz .t
 .sight: ld c,VIEW_CY+GUN_SIGHT_DY
         ld a,(wpn_sel)
         cp WPN_CENTRE
@@ -1585,24 +1640,31 @@ sight_rows:
 ; FB_R to the VTOL, humans and base tiles, not to monsters.
 ;------------------------------------------------------------------------------
 lich_update:
-        ld hl,(cam_x+1)                 ; the VTOL's velocity
-        ld de,(lf_px)
+        ld a,(dt)                       ; (no time passed: as it was)
+        or a
+        jr z,.vel
+        ld hl,(cam_x+1)                 ; the VTOL's velocity, a frame's
+        ld de,(lf_px)                   ; worth (per_frame)
         ld (lf_px),hl
         or a
         sbc hl,de
+        call per_frame
         ld (lf_vx),hl
         ld hl,(cam_y)
         ld de,(lf_py)
         ld (lf_py),hl
         or a
         sbc hl,de
+        call per_frame
         ld (lf_vy),hl
         ld hl,(cam_z+1)
         ld de,(lf_pz)
         ld (lf_pz),hl
         or a
         sbc hl,de
+        call per_frame
         ld (lf_vz),hl
+.vel:
         ld a,(vtol_dead)
         or a
         ret nz
@@ -1614,10 +1676,14 @@ lich_update:
         ld a,(iy+15)
         cp ZT_LICH
         jr nz,.nx
-        ld a,(iy+LICH_WAIT)
+        ld a,(iy+LICH_WAIT)             ; (whole frames' worth)
         or a
         jr z,.rdy
-        dec (iy+LICH_WAIT)
+        ld hl,fsteps
+        sub (hl)
+        jr nc,.w
+        xor a
+.w:     ld (iy+LICH_WAIT),a
         jr .nx
 .rdy:   push iy
         call lich_fire
@@ -1670,7 +1736,7 @@ lich_fire:
         ld hl,FB_STEP
         call spawn_round
         ld (ix+B_KIND),BK_FIREBALL
-        ld (ix+B_TGT),FB_FRAMES         ; frames left
+        ld (ix+B_TGT),FB_TICKS          ; ticks left
         ld hl,(lf_x)
         ld (ix+B_X),l
         ld (ix+B_X+1),h
@@ -1810,10 +1876,17 @@ lf_hyp:
 ; the VTOL on the path within FB_HIT_R, ends the path there (b_send), as
 ; reaching the ground does (b_gnd): a burst
 fb_step:
-        dec (ix+B_TGT)
-        jr nz,.v
+        ld a,(dt)                       ; its flight: ticks left
+        ld c,a
+        ld a,(ix+B_TGT)
+        sub c
+        jr z,.e
+        jr nc,.l
+.e:     xor a
         ld a,1
         ld (b_gnd),a
+        xor a
+.l:     ld (ix+B_TGT),a
 .v:     ld a,(vtol_dead)
         or a
         ret nz
@@ -2076,30 +2149,47 @@ pad_service:
         jr nz,.go
         inc a                           ; just landed: start the counts
         ld (svc_on),a
-        ld a,REPAIR_FRAMES
+        ld a,REPAIR_TICKS
         ld (svc_rep),a
         ld hl,svc_rel
         ld b,WPN_SLOTS
 .cl:    ld (hl),0                       ; (0: its interval starts next)
         inc hl
         djnz .cl
-.go:    ld a,(boost_fitted)             ; the booster: refuelled 1 a frame
-        or a
+.go:    ld a,(boost_fitted)             ; the booster: refuelled 1 a frame's
+        or a                            ; worth
         jr z,.nf
+        ld a,(fsteps)
+        ld c,a
         ld a,(boost_fuel)
         cp BOOST_FUEL_MAX
         jr nc,.nf
-        inc a
-        ld (boost_fuel),a
-.nf:    ld hl,svc_rep                   ; repair
-        dec (hl)
-        jr nz,.rl
-        ld (hl),REPAIR_FRAMES
+        add a,c
+        jr c,.fm
+        cp BOOST_FUEL_MAX
+        jr c,.fs
+.fm:    ld a,BOOST_FUEL_MAX
+.fs:    ld (boost_fuel),a
+.nf:    ld a,(dt)                       ; repair: a hit point every
+        ld e,a                          ; REPAIR_TICKS (more in a long frame)
+.rp:    ld a,(svc_rep)
+        sub e
+        jr z,.rpt
+        jr c,.rpt
+        ld (svc_rep),a
+        jr .rl
+.rpt:   neg                             ; (the ticks left over)
+        ld e,a
+        ld a,REPAIR_TICKS
+        ld (svc_rep),a
         ld a,(vtol_hp)
         cp VTOL_HP
-        jr nc,.rl                       ; (undamaged)
+        jr nc,.rq                       ; (undamaged)
         inc a
         ld (vtol_hp),a
+.rq:    ld a,e
+        or a
+        jr nz,.rp
 .rl:    ld ix,wpn_slots                 ; reload, slot by slot
         ld hl,svc_rel
         ld b,WPN_SLOTS
@@ -2110,21 +2200,32 @@ pad_service:
         ld a,(hl)
         ld c,a                          ; C = its full load (WCFG_LOAD)
         inc hl
-        ld a,(hl)                       ; frames a shot (WCFG_RELOAD)
+        ld a,(hl)                       ; ticks a shot (WCFG_RELOAD)
         pop hl
         or a
         jr z,.nx                        ; doesn't reload (or an empty slot)
-        ld b,a                          ; B = frames a shot
-        ld a,(ix+WPN_AMMO)
+        ld b,a                          ; B = ticks a shot
+        ld a,(dt)
+        ld e,a                          ; E = this frame's ticks to use
+.rs:    ld a,(ix+WPN_AMMO)
         cp c
         jr nc,.full
         ld a,(hl)
         or a
         jr nz,.cnt
-        ld (hl),b                       ; a new interval
-.cnt:   dec (hl)
-        jr nz,.nx
-        inc (ix+WPN_AMMO)               ; one more shot
+        ld a,b                          ; a new interval
+.cnt:   sub e
+        jr z,.got
+        jr c,.got
+        ld (hl),a                       ; still loading
+        jr .nx
+.got:   neg                             ; one more shot, and the ticks left
+        ld e,a                          ; over go to the next
+        ld (hl),0
+        inc (ix+WPN_AMMO)
+        ld a,e
+        or a
+        jr nz,.rs
         jr .nx
 .full:  ld (hl),0
 .nx:    inc hl
@@ -2148,11 +2249,15 @@ laser_update:
         or a
         jr nz,.beam
         ld (laser_rec+B_STATE),a        ; no beam this frame
+        ld a,(dt)                       ; cooling down (ticks)
+        ld c,a
         ld a,(las_cool)
         or a
         jr z,.ready
-        dec a                           ; cooling down
-        ld (las_cool),a
+        sub c
+        jr nc,.cs
+        xor a
+.cs:    ld (las_cool),a
         ret
 .ready: call sel_slot
         ld a,(hl)
@@ -2165,16 +2270,27 @@ laser_update:
         ld (las_on),a
         ld a,SFX_LASER                  ; a new pulse: its zap
         ld (sfx_req),a
-.beam:  ld hl,las_on
-        dec (hl)
+.beam:  ld a,(las_on)                   ; this frame's ticks of beam: its
+        ld c,a                          ; damage
+        ld a,(dt)
+        cp c
+        jr c,.pt
+        ld a,c                          ; (the rest of it)
+.pt:    ld (las_t),a
+        ld b,a
+        ld a,c
+        sub b
+        ld (las_on),a
         jr nz,.on
-        ld a,LASER_COOL                 ; last beam frame: cool down next
+        ld a,LASER_COOL                 ; its last: cool down next
         ld (las_cool),a
 .on:    ld ix,laser_rec
         ld hl,LASER_RANGE
         call spawn_round                ; (start of path = the muzzle)
         call aim_apply
-        ld (ix+B_DMG),LASER_DMG         ; per beam frame on a target
+        ld a,(las_t)                    ; LASER_DMG a tick of beam on a target
+        ASSERT LASER_DMG == 1
+        ld (ix+B_DMG),a
         call bullet_step                ; trace it to the first thing it meets
         ld a,(ix+B_STATE)
         or a
@@ -2469,9 +2585,18 @@ bullet_step:
         ld l,(ix+B_SLOPE)
         ld h,(ix+B_SLOPE+1)
         ld (b_slope),hl
-        ld l,(ix+B_S)
-        ld h,(ix+B_S+1)
-        ld (b_send),hl
+        ld l,(ix+B_S)                   ; its path a frame, this frame's worth
+        ld h,(ix+B_S+1)                 ; (the laser's beam: all of it)
+        push ix
+        pop de
+        ld a,e
+        cp low laser_rec
+        jr nz,.sc
+        ld a,d
+        cp high laser_rec
+        jr z,.ns
+.sc:    call fs_mul
+.ns:    ld (b_send),hl
         ld a,(ix+B_DMG)
         ld (b_dmg),a
         ld a,(ix+B_KIND)                ; a proximity shell: monsters' hit
@@ -3395,7 +3520,12 @@ udiv24:
 ;==============================================================================
 ; Weapons page data
 ;==============================================================================
-gun_wait:   db 0                        ; frames until the gun can fire again
+gun_wait:   db 0                        ; ticks until the gun can fire again
+gun_ovs:    db 0                        ; (gun_fire: ticks past due, 0 or less)
+las_t:      db 0                        ; laser_update: ticks of beam this frame
+msl_turn:   dw 0                        ; MISSILE_TURN this frame (update_weapons),
+msl_turn_n: dw 0                        ;   and its negative
+ret_frac:   db 0                        ; the reticule's moves: their fraction
 svc_on:     db 0                        ; pad_service: 1 once the counts started,
 svc_rep:    db 0                        ;   frames to the next hit point,
 svc_rel:    ds WPN_SLOTS                ;   and to each slot's next shot

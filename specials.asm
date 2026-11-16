@@ -190,7 +190,16 @@ spec_update:
         call devil_move                 ; (devil.asm)
         jr .nx
 .gh:    call g_params                   ; a ghost or banshee: its settings
+        ld a,(fsteps)                   ; and a frame's worth at a time:
+        or a                            ; deciding, flying, blows, fading
+        jr z,.nx
+.gm:    push af
         call ghost_move
+        pop af
+        bit 0,(ix+10)
+        jr z,.nx                        ; (gone)
+        dec a
+        jr nz,.gm
 .nx:    ld de,ZREC
         add ix,de
         pop bc

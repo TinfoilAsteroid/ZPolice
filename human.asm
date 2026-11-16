@@ -302,10 +302,17 @@ hum_unload_all:
 human_update:
         xor a
         ld (hu_moved),a
+        ld a,(fsteps)                   ; a frame's worth at a time: running,
+        or a                            ; fleeing, waving, getting off
+        ret z
+.st:    push af
         ld hl,hanim
         inc (hl)
         call .upd
         call hum_flee
+        pop af
+        dec a
+        jr nz,.st
         ld a,(hu_moved)
         or a
         ret z

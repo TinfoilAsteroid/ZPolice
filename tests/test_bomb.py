@@ -63,7 +63,7 @@ def angle(a, b):
 def test_glide_from_the_ceiling():
     path, cam, hp0, hp1 = drop(sym["MAX_Y"])
     x1, y1, z1 = path[-1]
-    n = sym["BOMB_STEEPEN"]
+    n = sym["BOMB_STEEPEN"] // sym["CLK_TEST_DT"]  # (ticks: frames of CLK_TEST_DT in the tests)
     first = angle(path[1], path[1 + n - 1])     # (before its first step)
     later = angle(path[-1 - n], path[-1])
     zp.note(f"{len(path)} frames, landed {z1 - cam[2]} units ahead at height {y1}; "

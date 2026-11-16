@@ -224,8 +224,49 @@ tick count below is converted as:
 Real hardware renders faster than the emulator. Re-balancing for it is
 then one constant: `ASSUMED_FPS`.
 
+### Done so far
+- [x] (2026-11-15) The research: `docs/CTC.md` covers the CTC, the Next's
+  interrupt registers, hardware IM 2 mode, and reviews of the CSpect and
+  taylorza examples.
+- [x] (2026-11-16) Zombie decisions spread one record a frame, with every
+  step checked: see §3, Zombies.
+- [x] (2026-11-16) §1-§4 done, on the 50 Hz clock (README, "Game time";
+  tests/test_timing.py; all 28 test files pass). How, where it differs from
+  the plan below:
+  - **No "ready at" time stamps:** intervals count down by dt, the
+    overshoot carried so a rate holds (`gun_rearm`, the zombies' blows).
+    Countdowns are relative, so save games needed no change.
+  - **dt with no fraction, as planned:** movement is scaled by `fs`
+    (dt × `ASSUMED_FPS` / 50, 8.8, from `fs_tab` made at assembly) rather
+    than a table per speed: one table serves every speed.
+  - **Whole frames' worth (`fsteps`)** for discrete steps and frame-tuned
+    behaviour: the speed and nose keys, air brake, damper, boost fuel, gun
+    tilt; ghosts and banshees, humans, the devil's walk and sinking,
+    particles, the shake, a zombie's stuck wait, the walk cycle, a lich's
+    reload. Those keep their tuning exactly; at high frame rates they move
+    in whole frames' steps (0 some frames).
+  - **Values that didn't fit a byte as ticks** stay frames' worth: a
+    lich's reload (150 frames = 536 ticks), `ZWAIT` (100 frames).
+  - **Your tick values are in:** the linked guns 4, the laser 10 on 6
+    off and 1 damage a tick, reloads 2 / 50 / 100 / 20 / 150, repairs 2 a
+    point, lock 100, the slot flash 5. Disembarking: one a second
+    (`DISEMBARK`, 14 frames' worth). The devil's spin is 32 ticks (256 /
+    `SPIN_FR` must be whole).
+  - **The tests** run with `clk_test`: 4 ticks and exactly one frame's
+    worth a frame.
+- Still open from §1-§4:
+  - [ ] The VTOL's collision isn't sub-stepped: at `DT_MAX` a boosted move
+    is 125 units, under half a cell, so it can't pass through a building.
+    Only needed if `DT_MAX` or the speeds go up.
+  - [ ] The rounds' performance ideas (§3, Rounds): tile-crossing tests,
+    monster tiles only, the ground point.
+  - [ ] The wreck's fire and debris (`wreck_fx`) still come every 2nd /
+    4th rendered frame (visual only).
+  - [ ] Smoother ghosts, humans and particles at high frame rates: scale
+    their moves by fs instead of whole frames' worth.
+
 ### 1. Foundation
-- [ ] **The game clock** (resident, `game_now`):
+- [x] **The game clock** (resident, `game_now`):
   - a 16-bit tick count advanced by the interrupt only while playing;
   - stopped while paused, on the menu screens, in the debug level select,
     on the load-out screen, and while a level loads;
@@ -234,14 +275,14 @@ then one constant: `ASSUMED_FPS`.
     or 1 kHz CTC tick) re-scales every interval at build time;
   - reading it atomically: DI/EI around the two bytes, or read twice and
     compare.
-- [ ] **Timer helpers:**
+- [x] **Timer helpers:**
   - `TIMER_SET var, ticks` (`var = now + ticks`);
   - `TIMER_DUE var`: carry clear when `now - var >= 0`, a signed 16-bit
     compare that is safe across the wrap. That allows intervals up to
     32767 ticks: 11 minutes at 50 Hz, 32 s at 1 kHz.
   - For rates (gunfire), add the interval to the old ready time, not to
     `now`, so the average rate holds when frames are long.
-- [ ] **The frame's elapsed time** `dt`:
+- [x] **The frame's elapsed time** `dt`:
   - a 16-bit integer: the ticks since the last rendered frame, worked out
     once a frame in `main_loop`;
   - the counter rolls over (new < last). A plain 16-bit `new - last`
@@ -255,15 +296,15 @@ then one constant: `ASSUMED_FPS`.
     per-frame speeds and `ASSUMED_FPS`.
   - Logic timed in ticks (intervals, cool-downs) uses dt, or the clock,
     as a whole number of ticks.
-- [ ] **Tests:**
+- [x] **Tests:**
   - give the emulator's tests a way to drive `game_now` themselves (poke
     it, or a mode where it advances a fixed amount a frame), so that the
     tests stay deterministic;
   - add a test helper, `zp.advance(cpu, ms)`.
-- [ ] **Save games:** store timers as time remaining, not as absolute
+- [x] **Save games:** store timers as time remaining, not as absolute
   ticks, or restart them on loading. Bump `SG_VERSION`.
 ### 2. Weapons: rate of fire, cool-down, reloading
-- [ ] **`gun_wait`** becomes a "ready at" time, with the intervals in ms:
+- [x] **`gun_wait`** becomes a "ready at" time, with the intervals in ms:
   - `GUN_INTERVAL` 4 frames: 285 ms;
   - `CHAIN_INTERVAL` 1: 71 ms;
   - `ROCKET_INTERVAL` / `MISSILE_INTERVAL` 7: 500 ms;
@@ -273,9 +314,9 @@ then one constant: `ASSUMED_FPS`.
   The chain gun is the case to watch: at 14 fps it fires once a frame. At
   a lower frame rate a fixed rate means firing 2 rounds some frames, or
   capping at 1 a frame. Decide which.
-- [ ] **The linked chain guns:** a round every **4 ticks** (80 ms),
+- [x] **The linked chain guns:** a round every **4 ticks** (80 ms),
   alternating sides (`lk_fired`) as now.
-- [ ] **Pulse laser:** **10 ticks on** (200 ms) and **6 ticks off**
+- [x] **Pulse laser:** **10 ticks on** (200 ms) and **6 ticks off**
   (120 ms) (`LASER_ON`, `LASER_COOL`; now 3 and 8 frames: 214 ms on, 570
   ms off). That is a much higher duty cycle: 63% on, against 27% now.
   - While it's on, check every frame whether the beam hits a target.
@@ -283,7 +324,7 @@ then one constant: `ASSUMED_FPS`.
     1). A frame's hit does 1 × dt (the ticks since the last frame,
     counting only the on phase), so a 10-tick pulse does 10 points
     whatever the frame rate.
-- [ ] **Reloading on the pad** (`pad_service`), ticks a shot:
+- [x] **Reloading on the pad** (`pad_service`), ticks a shot:
 
   | Load | Now | New |
   |---|---|---|
@@ -294,13 +335,13 @@ then one constant: `ASSUMED_FPS`.
   | `BOMB_RELOAD` | 30 (2.1 s) | **150 ticks** (3 s) |
   | Repairs | a point a frame | **2 ticks a point** |
   | `DISEMBARK` | a passenger a second (14 frames) | **one a second: 50 ticks** |
-- [ ] **Missile lock:** `LOCK_TIME` **100 ticks** (2 s, as now: 28
+- [x] **Missile lock:** `LOCK_TIME` **100 ticks** (2 s, as now: 28
   frames). `RET_STEP` / `RET_WANDER` (the reticule's pixels a frame) by
   dt.
-- [ ] **Weapon slot flash** `WFLASH`: **5 ticks** (100 ms; now 5 frames,
+- [x] **Weapon slot flash** `WFLASH`: **5 ticks** (100 ms; now 5 frames,
   357 ms). Implement it on the clock.
 ### 3. Movement (by `dt`)
-- [ ] **The VTOL** (player.asm) first, because the player feels it most:
+- [x] **The VTOL** (player.asm) first, because the player feels it most:
   - `SPEED_MAX` / `SPEED_MIN` / `BOOST_SPEED` (units a frame),
     `CLIMB_RATE`, `YAW_RATE` / `YAW_FINE`, the strafe
     (`STRAFE_D_HALVES`);
@@ -313,7 +354,7 @@ then one constant: `ASSUMED_FPS`.
   Its building collisions test one frame's move. With a long `dt`, test
   in sub-steps of at most a normal frame's move, so it can't pass through
   a wall.
-- [ ] **Rounds:**
+- [x] **Rounds:**
   - `BULLET_STEP` 457, `ROCKET_STEP` 137, `MISSILE_STEP` 68 and `FB_STEP`
     182 units a frame;
   - Performance, with the longer paths:
@@ -328,30 +369,33 @@ then one constant: `ASSUMED_FPS`.
 
   Their hit tests already sweep the frame's whole path (`B_PX`): keep
   that with the longer paths.
-- [ ] **Zombies:**
-  - Their decisions are now taken one record a frame (`zdec_i`, every
-    NMON = 48 frames each), with every step checked against the next
-    tile, so none walks into a building between decisions. That spreads
-    a CPU cost over the frames, so it stays per frame. Only the walking
-    is by dt.
+- [x] **Zombie decisions** (done 2026-11-16): taken one record a frame
+  (`zdec_i`, round the NMON = 48 records: each walker every 48 frames,
+  ghouls and a lich included), with every step checked against the next
+  tile. A building or the map's edge within `ZMARGIN`: it stops and turns
+  90 degrees at random; a base tile: it goes for it. So none walks into a
+  building between decisions. Map blips also move on a cell change.
+  tests/test_zombie_moves.py. This spreads a CPU cost over the frames, so
+  it stays per frame; only the walking below goes by dt.
+- [x] **Zombies' walking:**
   - `zspeed` (`ZSPEED_INIT`, units a frame), and `zsteps` (now only the
     decision's look-ahead: 10 frames of walking);
   - standing still when stuck, `ZWAIT` 100 frames (7 s);
   - their walking animation steps.
-- [ ] **Specials:**
+- [x] **Specials:**
   - ghosts: `GHOST_CLIMB`, `GHOST_DECIDE` (30 frames), roaming;
   - banshees' and ghouls' speeds (`zcalc_step`);
   - the lich (4 × a zombie's speed);
   - the devil: `DV_STEP_FR` (24 frames a step), `DV_STEP_U`, `DV_SINK`.
-- [ ] **Humans:** `HUMAN_RUN` / `HUMAN_FLEE` (9 units a frame),
+- [x] **Humans:** `HUMAN_RUN` / `HUMAN_FLEE` (9 units a frame),
   `FLEE_TIME` (a second).
-- [ ] **The wreck:** `DEAD_SPIN`, `DEAD_FALL_MAX`.
-- [ ] **Particles:** velocities and `PART_GRAV` per frame. They are visual
+- [x] **The wreck:** `DEAD_SPIN`, `DEAD_FALL_MAX`.
+- [x] **Particles:** velocities and `PART_GRAV` per frame. They are visual
   only, so this is the lowest priority: they could stay per rendered
   frame.
 
 ### 4. Attacks and the monsters' timing
-- [ ] **Zombies hitting** the base, barricades and humans: `ZHIT_FRAMES`
+- [x] **Zombies hitting** the base, barricades and humans: `ZHIT_FRAMES`
   5 (357 ms). This is the base's real damage rate: at 30 fps the base
   takes twice the damage per second it does at 14. It is the first of
   these to fix: it affects fairness the most.
@@ -373,18 +417,18 @@ changing `ASSUMED_FPS` re-scales them all). At 14 fps:
 | `GHOST_FADE_FRAMES` (a step) | 3 | 11 |
 | `HUM_FLASH` | 2 | 7 |
 
-- [ ] **Ghosts' blows:** `GHOST_HIT_FRAMES` 10 (714 ms).
-- [ ] **Banshees' attack rate** and anything else counted per frame in
+- [x] **Ghosts' blows:** `GHOST_HIT_FRAMES` 10 (714 ms).
+- [x] **Banshees' attack rate** and anything else counted per frame in
   specials.asm.
-- [ ] **A lich's shots:** `LICH_WAIT` / `LICH_FRAMES` (now `LICH_RATE` 150
+- [x] **A lich's shots:** `LICH_WAIT` / `LICH_FRAMES` (now `LICH_RATE` 150
   frames less 5 a city: 10.7 s down to 7.5 s at 14 fps). Make them ms.
   (Did the 150 frames mean 3 s? At 14 fps they are 10.7 s.)
-- [ ] **The devil:**
+- [x] **The devil:**
   - `DV_CHARGE_T` / `DV_HUM_T` already count `isr_ticks` (real time);
   - `BOLT_FRAMES`, `SPIN_FR` (the VTOL's spin when hit), `DV_DIE_FR` and
     `DV_DIE_PARTS` are per frame: make the spin and the death last a fixed
     time.
-- [ ] **Waves and levels:**
+- [x] **Waves and levels:**
   - `DEAD_PAUSE` (50 frames on the ground before GAME OVER: 3.6 s at 14
     fps, meant as about 2 s?);
   - the screen shake (`SHAKE_LEN` 6 frames, `shake_big`) as time;

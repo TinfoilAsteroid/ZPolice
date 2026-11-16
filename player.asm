@@ -14,6 +14,9 @@
 update_player:
         xor a
         out ($FE),a                     ; border back to black
+        ld hl,YAW_RATE                  ; this frame's turn (a frame's worth)
+        call fs_mul
+        ld (yaw_step),hl
         ; remember position in case we fly into something
         ld hl,cam_x                     ; (and the heading: turning swings
         ld de,old_pos                   ; the VTOL's nose and tail)
@@ -40,9 +43,16 @@ update_player:
         ld a,K_BOOST
         call key_pressed
         jr nz,.boff                     ; pressed again: off
-        ld hl,boost_fuel
-        dec (hl)
-        jr nz,.bkeep                    ; still burning
+        ld a,(fsteps)                   ; a fuel a frame's worth
+        ld c,a
+        ld a,(boost_fuel)
+        sub c
+        jr z,.bout
+        jr c,.bout
+        ld (boost_fuel),a
+        jr .bkeep                       ; still burning
+.bout:  xor a
+        ld (boost_fuel),a
 .boff:  ld a,(boost_spd)                ; off (or out of fuel): the speed it
         ld (speed),a                    ; had before
 .bend:  xor a
@@ -85,15 +95,23 @@ update_player:
         ld a,(speed)
         bit 7,a
         jr z,.lq                        ; not reversing: no
-        inc a
-        ld (speed),a
+        ld hl,fsteps
+        add a,(hl)
+        jp m,.lqs
+        xor a                           ; (not past 0)
+.lqs:   ld (speed),a
 .lq:    ld a,K_SPEED_DN
         call key_held
         jr z,.lb
         ld a,(speed)
-        dec a
-        jp m,.lb                        ; at 0 or reversing: no
-        ld (speed),a
+        or a
+        jr z,.lb                        ; at 0 or reversing: no
+        jp m,.lb
+        ld hl,fsteps
+        sub (hl)
+        jr nc,.lds
+        xor a                           ; (not past 0)
+.lds:   ld (speed),a
 .lb:    ld a,(speed)
         or a
         jp z,.na                        ; stopped (Z: nothing to brake)
@@ -107,22 +125,29 @@ update_player:
         jp .brk                         ; braked, as by the air brake
 .fly:
         ; --- speed ---
-        ld a,K_SPEED_UP                 ; (by SPEED_STEP, 1)
+        ld a,K_SPEED_UP                 ; (by SPEED_STEP, 1, a frame's worth)
         call key_held
         jr z,.nq
         ld a,(speed)
-        cp SPEED_MAX
-        jr z,.nq
-        inc a
-        ld (speed),a
+        ld hl,fsteps
+        add a,(hl)
+        jp m,.qs                        ; (still reversing)
+        cp SPEED_MAX+1
+        jr c,.qs
+        ld a,SPEED_MAX
+.qs:    ld (speed),a
 .nq:    ld a,K_SPEED_DN
         call key_held
         jr z,.na
         ld a,(speed)
-        cp (SPEED_MIN) & $FF
-        jr z,.na
-        dec a
-        ld (speed),a
+        ld hl,fsteps
+        sub (hl)
+        jp p,.ds
+        cp SPEED_MIN & $FF              ; (reversing: not below SPEED_MIN)
+        jr nc,.ds
+        ld a,SPEED_MIN & $FF
+.ds:    ld (speed),a
+        ASSERT SPEED_STEP == 1
 .na:    ; --- air brake: while held, the speed falls AIRBRAKE_STEP a frame
         ; towards 0, going forwards or backwards.  Each braking frame tips the
         ; nose one pitch step, as a nose key press does: up when braking
@@ -154,6 +179,13 @@ update_player:
         or a
         jr z,.stp                       ; stopped: nothing to brake
         ld (ab_on),a                    ; (non-zero: braking this frame)
+        ld a,(fsteps)                   ; a step a frame's worth
+        or a
+        jr z,.nw
+        ld b,a
+.bl:    ld a,(speed)
+        or a
+        jr z,.nw
         jp m,.rev
         sub AIRBRAKE_STEP               ; forwards: slower, not past 0
         jr nc,.fwd
@@ -163,10 +195,10 @@ update_player:
         ld (pitch_frac),a               ; whole steps, as the keys
         ld a,(pitch)
         cp PMAX
-        jr z,.nw
+        jr z,.bn
         inc a                           ; nose up
         ld (pitch),a
-        jr .nw
+        jr .bn
 .rev:   add a,AIRBRAKE_STEP             ; backwards: towards 0, not past it
         jr nc,.bk
         xor a
@@ -175,9 +207,10 @@ update_player:
         ld (pitch_frac),a
         ld a,(pitch)
         cp (-PMAX) & $FF
-        jr z,.nw
+        jr z,.bn
         dec a                           ; nose down
         ld (pitch),a
+.bn:    djnz .bl
         jr .nw
 .stp:   xor a                           ; stopped: the lightning's brake off
         ld (bolt_brake),a
@@ -187,7 +220,7 @@ update_player:
         ld a,K_LEFT
         call key_held
         jr z,.ns
-        ld de,YAW_RATE
+        ld de,(yaw_step)
         ld a,K_LEFT
         call key_pressed
         jr z,.lr
@@ -199,7 +232,7 @@ update_player:
 .ns:    ld a,K_RIGHT
         call key_held
         jr z,.nf
-        ld de,YAW_RATE
+        ld de,(yaw_step)
         ld a,K_RIGHT
         call key_pressed
         jr z,.rr
@@ -208,13 +241,24 @@ update_player:
         add hl,de
         ld (yaw_frac),hl
 .nf:    ld a,(spin_t)                   ; the devil's lightning: spun round
-        or a                            ; (spin_rate a frame, devil.asm)
-        jr z,.nsp
-        dec a
+        or a                            ; (spin_rate a tick for spin_t ticks,
+        jr z,.nsp                       ; devil.asm)
+        ld c,a
+        ld a,(dt)
+        cp c
+        jr c,.sp1
+        ld a,c                          ; (the last of it)
+.sp1:   ld b,a
+        ld a,c
+        sub b
         ld (spin_t),a
+        ld a,b
+        or a
+        jr z,.nsp
         ld hl,(yaw_frac)
         ld de,(spin_rate)
-        add hl,de
+.sp2:   add hl,de
+        djnz .sp2
         ld (yaw_frac),hl
 .nsp:
         ; --- pitch ---
@@ -222,22 +266,32 @@ update_player:
         call key_held
         jr z,.ng
         xor a
-        ld (pitch_frac),a               ; keys move in whole steps
-        ld a,(pitch)
+        ld (pitch_frac),a               ; keys move in whole steps, a step
+        ld a,(fsteps)                   ; a frame's worth
+        or a
+        jr z,.ng
+        ld b,a
+.pd:    ld a,(pitch)
         cp (-PMAX) & $FF
         jr z,.ng
         dec a
         ld (pitch),a
+        djnz .pd
 .ng:    ld a,K_NOSE_UP
         call key_held
         jr z,.nt
         xor a
         ld (pitch_frac),a
-        ld a,(pitch)
+        ld a,(fsteps)
+        or a
+        jr z,.nt
+        ld b,a
+.pu:    ld a,(pitch)
         cp PMAX
         jr z,.nt
         inc a
         ld (pitch),a
+        djnz .pu
 .nt:    ; --- pitch damper: ease back to level when the pitch keys are released
         ; (and the air brake isn't tipping the nose)
         ld a,(ab_on)
@@ -249,11 +303,18 @@ update_player:
         ld a,K_NOSE_DN
         call key_held
         jr nz,.held
+        ld a,(fsteps)                   ; (frames' worth)
+        or a
+        jr z,.pdx
+        ld b,a
+.pdl:   push bc
         ld hl,pd_count
         dec (hl)
-        jr nz,.pdx
+        jr nz,.pdn
         ld (hl),PDAMP_FRAMES
         call pitch_damp
+.pdn:   pop bc
+        djnz .pdl
         jr .pdx
 .held:  ld a,PDAMP_FRAMES               ; a full interval after letting go
         ld (pd_count),a
@@ -262,8 +323,12 @@ update_player:
         ld a,K_CLIMB
         call key_held
         jr z,.ne
+        ld a,CLIMB_RATE                 ; (a frame's worth)
+        ld hl,cy_frac
+        call fs_amount
+        ld e,a
+        ld d,0
         ld hl,(cam_y)
-        ld de,CLIMB_RATE
         add hl,de
         ld de,MAX_Y                     ; the ceiling: higher with the
         ld a,(vthrust_fitted)           ; vertical thrusters
@@ -275,9 +340,14 @@ update_player:
 .ne:    ld a,K_DESCEND
         call key_held
         jr z,.nd
+        ld a,CLIMB_RATE
+        ld hl,cy_frac
+        call fs_amount
+        ld e,a
+        ld d,0
         ld hl,(cam_y)
-        ld de,-CLIMB_RATE
-        add hl,de
+        or a
+        sbc hl,de
         ld de,MIN_Y
         call max_hl_de
         push hl                         ; and not below the floor under the
@@ -291,12 +361,14 @@ update_player:
         ld a,(speed)
         or a
         jr z,.moved
+        ld h,a                          ; this frame's: speed * fs, 8.8
+        ld l,0
+        call fs_mul
+        ld (spd88),hl
         ld a,(yaw)
         call get_sin
         ex de,hl
-        ld a,(speed)
-        ld h,a
-        ld l,0
+        ld hl,(spd88)
         call fmul                       ; HL = speed*sin in 1/256 units
         ld ix,cam_x
         call add_pos
@@ -304,9 +376,7 @@ update_player:
         add a,64
         call get_sin
         ex de,hl
-        ld a,(speed)
-        ld h,a
-        ld l,0
+        ld hl,(spd88)
         call fmul
         ld ix,cam_z
         call add_pos
@@ -379,7 +449,7 @@ strafe:
         rr e                            ; half
         add hl,hl                       ; twice
         add hl,de
-        ret
+        jp fs_mul                       ; (a frame's worth)
         ASSERT STRAFE_D_HALVES == 5     ; (.d: 2 + 1/2)
 
 ; IX -> 24-bit position (frac, lo, hi). HL = signed delta in 1/256 units.
@@ -465,16 +535,23 @@ vtol_wreck:
         ld a,(dead_down)
         or a
         jr nz,.down
-        ld hl,(yaw_frac)                ; spin
-        ld de,DEAD_SPIN
+        ld hl,DEAD_SPIN                 ; spin (a frame's worth)
+        call fs_mul
+        ex de,hl
+        ld hl,(yaw_frac)
         add hl,de
         ld (yaw_frac),hl
-        ld a,(dead_vy)                  ; fall, faster each frame
+        ld a,(fsteps)                   ; fall, faster each frame's worth
+        ld c,a
+        ld a,(dead_vy)
+        add a,c
         cp DEAD_FALL_MAX
-        jr nc,.vy
-        inc a
-        ld (dead_vy),a
-.vy:    ld e,a
+        jr c,.vy
+        ld a,DEAD_FALL_MAX
+.vy:    ld (dead_vy),a
+        ld hl,dv_frac
+        call fs_amount
+        ld e,a
         ld d,0
         ld hl,(cam_y)
         or a
@@ -494,9 +571,15 @@ vtol_wreck:
         ld (dead_down),a
 .set:   ld (cam_y),hl
         ret
-.down:  ld hl,dead_wait                 ; on the ground: the pause, then
-        dec (hl)                        ; GAME OVER
-        ret nz
+.down:  ld a,(dt)                       ; on the ground: the pause (ticks),
+        ld c,a                          ; then GAME OVER
+        ld a,(dead_wait)
+        sub c
+        jr z,.go
+        jr c,.go
+        ld (dead_wait),a
+        ret
+.go:
         ld a,1
         ld (game_over),a
         ret
@@ -540,3 +623,7 @@ old_pos:    ds 10                       ; cam_x, cam_z, cam_y, yaw before the mo
 st_a:       db 0                        ; strafe: the pulse's direction
 pd_count:   db PDAMP_FRAMES             ; frames to the next damping step
 ab_on:      db 0                        ; non-zero: the air brake acted this frame
+yaw_step:   dw 0                        ; YAW_RATE this frame
+spd88:      dw 0                        ; speed this frame (8.8)
+cy_frac:    db 0                        ; climbing: the fraction carried
+dv_frac:    db 0                        ; the wreck's fall: the fraction carried
