@@ -8,7 +8,7 @@ rem            build release   -> then a release build in release\: no debug
 rem                               keys, load-out or upgrades (the tests run on
 rem                               the debug build first; release_check on it).
 rem                               With run (and mute) it launches that one
-rem            (without release, the build is also bundled into Debug\: the
+rem            (without release, the build is also bundled into debug\: the
 rem             game, its map and symbols, ZPDATA and the manual, as release\
 rem             is: tools\make_release.py debug)
 rem            build hardware  -> for a real Next: -DREAL_HARDWARE, so DMA+ is

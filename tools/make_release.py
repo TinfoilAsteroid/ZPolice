@@ -8,7 +8,7 @@ SAVEGAME.ZPS), and the player's manual, docs/MANUAL.txt.
     release/MANUAL.txt
 
     python tools/make_release.py          the release folder
-    python tools/make_release.py debug    the Debug folder, the same way from
+    python tools/make_release.py debug    the debug folder, the same way from
                                           the normal (debug) build: zpolice.nex
                                           and its zpolice.map and zpolice.sym
                                           (for CSpect's debugger), ZPDATA,
