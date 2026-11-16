@@ -190,6 +190,32 @@ Things to watch:
   1.5 fps at 14-18 fps. Projecting corners (~29% of a frame) is still the
   largest cost, and DMA+ doesn't touch it.
 
+## Menu music on the DACs (2026-11-16, to do)
+
+Music on the screens outside the game, from the 8-bit DACs: the DMA
+streaming it from the SD card through a 16K ring (docs/DAC.md, "Plan:
+music on the main menu").
+- [ ] **Create the music (to do: the author).** A track for the menus that
+      loops cleanly (its end runs into its start). Any length: it streams
+      from the SD card, about 15K a second. Hand it over as a WAV: it's
+      turned into `ZPDATA/MENU.ZPM` (raw unsigned 8-bit mono, 15,625 Hz) by
+      a tool, so any rate or bit depth will do, but mix it for 8-bit mono
+      (no quiet detail that 8 bits would lose; nothing that needs stereo).
+- [ ] Until then: a test track (a tone or a beat) to build the player with.
+- [ ] Check on CSpect and a real Next: the DMA prescaler's rate, the DMA's
+      address read back, the DACs heard (NextReg `$08` bit 3).
+- [ ] The DACs on at start-up (`$08` bit 3).
+- [ ] The player: the ring in slots 3 and 4, the DMA looping over it
+      (burst, prescaler 56, auto restart), refilled from the file each
+      `menu_frame`, looping at the file's end.
+- [ ] Stop and start it around screen changes (`screen320`: the screens'
+      own DMA), loading and saving, and for good when a game starts (slots
+      3 and 4 back).
+- [ ] Without the file: silence, as now.
+- [ ] Model the DAC writes and the DMA's prescaler in tools/nexsim.py, for
+      the tests (the music's position stepping on, the refills, the
+      stops).
+
 ## Timing: real time instead of frame counting (2026-11-15, to review)
 
 See docs/CTC.md. The game logic runs once per rendered frame. Every speed is
@@ -260,8 +286,9 @@ then one constant: `ASSUMED_FPS`.
     Only needed if `DT_MAX` or the speeds go up.
   - [ ] The rounds' performance ideas (§3, Rounds): tile-crossing tests,
     monster tiles only, the ground point.
-  - [ ] The wreck's fire and debris (`wreck_fx`) still come every 2nd /
-    4th rendered frame (visual only).
+  - [x] The wreck's fire and debris (`wreck_fx`) come every 2nd / 4th
+    rendered frame (visual only): left so (decided 2026-11-16). It's the
+    crash before GAME OVER, so its timing doesn't matter.
   - [ ] Smoother ghosts, humans and particles at high frame rates: scale
     their moves by fs instead of whole frames' worth.
 
