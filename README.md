@@ -33,6 +33,12 @@ build.bat release  # ...then the release build, in release/ (also: build.bat rel
 build.bat hardware # ...for a real Next, with DMA+ (also: build.bat release hardware)
 ```
 
+Every build without `release` is also bundled into `Debug/`, the way
+`release/` is (`tools/make_release.py debug`): `zpolice.nex` with its
+`zpolice.map` and `zpolice.sym` (CSpect's debugger), `ZPDATA/` (the files
+the game reads) and `MANUAL.txt`. Copy the folder to an SD card to try a
+debug build on a Next.
+
 **Hardware build:** `build.bat hardware` assembles with `-DREAL_HARDWARE`, which
 lets the DMA routines use DMA+ (the zxnDDMA, the blitter in core 3.03.00:
 `docs/ZXNDDMA.md` has how it's programmed, from the Next distribution's guide).

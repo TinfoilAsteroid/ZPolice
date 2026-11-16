@@ -8,6 +8,9 @@ rem            build release   -> then a release build in release\: no debug
 rem                               keys, load-out or upgrades (the tests run on
 rem                               the debug build first; release_check on it).
 rem                               With run (and mute) it launches that one
+rem            (without release, the build is also bundled into Debug\: the
+rem             game, its map and symbols, ZPDATA and the manual, as release\
+rem             is: tools\make_release.py debug)
 rem            build hardware  -> for a real Next: -DREAL_HARDWARE, so DMA+ is
 rem                               used and core 3.03.00 needed.  CSpect has no
 rem                               DMA+, so run is ignored.  Also:
@@ -42,6 +45,7 @@ python gentables.py || exit /b 1
 if "%TESTS%"=="1" python tests\run_tests.py || exit /b 1
 
 if "%RELEASE%"=="1" goto release
+python tools\make_release.py debug || exit /b 1
 if "%RUN%"=="run" "%CSPECT%" -w3 -zxnext -s28 -debug %MUTE% -rewind -nextrom -nodelay -map=zpolice.map "%~dp0zpolice.nex"
 exit /b 0
 
