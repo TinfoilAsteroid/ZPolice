@@ -522,7 +522,63 @@ def test_death_ends_the_game():
         zp.check(not alive, f"{len(alive)} monsters still alive with it dying")
         zp.check(cpu.rd(sym["level_done"]) == 0, "the level over before it has sunk")
         zp.run_until(cpu, lambda: cpu.pc == sym["game_complete_screen"] and cpu.mmu[6] == sym["PAGE_MENU"],
-                     "the congratulations", limit=200 * zp.FRAME_T)
+                     "the congratulations", limit=400 * zp.FRAME_T)
+    finally:
+        sd.close()
+
+
+def test_storm():
+    """Gone into the ground: STORM_T ticks of lightning from the pit, the
+    buildings around coming down, the VTOL untouched; then the game is
+    complete"""
+    sd, cpu = devil_game()
+    try:
+        r = devils(cpu)[0]
+        zp.set_camera(cpu, 32 * 256 << 8, 30 * 256 << 8, 60, yaw=128)
+        cpu.wr(r + 7, 1)
+        cpu.wr(r + 18, 5)
+        cpu.wr(r + sym["LICH_HP_HI"], 0)
+        x, z = cpu.rd16(r), cpu.rd16(r + 2)
+        drop(cpu, sym["BK_ROCKET"], x + 60, z, 300)
+        zp.run_until(cpu, lambda: not cpu.rd(r + 10) & 1, "it gone", limit=100 * zp.FRAME_T)
+        zp.frames(cpu, 1)               # (the storm starts as it goes)
+        st = cpu.rd16(sym["storm_t"])
+        zp.check(0 < st <= sym["STORM_T"], f"no storm when it's gone (storm_t {st})")
+        cx, cz = cpu.rd(sym["storm_cx"]), cpu.rd(sym["storm_cz"])
+        zp.check((cx, cz) == (x >> 8, z >> 8), f"the storm at {cx},{cz}, not where it sank")
+        R, cm = sym["STORM_R"], sym["city_map"]
+        cells = [(cx + dx, cz + dz) for dx in range(-R, R) for dz in range(-R, R)
+                 if 0 <= cx + dx < 64 and 0 <= cz + dz < 64]
+        bld = lambda: sum(1 for a, b in cells if 1 <= cpu.rd(cm + b * 64 + a) & sym["CELL_CODE"] < 15)
+        b0, hp0 = bld(), cpu.rd(sym["vtol_hp"])
+        zp.set_camera(cpu, (cx * 256 + 128) << 8, ((cz - 3) * 256) << 8, 60)    # (looking at the pit)
+        seen = 0
+        for _ in range(6):
+            zp.frames(cpu, 1)
+            seen = max(seen, sum(row.count(sym["BOLT_COL"]) for row in shown(cpu)))
+        zp.check(seen > 20, f"the storm's bolts not drawn ({seen} pixels)")
+        bolts, strikes, shook = 0, [0, 0], 0
+        half = sym["STORM_T"] // 2
+        prev = [cpu.rd(sym["sb_t"] + i) for i in range(sym["NSTORM"])]
+        while cpu.rd16(sym["storm_t"]):
+            zp.check(cpu.rd(sym["level_done"]) == 0, "the level over during the storm")
+            late = cpu.rd16(sym["storm_t"]) < half
+            zp.frames(cpu, 1)
+            now = [cpu.rd(sym["sb_t"] + i) for i in range(sym["NSTORM"])]
+            strikes[late] += sum(1 for a, b in zip(prev, now) if b > a)    # (a new bolt)
+            prev = now
+            bolts += any(now)
+            shook += cpu.rd(sym["shake_t"]) > 0
+        b1 = bld()
+        zp.note(f"{b0} buildings round the pit, {b1} after the storm; bolts on {bolts} frames; "
+                f"strikes {strikes[0]} in the first half, {strikes[1]} in the second")
+        zp.check(bolts > 30, f"bolts on only {bolts} frames of the storm")
+        zp.check(strikes[1] < strikes[0], f"the strikes don't slow down: {strikes}")
+        zp.check(shook > bolts // 2, f"the view shaking on only {shook} frames")
+        zp.check(b0 == 0 or b1 < b0, "no building came down")
+        zp.check(cpu.rd(sym["vtol_hp"]) == hp0, "the storm hurt the VTOL")
+        zp.run_until(cpu, lambda: cpu.pc == sym["game_complete_screen"] and cpu.mmu[6] == sym["PAGE_MENU"],
+                     "the congratulations after the storm", limit=20 * zp.FRAME_T)
     finally:
         sd.close()
 

@@ -1212,6 +1212,7 @@ main_loop:
         call draw_bullets               ; machine gun tracers
         call draw_particles             ; zombie bursts
         call draw_bolt                  ; the devil's lightning (city2.asm)
+        call draw_storm                 ; and the storm after its death
         call draw_gunsight
         call draw_reticule              ; the missile lock (city2.asm)
         nextreg ULA_MMU,PAGE_ULA0       ; the ULA screen back at $8000
@@ -1696,6 +1697,20 @@ bolt_hit:   db 0                        ; 1: it stopped at a building, at
 bolt_end:   dw 0, 0, 0                  ;   (x, y, z): the VTOL behind it safe
 bolt_spd:   db 0                        ; its hit: the speed braked down to
 bolt_t:     db 0                        ; the devil's lightning: ticks to draw
+; The storm after the devil's death (dv_storm, devil.asm; draw_storm,
+; devil_draw.asm): ticks of it left (0: none; the level isn't over until
+; it is: zombie_update), where (the pit: its cell, the bolts' start), and
+; NSTORM bolts: ticks to draw each, up into the sky, or at a building
+; (its end, x y z)
+NSTORM      equ 3
+storm_t:    dw 0
+storm_cx:   db 0
+storm_cz:   db 0
+storm_o:    ds 6
+sb_t:       ds NSTORM
+sb_up:      ds NSTORM
+sb_hit:     ds NSTORM
+sb_end:     ds 6*NSTORM
                                         ; it (draw_bolt; devil.asm)
 spin_rate:  dw 0                        ; its hit: the VTOL's spin a frame (8.8,
 spin_t:     db 0                        ;   signed), frames of it left, and

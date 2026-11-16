@@ -37,7 +37,7 @@
 ; 1 charging) and DV_T0 (game_now when that began).
 ;==============================================================================
 
-DEVIL_HP        equ 1000
+DEVIL_HP        equ 10
 DV_STEP_FR      equ 24              ; frames a step
 DV_MOVE_FR      equ 16              ; moving for this many of them
 DV_STEP_U       equ TILE_UNITS/2/DV_MOVE_FR     ; units a frame (half a tile a step)
@@ -47,6 +47,17 @@ DV_CHARGE_T     equ 500             ; interrupts charging (10 s),
 DV_HUM_T        equ 150             ;   the last of them whining (3 s: SFX_CHARGE)
 DV_REST_T       equ 100             ; and resting after a shot (2 s)
 BOLT_DMG        equ 10
+; The storm after its death (dv_storm): STORM_T ticks of lightning from
+; where it sank, into the sky and at the buildings around (within
+; STORM_R cells each way: they come down), NSTORM bolts at most at once,
+; a new one every STORM_GAP..STORM_GAP+3 ticks at first, slowing as it
+; goes (+1 tick each 16 ticks of it: about 35 at the end), each drawn
+; STORM_BOLT_T; the view shaking all through, a jolt at each
+STORM_T         equ 500             ; 10 s
+STORM_R         equ 4
+STORM_GAP       equ 4
+STORM_BOLT_T    equ 10
+STORM_Y         equ 16              ; the bolts start this high over the pit
 BOLT_FRAMES     equ (4*FT_N+ASSUMED_FPS)/FT_D   ; ticks the bolt is drawn
                                     ; (4 frames: 14)
 DV_EYE_H        equ DEVIL_H*108/DEVIL_SRC_H     ; its eyes' height (row 20)
@@ -89,6 +100,14 @@ dv_reset:
         ld (bolt_t),a
         ld (spin_t),a
         ld (bolt_brake),a
+        ld h,a
+        ld l,a
+        ld (storm_t),hl                 ; (no storm)
+        ld hl,sb_t
+        ld b,NSTORM
+.sb:    ld (hl),a
+        inc hl
+        djnz .sb
         ld (dv_hum),a
         ld (dv_dark),a                  ; (the level's palette as it was)
         ld (dv_dark_req),a
@@ -134,6 +153,7 @@ devil_init:
 ; coming down
 ;------------------------------------------------------------------------------
 dv_frame:
+        call dv_storm                   ; (after its death: the storm)
         ld a,(dt)                       ; the bolt: ticks to draw it
         ld c,a
         ld a,(bolt_t)
@@ -1185,8 +1205,192 @@ dv_dying:
         call dv_spray
 .nf:    dec (ix+17)
         ret nz
-        ld (ix+10),0                    ; gone
+        ld (ix+10),0                    ; gone: then its storm
+        ; fall through
+
+; The devil gone into the ground (IX): STORM_T ticks of lightning from
+; there (dv_storm); the level is over when it ends (zombie_update)
+storm_start:
+        ld hl,STORM_T
+        ld (storm_t),hl
+        xor a
+        ld (storm_next),a
+        ld a,(ix+1)                     ; its cell, and the pit's middle
+        ld (storm_cx),a
+        ld h,a
+        ld l,128
+        ld (storm_o),hl
+        ld a,(ix+3)
+        ld (storm_cz),a
+        ld h,a
+        ld (storm_o+4),hl
+        ld hl,STORM_Y
+        ld (storm_o+2),hl
         ret
+
+;------------------------------------------------------------------------------
+; The storm (dv_frame, each frame while storm_t): its ticks counted down;
+; every STORM_GAP..+3 ticks a new bolt in a free slot (sb_*): at a
+; building within STORM_R cells (one at random of 8 tries; it comes down,
+; dv_topple) or, a third of the time or with none found, up into the sky.
+; The VTOL is never hit.  draw_storm (devil_draw.asm) draws them from the
+; pit.
+;------------------------------------------------------------------------------
+dv_storm:
+        ld a,(dt)                       ; the bolts' ticks
+        ld c,a
+        ld hl,sb_t
+        ld b,NSTORM
+.bt:    ld a,(hl)
+        sub c
+        jr nc,.b1
+        xor a
+.b1:    ld (hl),a
+        inc hl
+        djnz .bt
+        ld hl,(storm_t)                 ; the storm's
+        ld a,h
+        or l
+        ret z
+        ld e,c
+        ld d,0
+        or a
+        sbc hl,de
+        jr nc,.st
+        ld hl,0
+.st:    ld (storm_t),hl
+        ld a,h
+        or l
+        ret z                           ; (over)
+        ld a,(shake_t)                  ; the view shaking all through
+        or a
+        jr nz,.sk
+        ld a,SHAKE_LEN
+        ld (shake_t),a
+.sk:    ld a,(storm_next)               ; a new bolt yet?
+        sub c
+        jr z,.new
+        jr c,.new
+        ld (storm_next),a
+        ret
+.new:   ld hl,STORM_T                   ; the next: slower as it goes, + the
+        ld de,(storm_t)                 ; ticks it's been / 16
+        or a
+        sbc hl,de
+        ld b,4
+.sl:    srl h
+        rr l
+        djnz .sl
+        ld a,l
+        add a,STORM_GAP
+        ld c,a
+        call zrand
+        ld a,l
+        and 3
+        add a,c
+        ld (storm_next),a
+        ASSERT STORM_T/16 + STORM_GAP + 3 < 256
+        ld hl,sb_t                      ; a free slot
+        ld b,NSTORM
+        ld c,0
+.fs:    ld a,(hl)
+        or a
+        jr z,.got
+        inc hl
+        inc c
+        djnz .fs
+        ret                             ; (all busy)
+.got:   ld (hl),STORM_BOLT_T
+        ld a,c
+        ld (ss_i),a
+        ld a,SFX_BOLT                   ; the crackle and the thunder
+        ld (sfx2_req),a
+        call shake_big                  ; (zpolice.asm) a jolt
+        call zrand                      ; a third into the sky
+        ld a,l
+        and 3
+        jr z,.sky
+        ld b,8                          ; else a building near
+.try:   push bc
+        call zrand
+        ld a,l
+        and 2*STORM_R-1
+        sub STORM_R
+        ld b,a
+        ld a,(storm_cx)
+        add a,b
+        cp GRID
+        jr nc,.tn
+        ld e,a
+        ld a,h
+        and 2*STORM_R-1
+        sub STORM_R
+        ld b,a
+        ld a,(storm_cz)
+        add a,b
+        cp GRID
+        jr nc,.tn
+        ld d,a
+        ld l,a
+        ld h,0
+        ROWOFS
+        ld a,e
+        add hl,a
+        push de
+        ld de,city_map
+        add hl,de
+        pop de
+        ld a,(hl)
+        and CELL_CODE
+        jr z,.tn                        ; road
+        cp 15
+        jr c,.bld                       ; a building (not the wall, base,
+.tn:    pop bc                          ;   rubble or one coming down)
+        djnz .try
+        ; fall through: none found
+.sky:   ld a,(ss_i)
+        ld hl,sb_up
+        add hl,a
+        ld (hl),1
+        ld hl,sb_hit
+        add hl,a
+        ld (hl),0
+        ret
+.bld:   pop bc
+        push hl                         ; HL -> the cell, E, D = its x, z
+        push de
+        call bld_height                 ; (zpolice.asm) its roof: the bolt's
+        ld (ss_y),hl                    ; end
+        ld a,(ss_i)
+        ld hl,sb_up
+        add hl,a
+        ld (hl),0
+        ld hl,sb_hit
+        add hl,a
+        ld (hl),1
+        ld l,a                          ; its end: the roof's middle
+        add a,a
+        add a,l
+        add a,a                         ; (6 bytes a slot)
+        ld hl,sb_end
+        add hl,a
+        pop de
+        push de
+        ld (hl),128
+        inc hl
+        ld (hl),e
+        inc hl
+        ld bc,(ss_y)
+        ld (hl),c
+        inc hl
+        ld (hl),b
+        inc hl
+        ld (hl),128
+        inc hl
+        ld (hl),d
+        pop de
+        pop hl
+        jp dv_topple                    ; it comes down (fire and dust)
 
 ;------------------------------------------------------------------------------
 ; The devil's data
@@ -1195,6 +1399,9 @@ cl_ptr:     ds 2*COLLAPSE_N             ; buildings coming down: each its
 cl_h:       ds 2*COLLAPSE_N             ;   city_map cell (0: a free slot) and
                                         ;   height now (in htab too)
 cl_tog:     db 0                        ; (they fall every other frame)
+storm_next: db 0                        ; dv_storm: ticks to the next bolt,
+ss_i:       db 0                        ;   the slot,
+ss_y:       dw 0                        ;   its building's roof
 dt_best:    db 0                        ; dv_turn: the best score so far,
 dt_dir:     db 0                        ;   its heading,
 dt_back:    db 0                        ;   the way it came from,

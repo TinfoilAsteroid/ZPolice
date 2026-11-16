@@ -375,6 +375,10 @@ zombie_update:
         jr nz,.alive
         add ix,de
         djnz .cnt
+        ld hl,(storm_t)                 ; (the devil's storm still raging:
+        ld a,h                          ; not over yet, devil.asm)
+        or l
+        jr nz,.alive
         ld a,(level_cur+LV_WAVES)
         ld hl,wave_number
         cp (hl)

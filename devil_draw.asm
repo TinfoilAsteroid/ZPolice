@@ -911,6 +911,76 @@ dv_clamp_y:
 ; BOLT_SEGS lines, the points between jittered across, new every frame,
 ; white, with a blue line beside.  Not drawn if it wasn't (it's behind).
 ;------------------------------------------------------------------------------
+;------------------------------------------------------------------------------
+; The storm after the devil's death (dv_storm, devil.asm): each of its
+; bolts (sb_t) from the pit (storm_o, when it's in view), drawn as the
+; devil's are (draw_bolt): up into the sky, or to a building's roof
+;------------------------------------------------------------------------------
+draw_storm:
+        ld hl,sb_t                      ; any?
+        ld b,NSTORM
+        xor a
+.any:   or (hl)
+        inc hl
+        djnz .any
+        or a
+        ret z
+        ld hl,storm_o                   ; the pit in view?
+        call bul_cam
+        ret nz
+        ld (ds_x),a
+        ld a,c
+        ld (ds_y),a
+        xor a
+        ld (ds_i),a
+.lp:    ld a,(ds_i)
+        ld hl,sb_t
+        add hl,a
+        ld a,(hl)
+        or a
+        jr z,.nx
+        ld (bolt_t),a
+        ld a,(ds_i)
+        ld hl,sb_up
+        add hl,a
+        ld a,(hl)
+        ld (bolt_up),a
+        ld a,(ds_i)
+        ld hl,sb_hit
+        add hl,a
+        ld a,(hl)
+        ld (bolt_hit),a
+        ld a,(ds_i)                     ; its end
+        ld l,a
+        add a,a
+        add a,l
+        add a,a
+        ld hl,sb_end
+        add hl,a
+        ld de,bolt_end
+        ld bc,6
+        ldir
+        ld a,(ds_x)                     ; from the pit
+        ld (dv_ex),a
+        ld a,(ds_y)
+        ld (dv_ey),a
+        ld a,1
+        ld (dv_seen),a
+        call draw_bolt
+.nx:    ld hl,ds_i
+        inc (hl)
+        ld a,(hl)
+        cp NSTORM
+        jr c,.lp
+        xor a                           ; (the devil's own: none)
+        ld (bolt_t),a
+        ld (bolt_hit),a
+        ld (bolt_up),a
+        ret
+ds_x:   db 0
+ds_y:   db 0
+ds_i:   db 0
+
 draw_bolt:
         ld hl,dv_seen
         ld c,(hl)

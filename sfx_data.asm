@@ -208,29 +208,33 @@ CHG_I   DEFL CHG_I+1
         db AY_VOL_C, 0, SFX_END
         ASSERT 109375/CHG_F0 + 109375/CHG_F0/12 < 4096 && 2*CHG_STEPS == DV_HUM_T
 
-; The devil's lightning (AY 3, as the explosions): a crackling zap, the
-; brightest noise flickering in period and volume (channel A) beside a
-; zap sweeping down from about 4.4 kHz to 360 Hz (channel B), 240 ms; then
-; the thunder, a missile's blast
+; The devil's lightning (AY 3, as the explosions): a loud crackle, noise
+; flickering in period (darker as it goes) and volume (channel A), over a
+; lower zap sweeping down from about 1.1 kHz to 90 Hz (channel B, quieter
+; than the noise), 320 ms; then the thunder, a long deep blast
     MACRO SFX_CRACKLE n, va, p, vb
         db AY_NOISE, n, AY_VOL_A, va
         db AY_TONE_B, low (p), AY_TONE_B+1, high (p), AY_VOL_B, vb, SFX_STEP
     ENDM
 sfx_bolt:
         db AY_MIXER, SFX_MIX_BOOM       ; (channel C: left alone)
-        SFX_CRACKLE 1, 15, 25, 15
-        SFX_CRACKLE 5, 9, 32, 14
-        SFX_CRACKLE 1, 15, 40, 13
-        SFX_CRACKLE 3, 6, 50, 12
-        SFX_CRACKLE 1, 14, 62, 11
-        SFX_CRACKLE 7, 10, 78, 10
-        SFX_CRACKLE 2, 15, 98, 9
-        SFX_CRACKLE 1, 8, 122, 8
-        SFX_CRACKLE 4, 13, 152, 7
-        SFX_CRACKLE 1, 15, 190, 6
-        SFX_CRACKLE 6, 7, 240, 5
-        SFX_CRACKLE 2, 12, 300, 4
-        SFX_BOOM 15, 24                 ; (its own mixer, rumble: the thunder)
+        SFX_CRACKLE 3, 15, 100, 10
+        SFX_CRACKLE 8, 13, 128, 9
+        SFX_CRACKLE 4, 15, 160, 9
+        SFX_CRACKLE 11, 12, 200, 8
+        SFX_CRACKLE 5, 15, 250, 8
+        SFX_CRACKLE 14, 14, 312, 7
+        SFX_CRACKLE 7, 15, 390, 7
+        SFX_CRACKLE 17, 12, 488, 6
+        SFX_CRACKLE 9, 15, 610, 6
+        SFX_CRACKLE 20, 14, 760, 5
+        SFX_CRACKLE 12, 15, 900, 5
+        SFX_CRACKLE 24, 13, 1000, 4
+        SFX_CRACKLE 15, 15, 1080, 4
+        SFX_CRACKLE 27, 12, 1140, 3
+        SFX_CRACKLE 18, 14, 1180, 3
+        SFX_CRACKLE 31, 11, 1200, 2
+        SFX_BOOM 15, 32                 ; (its own mixer, rumble: the thunder)
 
 ; The base's warnings (voice 4, AY 2 channel C: AY 2's mixer keeps its tone
 ; on): a beep, 80 ms, then 40 ms quiet so that hits close together still
