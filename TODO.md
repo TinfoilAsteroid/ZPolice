@@ -211,8 +211,18 @@ feature.**
 - CTC channels go only to things that need a rate of their own: the
   sound, and profiling.
 
-Converting a tuned value from frames at 14 fps to milliseconds:
-ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
+**Clock ticks.** A tick is one 50 Hz interrupt, 20 ms (`TICK_HZ` 50).
+Intervals are whole numbers of ticks. No fractional ticks.
+
+**`ASSUMED_FPS`** (replaces `NOMINAL_FPS`, 14 to start with) is the frame
+rate the current per-frame values were tuned at. A value not given its own
+tick count below is converted as:
+- ticks = round(frames × `TICK_HZ` / `ASSUMED_FPS`). At 14 fps a frame is
+  3.57 ticks.
+- distance a tick = the per-frame distance × `ASSUMED_FPS` / `TICK_HZ`.
+
+Real hardware renders faster than the emulator. Re-balancing for it is
+then one constant: `ASSUMED_FPS`.
 
 ### 1. Foundation
 - [ ] **The game clock** (resident, `game_now`):
@@ -232,12 +242,19 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   - For rates (gunfire), add the interval to the old ready time, not to
     `now`, so the average rate holds when frames are long.
 - [ ] **The frame's elapsed time** `dt`:
-  - ticks since the last rendered frame, worked out once a frame in
-    `main_loop`;
-  - clamped to 1..`DT_MAX` (about 150 ms), so a long stall (a load, a
-    debug key) doesn't teleport anything;
-  - kept with a fraction (8.8) so that movement at 50 Hz ticks averages
-    right: at 14 fps a frame is 3.57 ticks.
+  - a 16-bit integer: the ticks since the last rendered frame, worked out
+    once a frame in `main_loop`;
+  - the counter rolls over (new < last). A plain 16-bit `new - last`
+    (`or a` / `sbc hl,de`) gives the right answer across the roll-over
+    too: it is 65536 - last + new. (`(65535 - last) + new` would be one
+    tick short.)
+  - clamped to 1..`DT_MAX` (about 8 ticks, 160 ms), so a long stall (a
+    load, a debug key) doesn't teleport anything;
+  - no fraction. Movement uses **look-up tables precalculated at build
+    time** (gentables.py), one per speed: dt ticks -> distance, from the
+    per-frame speeds and `ASSUMED_FPS`.
+  - Logic timed in ticks (intervals, cool-downs) uses dt, or the clock,
+    as a whole number of ticks.
 - [ ] **Tests:**
   - give the emulator's tests a way to drive `game_now` themselves (poke
     it, or a mode where it advances a fixed amount a frame), so that the
@@ -245,7 +262,6 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   - add a test helper, `zp.advance(cpu, ms)`.
 - [ ] **Save games:** store timers as time remaining, not as absolute
   ticks, or restart them on loading. Bump `SG_VERSION`.
-
 ### 2. Weapons: rate of fire, cool-down, reloading
 - [ ] **`gun_wait`** becomes a "ready at" time, with the intervals in ms:
   - `GUN_INTERVAL` 4 frames: 285 ms;
@@ -257,25 +273,32 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   The chain gun is the case to watch: at 14 fps it fires once a frame. At
   a lower frame rate a fixed rate means firing 2 rounds some frames, or
   capping at 1 a frame. Decide which.
-- [ ] **The linked chain guns' alternation** (`lk_fired`): per round, as
-  now, timed by the shared ready time.
-- [ ] **Pulse laser:** `LASER_ON` 3 frames of beam, `LASER_COOL` 8 frames
-  of cool-down. Make it 214 ms on and 570 ms cooling. Its damage is "per
-  beam frame on a target" (`LASER_DMG`): make it damage per tick of beam,
-  or a fixed total per pulse, so it doesn't depend on the frame rate.
-- [ ] **Reloading on the pad** (`pad_service`):
-  - `WCFG_RELOAD`, `LINK_RELOAD` 1;
-  - `ROCKET_RELOAD` 15 frames: 1.07 s a rocket;
-  - `MISSILE_RELOAD` 30: 2.1 s;
-  - `AUTOCANNON_RELOAD` 7: 0.5 s;
-  - `BOMB_RELOAD` 30: 2.1 s;
-  - repairs per frame on the pad;
-  - `DISEMBARK` (one passenger off a second, already defined as
-    `NOMINAL_FPS` frames).
-- [ ] **Missile lock:** `LOCK_TIME` (2 s, 28 frames) as time.
-  `RET_STEP` / `RET_WANDER` (the reticule's pixels a frame) by `dt`.
-- [ ] **Weapon slot flash** `WFLASH` (5 frames): optional (visual).
+- [ ] **The linked chain guns:** a round every **4 ticks** (80 ms),
+  alternating sides (`lk_fired`) as now.
+- [ ] **Pulse laser:** **10 ticks on** (200 ms) and **6 ticks off**
+  (120 ms) (`LASER_ON`, `LASER_COOL`; now 3 and 8 frames: 214 ms on, 570
+  ms off). That is a much higher duty cycle: 63% on, against 27% now.
+  - While it's on, check every frame whether the beam hits a target.
+  - **Damage: 1 point a clock tick** of beam on the target (`LASER_DMG`
+    1). A frame's hit does 1 × dt (the ticks since the last frame,
+    counting only the on phase), so a 10-tick pulse does 10 points
+    whatever the frame rate.
+- [ ] **Reloading on the pad** (`pad_service`), ticks a shot:
 
+  | Load | Now | New |
+  |---|---|---|
+  | `WCFG_RELOAD`, `LINK_RELOAD` | 1 frame | **2 ticks** |
+  | `ROCKET_RELOAD` | 15 frames (1.07 s) | **50 ticks** (1 s) |
+  | `MISSILE_RELOAD` | 30 (2.1 s) | **100 ticks** (2 s) |
+  | `AUTOCANNON_RELOAD` | 7 (0.5 s) | **20 ticks** (0.4 s) |
+  | `BOMB_RELOAD` | 30 (2.1 s) | **150 ticks** (3 s) |
+  | Repairs | a point a frame | **2 ticks a point** |
+  | `DISEMBARK` | a passenger a second (14 frames) | **one a second: 50 ticks** |
+- [ ] **Missile lock:** `LOCK_TIME` **100 ticks** (2 s, as now: 28
+  frames). `RET_STEP` / `RET_WANDER` (the reticule's pixels a frame) by
+  dt.
+- [ ] **Weapon slot flash** `WFLASH`: **5 ticks** (100 ms; now 5 frames,
+  357 ms). Implement it on the clock.
 ### 3. Movement (by `dt`)
 - [ ] **The VTOL** (player.asm) first, because the player feels it most:
   - `SPEED_MAX` / `SPEED_MIN` / `BOOST_SPEED` (units a frame),
@@ -284,13 +307,21 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   - the acceleration per frame of the speed keys (`SPEED_STEP`,
     `AIRBRAKE_STEP`);
   - the pitch damper (`PDAMP_FRAMES`, `PDAMP_MIN`), `GUN_TILT_STEP`.
-
+  - Convert them all to per-tick values from the current per-frame ones at
+    14 fps, through `ASSUMED_FPS` (so they can be re-balanced for real
+    hardware later), with dt -> distance tables (gentables.py).
   Its building collisions test one frame's move. With a long `dt`, test
   in sub-steps of at most a normal frame's move, so it can't pass through
   a wall.
 - [ ] **Rounds:**
   - `BULLET_STEP` 457, `ROCKET_STEP` 137, `MISSILE_STEP` 68 and `FB_STEP`
     182 units a frame;
+  - Performance, with the longer paths:
+    - test a building hit only when the path crosses a tile boundary;
+    - test the monsters only in tiles that have one (`CELL_ZOMBIE`), a
+      quick way to rule out a hit;
+    - a new height below 0 means the round has hit the ground: the point
+      on the path where y = 0 is where it lands.
   - `BOMB_SPEED` and `BOMB_STEEPEN` (5 frames a step);
   - `MISSILE_TURN` (3 degrees a frame);
   - the fireball's flight (14 frames) and the rounds' range (in frames).
@@ -298,8 +329,13 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   Their hit tests already sweep the frame's whole path (`B_PX`): keep
   that with the longer paths.
 - [ ] **Zombies:**
-  - `zspeed` (`ZSPEED_INIT`, units a frame) and the decision interval
-    `zsteps` (`ZSTEPS_INIT`, every 10 frames);
+  - Their decisions are now taken one record a frame (`zdec_i`, every
+    NMON = 48 frames each), with every step checked against the next
+    tile, so none walks into a building between decisions. That spreads
+    a CPU cost over the frames, so it stays per frame. Only the walking
+    is by dt.
+  - `zspeed` (`ZSPEED_INIT`, units a frame), and `zsteps` (now only the
+    decision's look-ahead: 10 frames of walking);
   - standing still when stuck, `ZWAIT` 100 frames (7 s);
   - their walking animation steps.
 - [ ] **Specials:**
@@ -319,6 +355,24 @@ ms = frames × 1000 / 14 (71 ms a frame). Keep the feel the same.
   5 (357 ms). This is the base's real damage rate: at 30 fps the base
   takes twice the damage per second it does at 14. It is the first of
   these to fix: it affects fairness the most.
+
+Every interval in this section: ticks = round(frames × `TICK_HZ` /
+`ASSUMED_FPS`), computed at build time (an `equ` from the frame value, so
+changing `ASSUMED_FPS` re-scales them all). At 14 fps:
+
+| Value | Frames | Ticks |
+|---|---|---|
+| `ZHIT_FRAMES` | 5 | 18 |
+| `GHOST_HIT_FRAMES` | 10 | 36 |
+| `LICH_RATE` / `LICH_RATE_STEP` | 150 / 5 | 536 / 18 |
+| `BOLT_FRAMES` | 4 | 14 |
+| `SPIN_FR` | 8 | 29 |
+| `DV_DIE_FR` | 40 | 143 |
+| `DEAD_PAUSE` | 50 | 179 |
+| `SHAKE_LEN` | 6 | 21 |
+| `GHOST_FADE_FRAMES` (a step) | 3 | 11 |
+| `HUM_FLASH` | 2 | 7 |
+
 - [ ] **Ghosts' blows:** `GHOST_HIT_FRAMES` 10 (714 ms).
 - [ ] **Banshees' attack rate** and anything else counted per frame in
   specials.asm.

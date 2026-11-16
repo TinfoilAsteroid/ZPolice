@@ -48,11 +48,18 @@
 ; Street map blips: zblip / zblip_off (map.asm) are called on the zombie's
 ; decision-check frames.  Call zblip_off for a zombie before making it gone.
 ;
-; Decisions are staggered: each active zombie only checks for junctions and
-; obstacles once every zsteps frames, with the zombies' check frames spread
-; out so only about NZOMB/zsteps of them check on any one frame.  In between
-; they just walk, so the look-ahead (zlook) covers zsteps frames of walking
-; plus a margin: ZMARGIN + zsteps*zspeed/16.
+; Decisions are taken one record a frame: zdec_i steps through the records
+; (0..NMON-1, round: zombies, then the special records, where ghouls and a
+; lich walk too), and only the record it points at decides this frame (an
+; empty one: nobody does).  So each walker decides once every NMON frames.
+; A decision: its map blip moves, junctions (zjunction), and a look-ahead
+; for a building or the map edge (zlook: ZMARGIN + zsteps frames of
+; walking; a smart turn, towards the pad, or a dead end's wait).
+; Between decisions every step is checked (zmove .step): a step that would
+; take it within ZMARGIN of the next cell, when that cell isn't a street,
+; isn't taken.  A base tile there: it goes for it (zattack); else it stops
+; and turns 90 degrees, left or right at random (zturn).  Crossing into a
+; new cell moves its map blip too.
 ;
 ; Movement (zmove), every frame:
 ;   * Standing still: count the wait down and do nothing else.
@@ -100,7 +107,9 @@ ZHP_FAST        equ 4           ; and a fast zombie
 GHOUL_HP        equ ZHP         ; and a ghoul
 ZSPEED_INIT     equ 10          ; starting zspeed: 0.63 units (4.9 cm) per
                                 ; frame, ~0.7 m/s at 14 fps
-ZSTEPS_INIT     equ 10          ; starting zsteps: decide every 10 frames
+ZSTEPS_INIT     equ 10          ; zsteps: a decision looks 10 frames' walk
+                                ; ahead (decisions: one record a frame,
+                                ; zdec_i)
 ZMARGIN         equ 16          ; keep at least this far from walls: 1.25 m
 ZC_TRIES        equ 16          ; zcluster: places to try near the parent
 ZC_R            equ 2*TILE_UNITS ;  within 2 tiles of it on x and z
@@ -164,7 +173,6 @@ zombie_wave:
 .n:     ld (zi_left),a
         ld ix,zombies
         ld b,NZOMB
-        ld c,1                          ; first check frame, spread 1..zsteps
 .lp:    push bc
         ld a,(zi_left)                  ; this wave's zombies placed?
         or a
@@ -193,12 +201,6 @@ zombie_wave:
 .typ:
         call zblip
         pop bc
-        ld (ix+11),c                    ; first decision check
-        ld a,(zsteps)
-        cp c
-        jr nz,.nc
-        ld c,0                          ; wrap after zsteps
-.nc:    inc c
 .nx:    ld de,ZREC
         add ix,de
         dec b
@@ -413,6 +415,12 @@ zombie_update:
         ld (zlook_lich),hl
         add hl,de                       ; ghouls five times
         ld (zlook_ghoul),hl
+        ld a,(zdec_i)                   ; this frame's decision: the next
+        inc a                           ; record (round)
+        cp NMON
+        jr c,.di
+        xor a
+.di:    ld (zdec_i),a
         ld ix,zombies                   ; the zombies, and ghouls in the
         ld b,NMON                       ; special records
 .mv:    push bc
@@ -491,10 +499,10 @@ zmove:
         dec (ix+7)                      ; standing still
         ret
 .go:    call zcalc_step
-        dec (ix+11)
-        jr nz,.step                     ; not this zombie's check frame
-        ld a,(zsteps)
-        ld (ix+11),a
+        ld a,(zdec_i)                   ; this record's decision frame?
+        ld hl,zcur_i
+        cp (hl)
+        jr nz,.step                     ; no: just walk (checked)
         call zblip                      ; move its map blip
         call zjunction
         ld e,(ix+4)
@@ -510,14 +518,46 @@ zmove:
         ld hl,(zlook_ghoul)
 .lk:    call ztest
         jr nz,.blocked
-.step:  ld a,(zstep)                    ; step forwards
-        jp zforward
+.step:  ld a,(zstep)                    ; a step: into a building (or off
+        or a                            ; the map) within ZMARGIN past it?
+        ret z                           ; (none this frame)
+        ld l,a
+        ld h,0
+        ld de,ZMARGIN
+        add hl,de
+        ld e,(ix+4)
+        call ztest
+        jr nz,.wall
+        ld a,(ix+1)                     ; no: take it
+        ld (zcell),a
+        ld a,(ix+3)
+        ld (zcell+1),a
+        ld a,(zstep)
+        call zforward
+        ld a,(zcell)                    ; into a new cell: its map blip too
+        cp (ix+1)
+        jp nz,zblip
+        ld a,(zcell+1)
+        cp (ix+3)
+        jp nz,zblip
+        ret
+.wall:  ld a,(ix+4)                     ; the base ahead: go for it
+        call zside
+        call zbase
+        jr z,.base
+        call zrand                      ; else stop, and turn 90 degrees
+        ld a,(ix+4)                     ; left or right at random
+        bit 0,l
+        jr z,.wl
+        add a,2
+.wl:    inc a                           ; (+1 right, +3 left)
+        jp zturn
 .blocked:
         ld a,(ix+4)                     ; what is ahead: the base?
         call zside
         call zbase
         jr nz,.side
-        ld (ix+16),1                    ; go for it
+.base:  ld (ix+16),1                    ; go for it
         ld (ix+17),ZHIT_FRAMES
         ret
 .side:  ld c,0                          ; roads to the left and right
@@ -1536,10 +1576,11 @@ zspeed:     db ZSPEED_INIT              ; zombie speed, world units per frame
                                         ; in 4.4 fixed point (16 = 1.0, max 119:
                                         ; fast zombies go 2x): raise it on
                                         ; later levels
-zsteps:     db ZSTEPS_INIT              ; frames between each zombie's
-                                        ; decision checks (1..): zsteps*zspeed*2
-                                        ; (fast zombies) must stay under 128*16
-                                        ; so none can walk through a junction
+zsteps:     db ZSTEPS_INIT              ; frames of walking a decision's
+                                        ; look-ahead covers (zlook)
+zdec_i:     db NMON-1                   ; the record deciding this frame
+                                        ; (zombie_update steps it on first)
+zcell:      db 0, 0                     ; zmove: the cell before a step
 zstep:      db 0
 zlook:      dw 0
 zbias_t:    db 128                      ; junction bias towards the pad (/256)

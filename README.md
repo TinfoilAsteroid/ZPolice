@@ -26,8 +26,8 @@ it, use CSpect or real Next hardware.
 
 ```
 build.bat          # gengraphics.py, gentables.py -> the generated tables and ZPDATA/, then sjasmplus -> zpolice.nex, then the tests
-build.bat run      # ...and launch CSpect (sound off: CSpect's -sound)
-build.bat runsound # ...and launch CSpect with sound on
+build.bat run      # ...and launch CSpect, with sound
+build.bat run mute # ...and launch CSpect with the sound off (CSpect's -sound)
 build.bat notest   # ...without the regression tests (also: build.bat run notest)
 build.bat release  # ...then the release build, in release/ (also: build.bat release run)
 build.bat hardware # ...for a real Next, with DMA+ (also: build.bat release hardware)
@@ -3056,12 +3056,25 @@ so buildings in front of them hide them correctly.
   fixed point, so 16 = 1.0. It starts at `ZSPEED_INIT` = 10 (0.63) and can
   be raised for later levels. Each zombie keeps the leftover fraction, so
   slow speeds still average out exactly.
-* **Staggered decisions:** `zsteps` (in the zombie page, 10 for the first
-  level) sets how often each zombie checks for junctions and obstacles: once
-  every `zsteps` frames. The zombies' check frames are spread out at
-  start-up, so with 20 zombies only about 2 check on any one frame. Between
-  checks a zombie just walks. Each zombie has an active flag, and zombies
+* **Decisions, one record a frame:** `zdec_i` (in the zombie page) steps
+  through the 48 records (`NMON`: the 40 zombies, then the special
+  records, where ghouls and a lich walk too), one a frame, round. Only the
+  record it points at decides that frame; an empty one means nobody does.
+  So each walker checks for junctions and obstacles once every 48 frames,
+  and never more than one a frame. Between decisions a zombie walks, with
+  every step checked (below). Each zombie has an active flag, and zombies
   that are gone are not moved, checked or drawn.
+* **The step check (`zmove .step`):** before each step, the point the step
+  plus `ZMARGIN` ahead is tested (`ztest`). If it's in a cell that isn't a
+  street, the step isn't taken:
+  * a base tile (the pad or the terrace): the zombie goes for it
+    (`zattack`), as when a decision finds it;
+  * a building or the map's edge: it stops, and turns 90 degrees, left or
+    right at random (`zturn`). The next frame it walks the new way, checked
+    the same way.
+
+  So no zombie walks into a building between decisions, however far apart
+  they are.
 * **Junctions:** once per cell, when a zombie is 0.25–0.75 of the way
   through the cell along its heading, it checks the cells to its left and
   right for a road. Left is tested first: if there is a road there, it turns
@@ -3073,14 +3086,16 @@ so buildings in front of them hide them correctly.
   ahead, the zombie turns left if there is a road there, otherwise right.
   If neither side has a road, it turns round and stands still for `ZWAIT`
   (100) frames, with its animation frozen, before it moves or tests again.
-* **Look-ahead:** `zlook` = `ZMARGIN` (32) + `zsteps`·`zspeed`/16, worked
-  out each frame. It covers the distance walked between checks, so zombies
-  never enter building cells and stay at least 32 units from any wall, at
-  any speed. Keep `zsteps`·`zspeed` under 2048 (128 units between checks),
-  or a zombie could walk through a junction's 0.25–0.75 window without
-  checking it.
+* **Look-ahead:** on a decision, `zlook` = `ZMARGIN` + `zsteps`·`zspeed`/16
+  (`zsteps` 10: ten frames' walk) ahead, for the smart turn towards the
+  pad or a dead end's wait, before the step check would have to turn it
+  at random. Junctions are only taken on a decision, in the 0.25–0.75
+  window of a cell: a fast walker (a ghoul: 125 units in 48 frames) can
+  pass a junction without a decision in its window, and walks straight
+  on.
 * **Map blips:** each zombie is a single green pixel at its cell on the
-  city map. Each time its blip is drawn, on its decision-check frames, it
+  city map. Each time its blip is drawn, on its decision frames and when it
+  walks into a new cell, it
   takes the next shade of `zshades`: bright (`MAP_ZOMBIE`, the gunsight's
   green), mid (`MAP_ZOMBIE_MID`), dark (`MAP_ZOMBIE_DARK`), mid, then
   bright again. The step is kept in bits 1–2 of the blip byte.
@@ -3121,7 +3136,7 @@ so buildings in front of them hide them correctly.
   its own (`ANIM_GHOUL_*`). A new walk frame every 4 frames (fast zombies
   2, ghouls 1). See "Figures and the sprite editor".
 * **Cost:** about 1–2% of frame time (`zombie_update` averages about 20K T a
-  frame for 20 zombies, with at most 2 decision checks in any frame).
+  frame for 20 zombies; at most 1 decision in any frame).
 
 ### Performance
 Measured with `tools/nexsim.py` (pure T-state count at 28 MHz, no memory
@@ -3400,6 +3415,7 @@ by playing doesn't change the results.
 | `test_project.py` | building corners projected by `vproj` and `vproj_y` land on the same screen x and y as `vtx_proj` and the level shortcut `proj_y`: 4,064 corners, every shift of Z, the frustum's edges; `occ_pretest`'s `oz_sc` / `oz_sx` give `scale_comp`'s and `occ_sx`'s results for 1,581 Z and components |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_devil.py` | killed, every other monster dies at once and, once it has sunk, the congratulations; on level 50 the pad destroyed is no game over (level 1: it is); a chain gun round's hit gives one quick spark; 250 hit points off it, the normal palette 2 steps darker, and its hit points on the HUD in red; a building's burst wide; its colours in each vision mode (thermal black, its outline grey, eyes to red; night vision bright greens or light greys, eyes to white); its footfall kills the zombie and human underfoot, not those beyond; the devil alone in level 50's last wave, at the entrance to hell (a circle of road), 1000 hit points, its graphics over the pages from the kept ones on and the figures' own back at the next game's level; the level checks keep it last, alone and one; drawn at its projected size, and close to; it chases the VTOL half a tile a step (east, north, turned round for one behind), shaking the view at each footfall; it walks through a level 4 building (knocked down), round a level 5 one, over rubble; it knocks down a terrace tile and the pad on its way, with no game over; its colours white and blue, black in thermal, its eyes red there; in range its eyes charge (half blue half way; the whine only for the last 3 s, once), then the bolt: a building in the way stops it and comes down, the VTOL safe; with the rubble, the next hits: 10 damage, the nose half way, its speed braked to half, the crackling zap asked for, drawn, the nose pitched, the brake, a building in the way coming down a metre every 2 frames to rubble; spins of 15-90 degrees either way; no charge out of range; a rocket hurts it, killed it sinks and goes; `DEVIL.ZPB` up to date |
+| `test_zombie_moves.py` | decisions one record a frame (`zdec_i` round after 47); walking at a building between decisions it never comes within `ZMARGIN` of it and turns 90 degrees, left and right both happening; a base tile ahead: it goes for it; road ahead: it walks on |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 25 hit points and 150 frames a shot in city 1, 30 and 145 in city 2, 65 and 110 in city 9; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |
 | `test_debug_keys.py` | debug key 0 kills the wave's monsters, leaving the humans as they were, so it moves on a wave, and on the last wave completes the level; key 9's level select (Q / A step, stopping at 1 and 50 and repeating when held; SPACE starts the level shown at wave 1; 9 goes back to the game as it was); key 0 wave by wave to LEVEL n COMPLETE; key 8 from level 10 brings level 50's last wave, the devil's |
 | `test_clusters.py` | levels 2 and 4 have 40 zombies, the rest of them within 2 tiles of their 4 parents, on streets; the parents are spread out; on level 1 the zombies aren't clustered; every 3rd level has 4 clusters on its middle wave and no other, and on level 12 only wave 2 spawns clustered |
