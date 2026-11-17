@@ -33,15 +33,20 @@ FRM_B           equ SPR_SCREEN_Y+VIEW_H-SPR_SIZE
 FRM_X8          equ 3               ; (scale codes)
 FRM_X4          equ 2
 FRM_REC         equ 8
+FRM_CORNERS     equ 0               ; 1: the four corner sprites shown; 0:
+                                    ; hidden (trying the console's tiles there)
+FRM_N_CORNERS   equ 4               ; (frame_tab's first four entries)
+FRM_EDGES       equ 0               ; 1: the edges' sprites (FRM_H, FRM_V)
+                                    ; shown; 0: hidden (the console's tiles)
 
-frame_tab:
-        dw FRM_L, FRM_T
-        db FRM_CRN, 0, 0, 0
-        dw FRM_R, FRM_T
+frame_tab:                                      ; (the corners placed 1 pixel
+        dw FRM_L+1, FRM_T+1                     ;  in from the view's corners,
+        db FRM_CRN, 0, 0, 0                     ;  to match their patterns)
+        dw FRM_R-1, FRM_T+1
         db FRM_CRN, SPRF_XMIRROR, 0, 0
-        dw FRM_L, FRM_B
+        dw FRM_L+1, FRM_B
         db FRM_CRN_P, SPRF_YMIRROR, 0, 0
-        dw FRM_R, FRM_B
+        dw FRM_R-1, FRM_B
         db FRM_CRN_P, SPRF_XMIRROR|SPRF_YMIRROR, 0, 0
         dw FRM_L+SPR_SIZE, FRM_T                ; the top edge
         db FRM_H, 0, FRM_X8, 0
@@ -83,6 +88,24 @@ frame_spr:
         inc a
         cp FRM_SPR0+FRM_COUNT
         jr nz,.lp
+    IF !FRM_CORNERS
+        ld a,FRM_SPR0                   ; the corners hidden (FRM_CORNERS)
+.hc:    push af
+        call spr_hide
+        pop af
+        inc a
+        cp FRM_SPR0+FRM_N_CORNERS
+        jr nz,.hc
+    ENDIF
+    IF !FRM_EDGES
+        ld a,FRM_SPR0+FRM_N_CORNERS     ; the edges hidden (FRM_EDGES)
+.he:    push af
+        call spr_hide
+        pop af
+        inc a
+        cp FRM_SPR0+FRM_COUNT
+        jr nz,.he
+    ENDIF
         ret
 
 ;------------------------------------------------------------------------------

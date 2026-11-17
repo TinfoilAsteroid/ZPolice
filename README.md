@@ -1848,15 +1848,30 @@ transparent: the city map and the gauges.
     `PAGE_SPRITES` paged in. Unused humans' sprites are hidden.
   * The menu screens hide them all (`menu_quiet`).
   * Disembarking at the pad marks the first human aboard as rescued.
-* **Integrity (`draw_integrity`, hud.asm):** under the weapon slots,
-  "INTEGRITY" on character row 22 (`INT_ROW`, from column 11) and the
-  VTOL's hit points as a percentage below it, "nnn%" from column 12.
+* **Integrity (`draw_integrity`, hud.asm):** under the weapon slots, the
+  VTOL's hit points as a percentage, "nnn%" on character row 22
+  (`INT_ROW`) from column 16 (`INT_PCT_COL`). The INTEGRITY label is the
+  console's tiles (INTEGE_*), before it; the percentage's cells are tiles
+  flagged `u` (the ULA over them).
   * `VTOL_HP` is 50, so the percentage is `vtol_hp` × 2: one `add a,a`
     (an `ASSERT` checks `VTOL_HP` is still 50).
   * Green from 50% (`INT_WARN`), amber below it, red below 25%
     (`INT_DANGER`), as the cells' ink.
-  * Redrawn only when it changes (`int_shown`); `ula_init` prints the
-    label at each level's start. The HUD font gained I, E, Y and %.
+  * Redrawn only when it changes (`int_shown`): each level's start too.
+* **The booster's LED (`draw_boost_led`, hud.asm):** the console's tile under
+  the B gauge (tilemap row 29, column `BST_GCOL`+4: the layout's LED_G) is
+  LED_G from half full, LED_A below half, LED_R below a tenth. Written to
+  the tilemap only when the colour changes (`led_shown`, reset at each
+  level's start by `ula_init`, after which `console_on` has put back the
+  layout's); left alone until the booster is fitted. `tables_console.inc`
+  has `CT_name` (each tile's place) and `CTA_name` (its bank) for this.
+* **The altitude LED (`draw_alt_led`, hud.asm):** the console's tile under
+  the A gauge (row 29, column `ALT_GCOL`+4) from the altitude bar's height
+  above the ground height's bar (`g_alt` - `g_gnd`, pixels): LED_G, LED_A
+  within 10 (`ALT_LED_AMBER`), LED_R below 2 (`ALT_LED_RED`). Checked every
+  frame after the gauges, written only when the colour changes
+  (`alt_led_shown`, reset at each level's start). Both LEDs share
+  `set_led`.
 * **Weapon slots (`draw_wpn`):** five columns, at character columns 11, 13,
   15, 17 and 19 (from `WPN_COL0`). Left to right they show the slots keys
   2, 4, 1, 5 and 3 select (`wpn_order`: the centre gun in the middle). From
@@ -2051,6 +2066,98 @@ NextReg select alone, so this still works):
 * Every 50 display frames (one second), the number of frames rendered is
   shown.
 
+## Tilemap
+
+`tiles.asm` (in the sprites page, `PAGE_SPRITES`: page it into slot 7)
+supports the Next's hardware tilemap layer: 8x8 tiles in a 40 x 32 (or
+80 x 32 on the hardware: only 40 here) grid over the whole 320 x 256 screen, drawn with the ULA, in front
+of it. The game uses it for the VTOL's console (below).
+* **Memory:** the map and the tiles have to be in bank 5 or the first half
+  of bank 7, page 14 (`PAGE_TILES`). That page holds the start-up code
+  (`PAGE_INIT`) until start-up is done; the sine table, which was there,
+  is in page 15 now.
+  * The map, at `$0000`: 2 bytes a cell (tile, attribute), 40 x 32 (2.5K:
+    the 40-column mode only, which covers the screen).
+  * The tiles, at `$0A00`: 176 of 32 bytes (4 bits a pixel, the left pixel
+    in the high nibble). 0-63 are the font (`font8`: ASCII 32-95, pixel
+    index 1 on 0); 64-175 (`TM_FREE` on, 112) are free for others.
+  * The routines write it through slot 0 (`TM_MMU`: the scratch slot) and
+    leave it there.
+* **Registers:** `$6E` / `$6F` the map and tiles in bank 7 (bit 7), `$4C`
+  pixel index 0 transparent, `$6B` on, 40 columns, attributes in the
+  map, over the ULA (bit 0), its clip window the whole screen, no scroll.
+* **Colours:** a cell's attribute bits 7-4 are its palette offset: pixel n
+  shows tilemap palette entry offset × 16 + n. `tm_init` sets the first
+  tilemap palette: each offset's entry 1 (the font's ink) one of `tm_inks`
+  (white, red, green, yellow, cyan, magenta, amber, grey ...).
+  Attribute bit 3 mirrors x, bit 2 y, bit 1 rotates, bit 0 puts the ULA
+  over the tile.
+* **Routines:** `tm_init` (A = `TM_40`: everything set up and
+  shown), `tm_on` / `tm_off`, `tm_clear`, `tm_tile` (D row, E column, A
+  tile, C attribute), `tm_putc` / `tm_print` (ASCII: lower case as upper,
+  anything else not in the font as a space), `tm_defs` (HL the definitions,
+  A the first tile, B how many), `tm_colour` (A offset, E colour), `tm_scroll`
+  (HL x, A y).
+* **The VTOL console** (`console_on`, at each level's start; hidden by
+  `menu_quiet` on the screens outside the game): the screen's border, round
+  the view and the ULA panel, made a cockpit console, under the HUD's
+  sprites:
+  * a bevelled frame;
+  * a recessed window under the compass, with a notch housing the heading
+    pointer;
+  * a slot behind the humans column;
+  * a vented strip with lamps on the right;
+  * vents, rivets, lamps and labels below the panel;
+  * shadowed lips round the view.
+
+  Its tiles (at most 112: 64-175), their colours and its map are in
+  `sprites/console_tiles.json` (the format: `tools/consoletiles.py`;
+  gentables.py writes `tables_console.inc` from it, and makes the file from
+  the built-in tiles if it's missing). `python tools/consoletiles.py` writes
+  a preview, docs/console_tiles.png.
+  * **Colours:** 9-bit (r, g, b 0-7 each: 512 to choose from), in up to 15
+    **banks** of 16 (index 0 see-through). Each tile uses one bank; bank k
+    is tilemap palette offset `CON_OFFSET0` + k (1 on: offset 0 keeps the
+    font's white), written through NextReg `$44` (`tm_pal16_9`). So up to
+    225 colours at once on the console, 15 in any one tile. A version 1
+    file (one 8-bit palette) is read as one bank, each colour as the Next
+    shows it.
+  * **Cells:** a tile and its flags: mirror x, mirror y, rotate 90 degrees
+    clockwise (the attribute's bits 3, 2, 1; rotated first, then
+    mirrored, as the hardware does). In the file, `"NAME|xyr"` (an older
+    `|m` is x). In `console_map`, 2 bytes a cell: the tile's place + 1 (0
+    see-through), then the flags; `console_tbank` gives each tile's bank.
+  * Its own palette, so the vision modes leave it alone, and the screen
+    shake (Layer 2's scroll) doesn't move it. See docs/screen_game.png.
+* **The tile editor** (`python tools/tile_editor.py`, tkinter):
+  * **Left:** the tiles.
+  * **Middle:** the selected tile's 8 x 8 pixels, its bank (`This tile's
+    bank`) and that bank's 16 colours: left and right buttons paint,
+    Ctrl+click picks up, double-click a colour to change it (r, g, b 0-7;
+    its 9-bit value and RGB hex shown); colour 0 is see-through. The Banks
+    menu adds a bank (a copy of this tile's) or deletes this tile's (its
+    tiles to bank 0). The tools: pencil, fill; mirror, flip, rotate, shift
+    with the arrow keys, replace, clear; Ctrl+Z / Ctrl+Y, Ctrl+C / Ctrl+V.
+    The tile at its size, twice and repeated 3 x 3.
+  * **Right:** the whole console, 40 x 32 cells (View menu: x1 to x4,
+    scrolled when it doesn't fit). Left button puts the selected tile
+    (drag to paint) with the ticked **Mirror X**, **Mirror Y** and
+    **Rotate** (keys X, Y, R; a preview beside them; Shift turns Mirror X
+    the other way); right button deletes the tile under the cursor (drag
+    to delete more); Ctrl+right picks up a cell's tile and its flags. The
+    view and panel's area is outlined (tiles there cover them), and the
+    HUD's sprites (the compass band, its pointer, the humans column) are
+    shown as guides.
+  * The Tile menu adds, duplicates, renames (the console follows),
+    deletes (its cells emptied) and reorders tiles. Ctrl+S checks
+    (`consoletiles.problems`) and saves (as version 2); then `build.bat`.
+* **Tests:** tests/test_tiles.py checks what's set up for the hardware: the
+  registers, the font's tiles, the map, the palette, the console as its
+  file lays it out (each cell's tile, bank and flags; the banks' 9-bit
+  colours), the border covered, hidden on the menus. The emulator
+  (tools/nexsim.py) draws the tilemap in its screenshots (`tilemap_pixels`:
+  40 columns, attributes, mirrors, the transparent index).
+
 ## Files
 
 | File | Purpose |
@@ -2099,13 +2206,14 @@ NextReg select alone, so this still works):
 | `interrupts.asm` | interrupt mode 2 (page 7 after `map.asm`, always mapped): `im2_table`, 256 words at a 256-byte boundary all pointing at `im2_routine`, which sits at an address with equal high and low bytes (`$xyxy`) so any data-bus byte, odd or even, reaches it; `im2_init` (I = the table's high byte, `IM 2`), called by `start` after `init_audio`. `start` enables interrupts before the main menu. `im2_routine` (50 a second) switches to its own stack and, with the engines on, maps the audio page into slot 7 to play the engines and sound effects (`engine_tick`, `sfx_tick`: sound.asm), then puts back slot 7's page and the main code's selected NextReg. See "Sound effects" |
 | `sound.asm` | (in the audio page, `PAGE_AUDIO`) the sound players the interrupt calls with the page in slot 7: `engine_tick` (the engines, AY 1), `sfx_tick` and `sfx_voice` (the three effect voices), `isr_ay`. With `sfx_data.asm`, the sounds |
 | `audio.asm` | sound (`PAGE_AUDIO`, page 17, at `$E000` in slot 7): `init_audio`, called by `start` after `initgame` and by every menu screen (`menu_quiet`), puts the three TurboSound AY chips in a known silent state (both outputs on, every register 0, then the mixer to tones only with noise off and the envelope to attack-and-hold), leaving AY 1 selected. The VTOL's engines on AY 1 (`engine_start`, `engine_sound`: see "Engine sound"). Helpers: `ay_select` (A = `AY_CHIP_n`), `ay_write` (A = register, E = value). The emulator records AY register writes (`cpu.ay`) |
-| `initialise.asm` | start-up set-up (`PAGE_INIT`, page 15, at `$E000` in slot 7): `initgame`, called once by `start`, sets the CPU speed, Layer 2 mode, transparency, layer priority, Layer 2 scroll and clip window, the always-mapped slots and the border |
+| `initialise.asm` | start-up set-up (`PAGE_INIT`, page 14, at `$E000` in slot 7; after start-up the page is the tilemap's, `tiles.asm`): `initgame`, called once by `start`, sets the CPU speed, Layer 2 mode, transparency, layer priority, Layer 2 scroll and clip window, the always-mapped slots and the border |
 | `sprite_data.asm` | sprite pattern banks (8K pages from `PAGE_SPR0`, page 9, assembled at `$E000` and swapped into slot 7 to load): a count, a first pattern number and the patterns; bank 0 has the human status sprites |
 | `map.asm` | the city map (page 7 after `human.asm`, always mapped): drawing it into both Layer 2 buffers, the ULA set-up over it, the player's flashing dot, zombie blips, human dots |
 | `human.asm` | humans to rescue (page 7 at `$7000`, always mapped): placement, map dots, drawing, landing rescue |
 | `weapons.asm` | weapons page (`PAGE_WEAPONS`, game logic at `$C000`): machine gun firing, round movement and collision with buildings, ground and zombies |
 | `player.asm` | player page (`PAGE_PLAYER`, game logic at `$C000`): `update_player`, which handles keyboard input, movement, world-edge clamping and building collision |
-| `sin_tables.asm` | generated: the sine table (`sin_lo`, `sin_hi`), in its own page (`PAGE_SIN`, page 14) at `$0000`, so it is 256-byte aligned with no padding. `get_sin` pages it into slot 0 on each call; only the game logic calls it, never the drawing |
+| `tiles.asm` | (in the sprites page) the hardware tilemap: see "Tilemap" |
+| `sin_tables.asm` | generated: the sine table (`sin_lo`, `sin_hi`), in its own page (`PAGE_SIN`, page 15) at `$0000`, so it is 256-byte aligned with no padding. `get_sin` pages it into slot 0 on each call; only the game logic calls it, never the drawing |
 | `htabs.asm` | generated: `hztab` (horizon row per pitch) and `htab` (building height per map code), resident |
 | `city_map.asm` | generated: the constants every city shares: the base and perimeter wall (`PAD_*`, `TERRACE_*`, `BASE_YAW`, `WALL_FAMILY`). The maps themselves are in the city files |
 | `l2_pallets.asm` | generated: checks on the fixed Layer 2 colour slots. The palettes themselves are in the city files |
@@ -2120,7 +2228,7 @@ NextReg select alone, so this still works):
 ```
 $0000-$1FFF  one 8K section (32 rows) of the Layer 2 back buffer, slot 0
              pixel address = (y & 31)*256 + x  ->  H = y & 31, L = x
-             (outside the drawing: the sine table, PAGE_SIN = page 14,
+             (outside the drawing: the sine table, PAGE_SIN = page 15,
              sin_tables.asm, paged in by get_sin)
 $2000-$3FFF  PAGE_ZOMBIE (page 5) - always mapped (slot 1): zombie.asm,
              then the humans (human.asm), the HUD map code (map.asm) and
@@ -2151,11 +2259,13 @@ $E000-$FFFF  core function page, swapped with NextReg $57 (CODE_MMU):
                PAGE_CITY    (page 1)  city.asm    - Layer 2 drawing
                PAGE_HUD     (page 2)  hud.asm     - ULA HUD
                PAGE_INPUT   (page 12) input.asm   - keyboard, joysticks
-               PAGE_SPRITES (page 13) sprites.asm - hardware sprites
+               PAGE_SPRITES (page 13) sprites.asm - hardware sprites,
+                                      tiles.asm - the tilemap
                PAGE_SPR0    (page 9)  sprite_data.asm - a sprite bank, while
                                       spr_load_bank copies its patterns
-               PAGE_INIT    (page 15) initialise.asm - start-up set-up
-                                      (initgame), once
+               PAGE_INIT    (page 14) initialise.asm - start-up set-up
+                                      (initgame), once; then the tilemap's
+                                      map and tiles (PAGE_TILES)
                PAGE_FILE    (page 16) file_handler.asm - SD card files
                PAGE_AUDIO   (page 17) audio.asm - sound set-up, engines
 ```
@@ -3493,6 +3603,7 @@ by playing doesn't change the results.
 | `test_project.py` | building corners projected by `vproj` and `vproj_y` land on the same screen x and y as `vtx_proj` and the level shortcut `proj_y`: 4,064 corners, every shift of Z, the frustum's edges; `occ_pretest`'s `oz_sc` / `oz_sx` give `scale_comp`'s and `occ_sx`'s results for 1,581 Z and components |
 | `test_linked.py` | each linked chain gun fits only its own slot; with both fitted, selecting either fires both, from 26 units (2 m) either side, with both crosshairs; each has 200 rounds, a round off each a frame, and with L empty R fires alone; one alone fires one, with its crosshair; the centre slot keeps the centre crosshair |
 | `test_devil.py` | killed, every other monster dies at once and, once it has sunk, the congratulations; on level 50 the pad destroyed is no game over (level 1: it is); a chain gun round's hit gives one quick spark; 250 hit points off it, the normal palette 2 steps darker, and its hit points on the HUD in red; a building's burst wide; its colours in each vision mode (thermal black, its outline grey, eyes to red; night vision bright greens or light greys, eyes to white); its footfall kills the zombie and human underfoot, not those beyond; the devil alone in level 50's last wave, at the entrance to hell (a circle of road), 1000 hit points, its graphics over the pages from the kept ones on and the figures' own back at the next game's level; the level checks keep it last, alone and one; drawn at its projected size, and close to; it chases the VTOL half a tile a step (east, north, turned round for one behind), shaking the view at each footfall; it walks through a level 4 building (knocked down), round a level 5 one, over rubble; it knocks down a terrace tile and the pad on its way, with no game over; its colours white and blue, black in thermal, its eyes red there; in range its eyes charge (half blue half way; the whine only for the last 3 s, once), then the bolt: a building in the way stops it and comes down, the VTOL safe; with the rubble, the next hits: 10 damage, the nose half way, its speed braked to half, the crackling zap asked for, drawn, the nose pitched, the brake, a building in the way coming down a metre every 2 frames to rubble; spins of 15-90 degrees either way; no charge out of range; a rocket hurts it, killed it sinks and goes; then its storm: 10 s of lightning from the pit, drawn, the buildings round it brought down, the VTOL untouched, the level not over until it ends, then the congratulations; `DEVIL.ZPB` up to date |
+| `test_tiles.py` | `sprites/console_tiles.json` usable and `tables_console.inc` up to date; the tilemap: the 40-column layout (the map 2.5K, 176 tiles, 112 free, the last at the page's end); its registers (bank 7, 40 columns, over the ULA), the map cleared, the font's A as tile 33, printing (lower case as upper, others as spaces), the last cell, scrolling, off and on, tile definitions copied, the palette's inks |
 | `test_timing.py` | `dt` (0..`DT_MAX`, right across the roll-over), `fs` and its inverse, `fsteps` adding up to `ASSUMED_FPS` a second, `game_now`, `clock_reset` after a pause; the machine gun's rate the same at 2 and 7 ticks a frame |
 | `test_zombie_moves.py` | decisions one record a frame (`zdec_i` round after 47); walking at a building between decisions it never comes within `ZMARGIN` of it and turns 90 degrees, left and right both happening; a base tile ahead: it goes for it; road ahead: it walks on |
 | `test_lich.py` | a lich only in the last wave of a city's last level, 25 hit points and 150 frames a shot in city 1, 30 and 145 in city 2, 65 and 110 in city 9; it walks at 4 times a zombie's speed; it fires within 200 m and not beyond; its aim leads a crossing VTOL, with variance; a fireball flies 14 frames (200 m) and bursts in the air; it hits the VTOL for 10; its burst hurts a human, the VTOL and the base and no monster; 16-bit hit points, and a round at 3 m hits its head |

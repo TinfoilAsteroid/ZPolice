@@ -1,7 +1,7 @@
 """Screenshots of the game's 320x256 Layer 2 screens, as the emulator
 (tools/nexsim.py) draws them from zpolice.nex: the main menu, redefine
-keys, the load-out, level complete, the congratulations after the last
-level, and the load error.  Saved as PNGs in docs/ (320x256).
+keys, the load-out, the game (its console's tiles too), level complete,
+the congratulations after the last level, and the load error.  Saved as PNGs in docs/ (320x256).
 
     python tools/screenshots.py          (build first: build.bat)
 
@@ -51,7 +51,8 @@ def main():
         settle(cpu, "PAGE_LOADOUT")
         shot(cpu, "loadout")
         zp.start_game(cpu)
-        zp.frames(cpu, 2)
+        zp.frames(cpu, 3)
+        shot(cpu, "game")               # (the view, the panel, the console)
         cpu.sp, cpu.pc = sym["stack_top"], sym["level_complete_screen"]
         cpu.set_nextreg(0x56, sym["PAGE_LEVELEND"])
         zp.run_until(cpu, lambda: zp.at_scan(cpu, sym["PAGE_LEVELEND"]), "level complete")

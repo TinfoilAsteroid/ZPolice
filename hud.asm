@@ -6,6 +6,19 @@
 ; nextreg CODE_MMU,PAGE_HUD.  Shared variables live in zpolice.asm.
 ;==============================================================================
 
+; The gauges' labels on the panel: S (speed), A (altitude) and B (the
+; booster's fuel, once fitted).  Comment this out to leave them off.
+       ; DEFINE SHOW_GAUGE_LABELS
+; The panel's dividers: the green rules across its top, the grey grooves
+; between its sections and the green edge of the map.  Comment this out to
+; leave them off.
+        ; DEFINE SHOW_DIVIDER
+; The panel's trim (panel_trim): its lines in TRIM_ATTR green and
+; GROOVE_ATTR grey, the gauges' surrounds, the weapon slots' bracket, the
+; grooves, the map's edge and the bottom rule.  Comment this out to leave
+; them all off.
+        ; DEFINE SHOW_TRIM
+
     IFDEF DRAW_FPS
 ; Print "nn FPS" at the top left of the ULA screen
 fps_draw:
@@ -110,6 +123,7 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         ld bc,8*32
         ld a,ATTR_PANEL                 ; panel
         call dma_fill
+    IFDEF SHOW_DIVIDER
         ld hl,ULA_ATTR+16*32            ; divider: top pixel row of the panel
         ld b,32
 .dv:    ld (hl),TRIM_ATTR
@@ -120,19 +134,24 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
 .dl:    ld (hl),$FF
         inc hl
         djnz .dl
+    ENDIF
 
+    IFDEF SHOW_GAUGE_LABELS
         ld a,GLYPH_S                    ; gauge labels: S (speed) and
         ld de,ULA_ROW_LBL+SPD_GCOL      ; A (altitude | ground)
         call print_glyph_at
         ld a,GLYPH_A
         ld de,ULA_ROW_LBL+ALT_GCOL
         call print_glyph_at
-        ld a,(boost_fitted)             ; the booster's fuel, once fitted: B,
-        or a                            ; and its cells transparent too
-        jr z,.nb
+    ENDIF
+        ld a,(boost_fitted)             ; the booster's fuel, once fitted: B
+        or a                            ; (SHOW_GAUGE_LABELS), and its cells
+        jr z,.nb                        ; transparent too
+    IFDEF SHOW_GAUGE_LABELS
         ld a,GLYPH_B
         ld de,ULA_ROW_LBL+BST_GCOL
         call print_glyph_at
+    ENDIF
         ld hl,ULA_ATTR + 17*32 + BST_GCOL
         ld b,GAUGE_H/8
 .gb:    ld (hl),0
@@ -149,11 +168,9 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         ld a,32-(ALT_GCOL-SPD_GCOL)
         add hl,a
         djnz .ga
-        ld hl,lbl_int                   ; INTEGRITY (the percentage: drawn
-        ld de,ULA_ROW_INT+INT_COL       ; by draw_integrity)
-        ld b,9
-        call print_glyphs
+    IFDEF SHOW_TRIM
         call panel_trim                 ; (after the labels: it edges them)
+    ENDIF
         ld hl,wd_shown                  ; the weapon slots: all to draw
         ld b,4*WPN_SLOTS
 .ws:    ld (hl),$FF
@@ -161,6 +178,8 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         djnz .ws
         ld a,$FF
         ld (int_shown),a                ; (drawn next frame)
+        ld (led_shown),a                ; (and the LEDs: console_on has
+        ld (alt_led_shown),a            ; just put back the layout's)
         call map_init
     IFDEF DRAW_FPS
         jp fps_draw                     ; initial " 0 FPS"
@@ -181,8 +200,10 @@ ULA_B3          equ ULA_BMP+$1000
         ASSERT MAP_COL == 24
 
 panel_trim:
+    IFDEF SHOW_DIVIDER
         ld hl,ULA_B3+$200               ; the rule: row 16, line 2
         call .rule
+    ENDIF
         ld hl,ULA_B3+7*32+$700          ; the bottom: row 23, line 7
         call .rule
         ld hl,ULA_ATTR+23*32            ; (in the same green; the percentage
@@ -217,6 +238,7 @@ panel_trim:
         ld b,WPN_BAR+2
         ld e,TRIM_ATTR
         call .side
+    IFDEF SHOW_DIVIDER
         ld a,8                          ; the grooves
         ld c,$18
         ld b,7
@@ -232,6 +254,9 @@ panel_trim:
         ld b,7
         ld e,TRIM_ATTR
         jr .side
+    ELSE
+        ret
+    ENDIF
 .rule:  ld b,MAP_COL
 .rl:    ld (hl),$FF
         inc hl
@@ -549,7 +574,8 @@ wpn_digits:
 
 ;------------------------------------------------------------------------------
 ; Integrity: the VTOL's hit points as a percentage of VTOL_HP, "nnn%" on row
-; INT_ROW+1 under the INTEGRITY label.  VTOL_HP is 50, so the percentage is
+; INT_ROW from INT_PCT_COL, after the console's INTEGE tiles (the label).
+; The cells must let the ULA show: tiles flagged u, or none.  VTOL_HP is 50, so the percentage is
 ; just vtol_hp * 2 (a shift left).  Green, amber below INT_WARN, red below
 ; INT_DANGER.  Redrawn only when it changes (int_shown).
 ;------------------------------------------------------------------------------
@@ -567,7 +593,7 @@ draw_integrity:
         cp INT_DANGER
         jr nc,.col
         ld c,P_PANEL<<3 | C_WARN
-.col:   ld hl,ULA_ATTR + (INT_ROW+1)*32 + INT_PCT_COL
+.col:   ld hl,ULA_ATTR + INT_ROW*32 + INT_PCT_COL
         ld b,4
 .at:    ld (hl),c
         inc hl
@@ -589,7 +615,7 @@ draw_integrity:
         ld a,GLYPH_SPACE
         ld (int_txt+1),a
 .pr:    ld hl,int_txt
-        ld de,ULA_ROW_INT+32+INT_PCT_COL
+        ld de,ULA_ROW_INT+INT_PCT_COL
         ld b,4
         jp print_glyphs
 .dig:   ld (hl),0                       ; A = A mod B, (HL) = A / B
@@ -601,15 +627,15 @@ draw_integrity:
 .dd:    inc hl
         ret
         ASSERT VTOL_HP == 50            ; (percent = hp * 2)
-        ASSERT INT_PCT_COL+3 < MAP_COL && INT_COL+8 < MAP_COL
+        ASSERT INT_PCT_COL+3 < MAP_COL
 
     IFNDEF RELEASE
 ;------------------------------------------------------------------------------
 ; Debug: the devil's hit points, "nnnn" in red after the integrity
-; percentage (row INT_ROW+1, DHP_COL), while it's there; blank otherwise.
+; integrity (row INT_ROW+1, DHP_COL), while it's there; blank otherwise.
 ; Redrawn only when they change (dhp_shown).
 ;------------------------------------------------------------------------------
-DHP_COL         equ INT_PCT_COL+5
+DHP_COL         equ 17
 draw_devil_hp:
         ld hl,$FFFF                     ; none
         ld ix,zombies+NZOMB*ZREC
@@ -705,6 +731,7 @@ print_glyphs:
 draw_hud:
         call draw_wpn
         call draw_integrity
+        call draw_boost_led
     IFNDEF RELEASE
         push ix
         call draw_devil_hp              ; (debug)
@@ -713,7 +740,105 @@ draw_hud:
         ; (the humans' states: hardware sprites, hum_hud in human.asm)
 
         call draw_gauges
+        call draw_alt_led               ; (after: it uses the bars' heights)
         jp map_player
+
+;------------------------------------------------------------------------------
+; The LEDs under the gauges: the console's tiles in tilemap row LED_ROW,
+; each gauge's column + 4 (the tilemap starts 4 columns left of the ULA):
+; the layout's LED_G, changed to LED_A or LED_R.  Each is written only when
+; its colour changes (its _shown byte: $FF at each level's start, ula_init,
+; so the first frame sets it).
+;
+; The booster's LED: the console's tile under the B gauge (row BST_LED_ROW,
+; column BST_LED_COL of the tilemap), green from half full, amber below half
+; (BOOST_FUEL_MAX / 2), red below a tenth.  Changed only when its colour
+; changes (led_shown: $FF at each level's start, ula_init); left as the
+; layout has it until the booster is fitted.  The map is in PAGE_TILES,
+; paged into slot 0 for the write and the slot put back.
+;------------------------------------------------------------------------------
+LED_ROW         equ 29                  ; (the layout's LED_Gs there)
+BST_LED_ROW     equ LED_ROW
+BST_LED_COL     equ BST_GCOL+4          ; (the tilemap starts 4 columns left)
+BST_LED_MAP     equ TM_ADDR+TM_MAP+(BST_LED_ROW*TM_40+BST_LED_COL)*2
+ALT_LED_ROW     equ LED_ROW
+ALT_LED_COL     equ ALT_GCOL+4
+ALT_LED_MAP     equ TM_ADDR+TM_MAP+(ALT_LED_ROW*TM_40+ALT_LED_COL)*2
+ALT_LED_AMBER   equ 10                  ; the altitude bar this many pixels or
+ALT_LED_RED     equ 2                   ; fewer above the ground's: amber; fewer
+                                        ; than ALT_LED_RED: red
+
+draw_boost_led:
+        ld a,(boost_fitted)
+        or a
+        ret z
+        ld a,(boost_fuel)
+        ld c,0                          ; green
+        cp BOOST_FUEL_MAX/2
+        jr nc,.s
+        inc c                           ; amber
+        cp BOOST_FUEL_MAX/10
+        jr nc,.s
+        inc c                           ; red
+.s:     ld hl,led_shown
+        ld de,BST_LED_MAP
+        ; fall through
+
+; C = colour (0 green, 1 amber, 2 red), HL -> the colour shown, DE = the
+; cell's address in the map (slot 0): written if the colour changed
+set_led:
+        ld a,c
+        cp (hl)
+        ret z                           ; unchanged
+        ld (hl),a
+        push de
+        add a,a
+        ld hl,led_tiles
+        add hl,a
+        ld e,(hl)                       ; its tile
+        inc hl
+        ld d,(hl)                       ; its bank
+        ld a,MMU_SLOT_0_REGISTER
+        call read_nextreg
+        pop hl                          ; (the cell)
+        push af
+        nextreg TM_MMU,PAGE_TILES
+        ld (hl),e
+        inc hl
+        ld a,(hl)                       ; (its mirrors, rotation, ULA bit kept)
+        and $0F
+        or d
+        ld (hl),a
+        pop af
+        nextreg TM_MMU,a
+        ret
+led_tiles:  db TM_FREE+CT_LED_G, CTA_LED_G
+            db TM_FREE+CT_LED_A, CTA_LED_A
+            db TM_FREE+CT_LED_R, CTA_LED_R
+led_shown:  db $FF                      ; the colour shown: 0 green, 1 amber, 2 red
+
+; The altitude LED, under the A gauge: the altitude bar (g_alt) against the
+; ground height's (g_gnd), both in pixels: green, amber within ALT_LED_AMBER
+; pixels, red within less than ALT_LED_RED.  Every frame (draw_hud, after
+; draw_gauges), written only when the colour changes (alt_led_shown).
+draw_alt_led:
+        ld a,(g_gnd)
+        ld b,a
+        ld a,(g_alt)
+        sub b                           ; the gap (none if below: 0)
+        jr nc,.p
+        xor a
+.p:     ld c,0                          ; green
+        cp ALT_LED_AMBER+1
+        jr nc,.s
+        inc c                           ; amber
+        cp ALT_LED_RED
+        jr nc,.s
+        inc c                           ; red
+.s:     ld hl,alt_led_shown
+        ld de,ALT_LED_MAP
+        jr set_led
+alt_led_shown: db $FF
 
 ; The gauges, GAUGE_H (48) pixels tall:
 ;   S  speed, 8 wide: (speed * 55) / 32 pixels, so SPEED_MAX 28 fills it;
@@ -857,8 +982,6 @@ g_clamp:
 ;==============================================================================
 int_shown:  db $FF                      ; draw_integrity: the percentage shown
 int_txt:    db 0, 0, 0, GLYPH_PCT       ;   its glyphs: digits, %
-lbl_int:    db GLYPH_I, GLYPH_N, GLYPH_T, GLYPH_E, GLYPH_G, GLYPH_R, GLYPH_I
-            db GLYPH_T, GLYPH_Y         ; INTEGRITY
 wd_flash:   db $FF                      ; draw_wpn: the slot flashing amber,
 wd_col:     db 0                        ;   the column offset,
 wd_slot:    db 0                        ;   its slot,

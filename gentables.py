@@ -955,6 +955,12 @@ print("wrote tables_font.inc")
 # ---------------------------------------------------------------------------
 # The HUD's hardware sprites -> tables_hspr.inc (sprites.asm): sprites/hud.json,
 # made with tools/hud_sprite_editor.py
+import consoletiles                    # the VTOL console's tiles (tiles.asm):
+if consoletiles.ensure_file():          # sprites/console_tiles.json
+    print(f"wrote {os.path.relpath(consoletiles.FILE)} (the console's tiles: edit them with "
+          "tools/tile_editor.py)")
+consoletiles.write_inc("tables_console.inc")
+print("wrote tables_console.inc")
 import hudsprites
 hud_sprites = hudsprites.load()
 hud_errs = hudsprites.problems(hud_sprites)

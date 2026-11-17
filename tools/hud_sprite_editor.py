@@ -63,8 +63,9 @@ def frame_layout(names):
     L, R, T_, B = 8, 8 + 16 + 160, 4, 4 + 16 + 64
     return [("FRM_H", L + 16, T_, 8, 1, False, False), ("FRM_H", L + 16 + 32, T_, 8, 1, False, False),
             ("FRM_V", L, T_ + 16, 1, 4, False, False), ("FRM_V", R, T_ + 16, 1, 4, True, False),
-            ("FRM_CRN", L, T_, 1, 1, False, False), ("FRM_CRN", R, T_, 1, 1, True, False),
-            ("FRM_CRN_P", L, B, 1, 1, False, True), ("FRM_CRN_P", R, B, 1, 1, True, True)]
+            ("FRM_CRN", L + 1, T_ + 1, 1, 1, False, False), ("FRM_CRN", R - 1, T_ + 1, 1, 1, True, False),
+            ("FRM_CRN_P", L + 1, B, 1, 1, False, True), ("FRM_CRN_P", R - 1, B, 1, 1, True, True)]
+    # (the corners 1 pixel in, as frame_tab has them)
 
 
 def usage(name):
@@ -191,13 +192,13 @@ class Editor:
         row.pack(anchor=tk.W, pady=(4, 0))
         self.lchip = tk.Canvas(row, width=26, height=20, highlightthickness=1)
         self.rchip = tk.Canvas(row, width=26, height=20, highlightthickness=1)
-        self.lchip.grid(row=0, column=0)
-        self.pick_l = tk.Label(row, text="", width=8, anchor=tk.W)
-        self.pick_l.grid(row=0, column=1)
-        self.rchip.grid(row=0, column=2)
-        self.pick_r = tk.Label(row, text="", width=8, anchor=tk.W)
-        self.pick_r.grid(row=0, column=3)
-        tk.Button(row, text="Hex...", command=self.cmd_hex).grid(row=0, column=4, padx=(6, 0))
+        self.lchip.grid(row=0, column=0)        # the left colour, then the right
+        self.pick_l = tk.Label(row, text="", anchor=tk.W)    # under it (the
+        self.pick_l.grid(row=0, column=1, sticky=tk.W)       # texts are long)
+        tk.Button(row, text="Hex...", command=self.cmd_hex).grid(row=0, column=2, padx=(6, 0))
+        self.rchip.grid(row=1, column=0, pady=(2, 0))
+        self.pick_r = tk.Label(row, text="", anchor=tk.W)
+        self.pick_r.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=(2, 0))
         tk.Label(right, text="In this sprite").pack(anchor=tk.W, pady=(6, 0))
         self.used = tk.Canvas(right, width=16 * SWATCH + 2, height=2 * SWATCH + 2, highlightthickness=0)
         self.used.pack(anchor=tk.W)
@@ -347,7 +348,7 @@ class Editor:
             chip.config(bg="#808080" if v == T else hs.hex_rgb(v))
             if v == T:
                 chip.create_line(0, 0, 28, 22, fill="#ff0000", width=2)
-            lab.config(text=f"{side}: ${v:02X}")
+            lab.config(text=f"{side}: {self.colour_text(v)}")
         self.used.delete("all")
         self.used_cols = sorted({v for r in self.px() for v in r})
         for k, v in enumerate(self.used_cols[:32]):
@@ -358,16 +359,28 @@ class Editor:
                 self.used.create_line(x, y, x + SWATCH, y + SWATCH, fill="#ff0000", width=2)
 
     # -------------------------------------------------------------- colours
+    @staticmethod
+    def colour_text(v):
+        """Colour v (RRRGGGBB): its byte, its r, g, b and RGB in hex"""
+        if v == T:
+            return f"${v:02X}  transparent"
+        return f"${v:02X}  (r {v >> 5}, g {v >> 2 & 7}, b {v & 3})  RGB {hs.hex_rgb(v).upper()}"
+
+    def picked(self, which):
+        self.draw_colours()
+        v = getattr(self, which)
+        self.say(f"{'left' if which == 'left' else 'right'} colour: {self.colour_text(v)}")
+
     def on_swatch(self, ev, which):
         v = (min(15, ev.y // SWATCH) << 4) | min(15, ev.x // SWATCH)
         setattr(self, which, v)
-        self.draw_colours()
+        self.picked(which)
 
     def on_used(self, ev, which):
         k = (ev.y // SWATCH) * 16 + ev.x // SWATCH
         if 0 <= k < len(self.used_cols):
             setattr(self, which, self.used_cols[k])
-            self.draw_colours()
+            self.picked(which)
 
     def cmd_hex(self):
         s = simpledialog.askstring("Left colour", "RRRGGGBB, in hex (E3: transparent):",

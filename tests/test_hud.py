@@ -99,8 +99,18 @@ def test_frame():
     try:
         first, n = sym["FRM_SPR0"], sym["FRM_COUNT"]
         vis = [cpu.spr_attr[first + k][3] & 0x80 for k in range(n)]
-        zp.check(all(vis), "the frame's sprites aren't all shown")
-        zp.check(cpu.spr_attr[first][0] == 32 and cpu.spr_attr[first][1] == 32, "the corner isn't at the view's")
+        corners = 4                             # (the first four: FRM_CORNERS;
+        want = ([bool(sym["FRM_CORNERS"])] * corners      # the rest: FRM_EDGES)
+                + [bool(sym["FRM_EDGES"])] * (n - corners))
+        zp.check([bool(v) for v in vis] == want, f"the frame's sprites shown {vis}, not as "
+                 f"FRM_CORNERS {sym['FRM_CORNERS']}, FRM_EDGES {sym['FRM_EDGES']} say")
+        x = lambda a: a[0] | (a[2] & 1) << 8   # (9 bits: the MSB in attribute 2)
+        tl, tr = cpu.spr_attr[first], cpu.spr_attr[first + 1]
+        zp.check((x(tl), tl[1]) == (33, 33), f"the top left corner at {x(tl)},{tl[1]}, not 33,33")
+        zp.check((x(tr), tr[1]) == (32 + 256 - 16 - 1, 33), f"the top right corner at {x(tr)},{tr[1]}")
+        bl, br = cpu.spr_attr[first + 2], cpu.spr_attr[first + 3]
+        zp.check(x(bl) == 33 and x(br) == 32 + 256 - 16 - 1, "the bottom corners not 1 pixel in")
+        zp.check(bl[1] == br[1] == 32 + sym["VIEW_H"] - 16, "the bottom corners moved up or down")
         top = cpu.spr_attr[first + 4]
         zp.check((top[4] >> 3) & 3 == 3, "the top edge isn't stretched")
     finally:

@@ -1081,6 +1081,59 @@ def to9(c8):
     return (c8 << 1) | (1 if c8 & 3 else 0)
 
 
+def tilemap_pixels(cpu, under=None):
+    """The hardware tilemap ($6B on, 40 columns), drawn over the ULA: {(x,
+    y): 9-bit colour} on the 320 x 256 screen, its see-through pixels left
+    out.  The map and tiles in bank 5 or (bit 7) the first half of bank 7
+    ($6E, $6F); 2-byte entries (tile, attribute) unless $6B bit 5; the
+    attribute's palette offset, mirrors and rotation; the transparent index
+    $4C; the first or (bit 4) second tilemap palette.  (Not: 80 columns,
+    text mode, 512 tiles, the clip window, the scroll.)  The pixels of tiles
+    with the ULA over them (attribute bit 0, unless $6B bit 0 forces the
+    tilemap over) go in the set under too, if given."""
+    ctrl = cpu.nextreg.get(0x6B, 0)
+    if not ctrl & 0x80 or ctrl & 0x48:
+        return {}
+
+    def mem(reg):
+        v = cpu.nextreg.get(reg, 0)
+        if v & 0x80:                    # bank 7's first half: page 14
+            return bytes(cpu.page(14)), (v & 0x3F) * 256 & 0x1FFF
+        return bytes(cpu.page(10)) + bytes(cpu.page(11)), (v & 0x3F) * 256
+    mp, mo = mem(0x6E)
+    dp, do = mem(0x6F)
+    attrs = not ctrl & 0x20
+    dflt = cpu.nextreg.get(0x6C, 0)
+    tr = cpu.nextreg.get(0x4C, 15) & 15
+    pal = cpu.palettes.get(7 if ctrl & 0x10 else 3, {})
+    out = {}
+    for row in range(32):
+        for col in range(40):
+            k = row * 40 + col
+            if attrs:
+                t, a = mp[(mo + 2 * k) % len(mp)], mp[(mo + 2 * k + 1) % len(mp)]
+            else:
+                t, a = mp[(mo + k) % len(mp)], dflt
+            base = do + t * 32
+            for v in range(8):
+                for u in range(8):
+                    uu, vv = u, v       # rotated, then mirrored on screen
+                    if a & 8:
+                        uu = 7 - uu
+                    if a & 4:
+                        vv = 7 - vv
+                    if a & 2:
+                        uu, vv = vv, 7 - uu
+                    b = dp[(base + vv * 4 + uu // 2) % len(dp)]
+                    n = (b >> 4) if uu % 2 == 0 else b & 15
+                    if n == tr:
+                        continue
+                    out[(col * 8 + u, row * 8 + v)] = pal.get((a & 0xF0) | n, 0)
+                    if under is not None and a & 1 and attrs and not ctrl & 3:
+                        under.add((col * 8 + u, row * 8 + v))
+    return out
+
+
 def write_png(path, bank, cpu):
     """Composite as the Next does with priority S-U-L: ULA pixel unless its
     colour is the global transparency ($E3), then Layer 2 inside its clip
@@ -1134,6 +1187,8 @@ def write_png(path, bank, cpu):
         if k < 32:
             upal[k] = v
     trans = cpu.nextreg.get(0x14, 0xE3)
+    tm_under = set()
+    tm = tilemap_pixels(cpu, tm_under) if full else {}
     x1, x2, y1, y2 = cpu.l2clip
     if mode320:
         x1, x2 = x1 * 2, x2 * 2 + 1
@@ -1151,6 +1206,9 @@ def write_png(path, bank, cpu):
                 v9 = upal[16 + cpu.border]          # border; transparent ->
                 if (v9 >> 1) == cpu.nextreg.get(0x14, 0xE3):  # the fallback
                     v9 = to9(cpu.nextreg.get(0x4A, 0))       # colour ($4A)
+            tv = tm.get((x, y))             # the tilemap, over the ULA (unless
+            if tv is not None and ((x, y) not in tm_under or (v9 >> 1) == trans):
+                v9 = tv                     # the ULA is over this tile)
             if not ula_above or (v9 >> 1) == trans:
                 lx, ly = (x, y) if mode320 else (ux, uy)
                 if x1 <= lx <= x2 and y1 <= ly <= y2 and (mode320 or (0 <= ux < 256 and 0 <= uy < 192)):

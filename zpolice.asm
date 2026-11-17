@@ -342,12 +342,11 @@ GUN_TILT_UP     equ 11
 GUN_TILT_DN     equ 32
 GUN_CTR_STEP    equ 2*GUN_TILT_STEP
 SIGHT_MARGIN    equ 6           ; the gunsight's arms stay in the view
-; Integrity panel (hud.asm draw_integrity): under the weapon bars,
-; "INTEGRITY" on character row INT_ROW, the VTOL's hit points as a
-; percentage below it (INT_ROW+1)
+; Integrity panel (hud.asm draw_integrity): under the weapon bars, on
+; character row INT_ROW, the VTOL's hit points as a percentage after the
+; console's INTEGE tiles (the label is in the tilemap, not the ULA)
 INT_ROW         equ 22
-INT_COL         equ 11              ; the label's column (under the slots)
-INT_PCT_COL     equ 12              ; "nnn%" from this column
+INT_PCT_COL     equ 16              ; "nnn%" from this column
 INT_WARN        equ 50              ; below this percentage: amber,
 INT_DANGER      equ 25              ;   below this: red (else green)
 CHAIN_DEV       equ 4           ; spread: 4/256 rad = 0.90 degrees
@@ -713,7 +712,7 @@ WPN_NUM_ROW     equ 17              ; the weapon slots, each a column from
 WPN_ROW         equ WPN_NUM_ROW+1   ; WPN_COL0, every 2nd: its slot number,
 WPN_BAR         equ 3               ; an 8x24 bar of its ammo, one digit a row,
 WPN_LTR_ROW     equ WPN_ROW+WPN_BAR ; then its weapon's letter
-WPN_COL0        equ 11
+WPN_COL0        equ 12              ; (even: the console tiles leave these columns open)
 WFLASH          equ 5               ; empty slot requested: flash ticks
 
 ; City map on the right of the panel: 32x32 cells at 2x2 pixels = 64x64,
@@ -1137,6 +1136,8 @@ next_level:
         out (c),a
         nextreg CODE_MMU,PAGE_HUD
         call ula_init                   ; ULA: FPS overlay, panel, city map
+        nextreg CODE_MMU,PAGE_SPRITES
+        call console_on                 ; the console round the view (tiles.asm)
         call zombie_init                ; place the zombies on the streets
         call human_init                 ; and the humans to rescue
         ld a,1<<WP_START                ; PREPARE FOR COMBAT after the first
@@ -2737,7 +2738,10 @@ stack_top:
         ORG CODE_ADDR
         INCLUDE "sprites.asm"
         INCLUDE "hud_sprites.asm"       ; the human column, the compass bar
+        INCLUDE "tiles.asm"             ; the hardware tilemap (page 14, after
+                                        ; start-up: PAGE_TILES)
         DISPLAY "Sprites end:",/A,$
+        ASSERT $ <= CODE_ADDR+MEMBANK_SIZE
 
         MMU CODE_SLOT e, PAGE_INIT, CODE_ADDR
         ORG CODE_ADDR

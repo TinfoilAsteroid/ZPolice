@@ -25,6 +25,7 @@ screen320:
 ; screen), and the input page in slot 7 (the screens read the keys)
 menu_quiet:
         call shake_off                  ; (zpolice.asm: the scroll back to 0)
+        nextreg $6B,0                   ; no tilemap (the game's console: tiles.asm)
         nextreg CODE_MMU,PAGE_SPRITES
         call spr_hide_all
         call spr_update

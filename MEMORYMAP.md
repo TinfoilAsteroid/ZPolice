@@ -16,7 +16,7 @@ two uses:
 
 | Page | Contents | Mapped by |
 |------|----------|-----------|
-| 14 `PAGE_SIN` | `sin_tables.asm`: sine table (end `$0200`) | `get_sin` (resident), `nextreg SIN_MMU,PAGE_SIN` |
+| 15 `PAGE_SIN` | `sin_tables.asm`: sine table (end `$0200`) | `get_sin` (resident), `nextreg SIN_MMU,PAGE_SIN` |
 | 18–23 `PAGE_L2_A` | Layer 2 buffer A (16K banks 9–11), one 32-row section at a time | `seg_map` / `line_seg` (city.asm), hud.asm, map.asm, via `L2SEC_MMU` |
 | 24–29 `PAGE_L2_B` | Layer 2 buffer B (16K banks 12–14), the same way | as above |
 
@@ -147,8 +147,8 @@ The rest of the city file goes to MMU 3.
                                         | `$EB1A` |
 | 12 `PAGE_INPUT`    | `input.asm`      | `$E20F` |
 | 13 `PAGE_SPRITES`  | `sprites.asm`,
-                       `hud_sprites.asm`| `$E352` |
-| 15 `PAGE_INIT`     | `initialise.asm` (run once at start-up) 
+                       `hud_sprites.asm`, `tiles.asm`| `$E58A` |
+| 14 `PAGE_INIT`     | `initialise.asm` (run once at start-up); then the tilemap (`PAGE_TILES`: map `$0000`, 40 x 32; tiles `$0A00`, 176) 
                                         | `$E059` |
 | 16 `PAGE_FILE`     | `file_handler.asm` (SD card load / save) 
                                         | `$E125` |
@@ -160,7 +160,8 @@ The rest of the city file goes to MMU 3.
 |-------|---------|------------------------------------------------------------------------------------|
 | 18–23 | 0 $0000 | Layer 2 buffer A                                                                   |
 | 24–29 | 0 $0000 | Layer 2 buffer B                                                                   |
-| 14    | 0 $0000 | sin_tables.asm                                                                     |
+| 15    | 0 $0000 | sin_tables.asm                                                                     |
+| 14    | 0 $0000 | the tilemap's map and tiles (tiles.asm, after start-up; bank 7's first half)       |
 | 5     | 1 $2000 | zombie.asm, human.asm, map.asm, interrupts.asm - Never paged out                   |
 | 6     | 2 $4000 | occlusion data                                                                     |
 | 35    | 2 $4000 | layer2-320x256.asm (on the screens outside the game, over the occlusion data)      |
@@ -183,7 +184,7 @@ The rest of the city file goes to MMU 3.
 | 2     | 7 $E000 | hud.asm                                                                            |
 | 9     | 7 $E000 | sprite_data.asm                                                                    |
 | 13    | 7 $E000 | sprites.asm, hud_sprites.asm                                                       |
-| 15    | 7 $E000 | initialise.asm                                                                     |
+| 14    | 7 $E000 | initialise.asm (once, at start-up)                                                 |
 | 16    | 7 $E000 | file_handler.asm                                                                   |
 | 17    | 7 $E000 | audio.asm                                                                          |
 

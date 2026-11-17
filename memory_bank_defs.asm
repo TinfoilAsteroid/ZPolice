@@ -162,9 +162,9 @@ PAGE_MAIN               equ 11          ; zpolice.asm, resident (slot 5): the
 PAGE_INPUT              equ 12          ; input.asm: keyboard, joysticks (slot 7)
 PAGE_SPRITES            equ 13          ; sprites.asm: hardware sprites
                                         ; (slot 7)
-PAGE_SIN                equ 14          ; sin_tables.asm: the sine table
+PAGE_SIN                equ 15          ; sin_tables.asm: the sine table
                                         ; (slot 0, read by get_sin)
-PAGE_INIT               equ 15          ; initialise.asm: start-up set-up,
+PAGE_INIT               equ 14          ; initialise.asm: start-up set-up,
                                         ; initgame (slot 7, once)
 PAGE_FILE               equ 16          ; file_handler.asm: SD card loading
                                         ; and saving (slot 7)

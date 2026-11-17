@@ -216,6 +216,34 @@ music on the main menu").
       the tests (the music's position stepping on, the refills, the
       stops).
 
+## Console LEDs and warnings (2026-11-17, to do)
+
+More of the console's LED tiles driven by the game, as the boost and
+altitude LEDs are (hud.asm `set_led`: LED_G / LED_A / LED_R, written to the
+tilemap only when the colour changes, reset at each level's start). The
+layout's spare LEDs: row 29 under the S gauge (column 5) and columns 30-34,
+row 26 column 25, and the column of three at column 37 (rows 10, 13, 16).
+- [ ] **Speed LED** (under the S gauge, row 29 column 5): green / amber /
+      red by speed. To decide: the bands (e.g. amber near SPEED_MAX, red
+      while boosting or reversing?).
+- [ ] **Wall proximity LED:** amber, then red, as the VTOL nears a
+      building's wall or the city's edge. To decide: the distances, and
+      where it's measured (the collision code already finds the nearest
+      wall?). Which cell.
+- [ ] **Integrity warning beeps:** a beep as integrity falls below 25%
+      (`INT_DANGER`) and another, more urgent, below 10%; once on crossing
+      each, or repeating while below? Sound page, like the base warning
+      beeps.
+- [ ] **Human nearby LED:** lit when a human to rescue is within some
+      distance of the VTOL. To decide: the distance, and green only or
+      brighter as it nears (LED_G_BRIGHT).
+- [ ] **Enemy nearby LED:** amber / red as a monster comes within range.
+      To decide: the distances, which monsters count (the current wave's
+      zombies, specials), and the cost: checked a few a frame, not all
+      every frame.
+- [ ] Choose the cells for the last three (the spare LEDs above), and add
+      a test for each LED as test_tiles.py does for boost and altitude.
+
 ## Timing: real time instead of frame counting (2026-11-15, to review)
 
 See docs/CTC.md. The game logic runs once per rendered frame. Every speed is
