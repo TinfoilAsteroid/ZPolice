@@ -1,7 +1,7 @@
 {
  "format": "Z-Police console tiles", "version": 2,
  "banks": [
-  [0, 0, 72, 147, 219, 293, 365, 439, 11, 3, 40, 16, 488, 448, 93, 192],
+  [0, 0, 72, 147, 219, 293, 365, 439, 11, 3, 40, 16, 488, 384, 93, 192],
   [0, 0, 72, 147, 219, 293, 365, 439, 11, 3, 56, 40, 24, 448, 93, 192],
   [0, 0, 72, 147, 219, 293, 365, 439, 11, 3, 504, 360, 488, 448, 93, 192],
   [0, 0, 72, 147, 219, 293, 365, 439, 11, 3, 448, 320, 256, 448, 93, 192],
@@ -27,15 +27,15 @@
   {"name": "REC_BL", "bank": 0, "rows": ["29888888", "29888888", "29888888", "29888888", "29888888", "29999999", "25555555", "55555555"]},
   {"name": "REC_BR", "bank": 0, "rows": ["88888895", "88888895", "88888895", "88888895", "88888895", "99999995", "55555555", "55555555"]},
   {"name": "VENT", "bank": 0, "rows": ["44444444", "31111113", "45555555", "44444444", "31111113", "45555555", "44444444", "44444444"]},
+  {"name": "LED_OFF", "bank": 0, "rows": ["44444444", "44333344", "43222264", "432bb264", "432bb264", "43222264", "44666644", "44444444"]},
   {"name": "LED_G", "bank": 0, "rows": ["44444444", "44333344", "432ab264", "43aaaa24", "43baaa24", "432bb264", "44666644", "44444444"]},
   {"name": "LED_G_BRIGHT", "bank": 1, "rows": ["44444444", "44cc3c44", "4c2ab264", "4caaaac4", "43baaa24", "432bb264", "446bb644", "44444444"]},
   {"name": "LED_A", "bank": 0, "rows": ["44444444", "44333344", "432cf264", "43cccc24", "43fccc24", "432ff264", "44666644", "44444444"]},
   {"name": "LED_A_BRIGHT", "bank": 2, "rows": ["44444444", "44cc3c44", "4c2ab264", "4caaaac4", "43baaa24", "432bb264", "446bb644", "44444444"]},
   {"name": "LED_R", "bank": 0, "rows": ["44444444", "44333344", "432df264", "43dddd24", "43fddd24", "432ff264", "44666644", "44444444"]},
-  {"name": "LED_R_BRIGHT", "bank": 3, "rows": ["44444444", "44cc3c44", "4c2ab264", "4caaaac4", "43baaa24", "432bb264", "446bb644", "44444444"]},
+  {"name": "LED_R_BRIGHT", "bank": 3, "rows": ["44444444", "44cc3c44", "4c2ab264", "4caaaac4", "43baaa24", "432bb264", "446cc644", "44444444"]},
   {"name": "LABEL", "bank": 0, "rows": ["44444444", "41111114", "41e9ee14", "41111114", "41e19e14", "41111114", "44444444", "44444444"]},
   {"name": "LABEL_WPNS", "bank": 0, "rows": ["44444444", "41111114", "412ee214", "412ee214", "419ee914", "41911914", "41111114", "44444444"]},
-  {"name": "LABEL_WPNS_SELECTED", "bank": 0, "rows": ["44444444", "41111114", "412ee214", "412ee214", "419ee914", "419dd914", "41111114", "44444444"]},
   {"name": "LABEL_WPNS_EMPTY", "bank": 0, "rows": ["44444444", "41111114", "41911914", "41911914", "41911914", "41911914", "41111114", "44444444"]},
   {"name": "GAUGE_TL", "bank": 0, "rows": ["55555555", "44444444", "44444444", "44444444", "44444444", "44444444", "4444444b", "444444bb"]},
   {"name": "GAUGE_TL_22", "bank": 0, "rows": ["44444444", "44444444", "44444444", "44444444", "44444444", "44444444", "4444444b", "444444bb"]},
@@ -92,8 +92,8 @@
   ["PLATE", "REC_L", "REC_R", "PLATE", "GAUGE_TL_2|xr", "", "GAUGE_SIDE1|x", "", "GAUGE_SIDE1|x", "", "GAUGE_TL_2|yr", "PLATE|xy", "PLATE|xr", "HUD_T|yr", "INTEGE_I", "INTEGE_N", "INTEGE_T", "INTEGE_E", "INTEGE_G", "PLATE", "PLATE|u", "PLATE|u", "PLATE|u", "PLATE|u", "PLATE", "LED_G", "HUD_T|xyr", "HUD_L|x", "", "", "", "", "", "", "", "", "HUD_L", "VENT", "VENT", "PLATE"],
   ["PLATE", "REC_BL", "REC_BR", "PLATE", "GAUGE_TL_22|y", "GAUGE_SPEED", "GAUGE_TL_DBL_2|y", "GAUGE_ALT", "GAUGE_TL_DBL_2|y", "GAUGE_BOOST", "GAUGE_TL_22|xy", "PLATE|xy", "PLATE|xr", "RIVET_Edge|y", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "HUD_T", "RIVET_Edge|xy", "HUD_L|x", "", "", "", "", "", "", "", "", "HUD_L", "PLATE", "PLATE", "PLATE"],
   ["PLATE", "RIVET", "RIVET", "PLATE", "PLATE", "SPEED", "PLATE", "GAUGE_ALT_2", "PLATE", "GAUGE_BOOST_2", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "HUD_L|r", "HUD_L|r", "HUD_L|r", "HUD_L|r", "HUD_L|r", "HUD_L|r", "HUD_L|r", "HUD_L|r", "PLATE", "RIVET", "RIVET", "PLATE"],
-  ["PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "LED_G", "RIVET", "LED_G", "RIVET", "LED_G", "PLATE", "PLATE", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "PLATE", "PLATE", "LED_G", "LED_G", "LED_G", "LED_G", "LED_G", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE"],
-  ["PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "LABEL", "RIVET", "LABEL", "RIVET", "LABEL", "PLATE", "PLATE", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "PLATE", "PLATE", "LABEL_WPNS_EMPTY", "LABEL_WPNS", "LABEL_WPNS_SELECTED", "LABEL_WPNS", "LABEL_WPNS_EMPTY", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE"],
+  ["PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "LED_G", "RIVET", "LED_G", "RIVET", "LED_G", "PLATE", "PLATE", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "PLATE", "PLATE", "LED_OFF", "LED_G", "LED_G", "LED_G", "LED_G", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE"],
+  ["PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "LABEL", "RIVET", "LABEL", "RIVET", "LABEL", "PLATE", "PLATE", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "VENT", "PLATE", "PLATE", "LABEL_WPNS_EMPTY", "LABEL_WPNS", "LABEL_WPNS", "LABEL_WPNS", "LABEL_WPNS_EMPTY", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE"],
   ["RIVET", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "RIVET", "RIVET", "RIVET", "RIVET", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "PLATE", "RIVET"]
  ]
 }

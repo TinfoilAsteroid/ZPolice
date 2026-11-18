@@ -180,6 +180,22 @@ ula_init:                               ; (the fills by DMA: layer2_cls.asm)
         ld (int_shown),a                ; (drawn next frame)
         ld (led_shown),a                ; (and the LEDs: console_on has
         ld (alt_led_shown),a            ; just put back the layout's)
+        ld (spd_led_shown),a
+        ld (int_led_shown),a
+        ld (hum_led_shown),a
+        ld (wall_led_shown),a
+        ld (en_led_shown),a
+        ld (int_band),a                 ; (no beep for the level's start)
+        ld hl,wl_shown                  ; the weapon LEDs and labels
+        ld b,2*WPN_SLOTS
+.wl:    ld (hl),a
+        inc hl
+        djnz .wl
+        xor a
+        ld (en_cnt),a                   ; no flashing
+        ld (enemy_alert),a
+        ld a,LED_SEC
+        ld (flash_t),a
         call map_init
     IFDEF DRAW_FPS
         jp fps_draw                     ; initial " 0 FPS"
@@ -741,6 +757,10 @@ draw_hud:
 
         call draw_gauges
         call draw_alt_led               ; (after: it uses the bars' heights)
+        push ix
+        call draw_leds                  ; speed, integrity, humans, walls,
+        pop ix                          ; enemies
+        call draw_wpn_leds              ; the weapon slots' LEDs and labels
         jp map_player
 
 ;------------------------------------------------------------------------------
@@ -784,8 +804,9 @@ draw_boost_led:
         ld de,BST_LED_MAP
         ; fall through
 
-; C = colour (0 green, 1 amber, 2 red), HL -> the colour shown, DE = the
-; cell's address in the map (slot 0): written if the colour changed
+; C = colour (LC_*: 0 green, 1 amber, 2 red, 3-5 the bright ones), HL -> the
+; colour shown, DE = the cell's address in the map (slot 0): written if the
+; colour changed
 set_led:
         ld a,c
         cp (hl)
@@ -815,6 +836,21 @@ set_led:
 led_tiles:  db TM_FREE+CT_LED_G, CTA_LED_G
             db TM_FREE+CT_LED_A, CTA_LED_A
             db TM_FREE+CT_LED_R, CTA_LED_R
+            db TM_FREE+CT_LED_G_BRIGHT, CTA_LED_G_BRIGHT
+            db TM_FREE+CT_LED_A_BRIGHT, CTA_LED_A_BRIGHT
+            db TM_FREE+CT_LED_R_BRIGHT, CTA_LED_R_BRIGHT
+            db TM_FREE+CT_LED_OFF, CTA_LED_OFF
+            db TM_FREE+CT_LABEL_WPNS, CTA_LABEL_WPNS
+            db TM_FREE+CT_LABEL_WPNS_EMPTY, CTA_LABEL_WPNS_EMPTY
+LC_G            equ 0                   ; the colours (led_tiles)
+LC_A            equ 1
+LC_R            equ 2
+LC_GB           equ 3                   ; bright
+LC_AB           equ 4
+LC_RB           equ 5
+LC_OFF          equ 6                   ; (unlit)
+LC_LAB          equ 7                   ; (the weapon labels: a weapon fitted,
+LC_LABE         equ 8                   ;   none)
 led_shown:  db $FF                      ; the colour shown: 0 green, 1 amber, 2 red
 
 ; The altitude LED, under the A gauge: the altitude bar (g_alt) against the
@@ -839,6 +875,376 @@ draw_alt_led:
         ld de,ALT_LED_MAP
         jr set_led
 alt_led_shown: db $FF
+
+;------------------------------------------------------------------------------
+; The other LEDs (draw_leds, every frame from draw_hud; each written only
+; when its tile changes):
+;   speed      under the S gauge: green, amber from SPEED_AMBER or
+;              reversing, red while boosting
+;   integrity  right of the percentage: green, amber below INT_BEEP_A (25%),
+;              red below INT_BEEP_R (10%).  Crossing down into amber: a mid
+;              beep (SFX_WARN_MID), into red: three high ones
+;              (SFX_WARN_HIGH), once each (again after a repair lifts it)
+;   humans     the top LED on the right: green; flashing bright (a second
+;              each) while a human waiting to be rescued is within HUM_NEAR
+;              cells on both axes
+;   walls      the middle one: amber; flashing bright while the VTOL is within
+;              WALL_NEAR (256ths of a cell: 0.2) of a cell edge with a
+;              building past it it couldn't fly over (its roof + COLL_H above
+;              the VTOL), or the city's edge
+;   enemies    the bottom one: red; when a monster attacks it or shoots at it
+;              (enemy_alert: a lich's fireball, the devil's bolt, a ghost's
+;              blow), bright a second, red a second, 3 times (again from the
+;              start on another)
+; Seconds on the 50 Hz clock (dt), so the flashing keeps time at any frame
+; rate.
+;------------------------------------------------------------------------------
+LED_SEC         equ 50                  ; clock ticks a second
+SPEED_AMBER     equ SPEED_MAX*3/4
+INT_BEEP_A      equ 25                  ; integrity (percent) below this: amber
+INT_BEEP_R      equ 10                  ;   and below this: red
+HUM_NEAR        equ 2                   ; cells
+WALL_NEAR       equ 51                  ; 0.2 of a cell
+EN_FLASHES      equ 3
+
+SPD_LED_MAP     equ TM_ADDR+TM_MAP+(LED_ROW*TM_40+SPD_GCOL+4)*2
+INT_LED_MAP     equ TM_ADDR+TM_MAP+(26*TM_40+25)*2
+HUM_LED_MAP     equ TM_ADDR+TM_MAP+(10*TM_40+37)*2
+WALL_LED_MAP    equ TM_ADDR+TM_MAP+(13*TM_40+37)*2
+EN_LED_MAP      equ TM_ADDR+TM_MAP+(16*TM_40+37)*2
+
+draw_leds:
+        ld hl,flash_t                   ; the flashing's second
+        call led_tick
+        jr nc,.ph
+        ld a,(flash_ph)
+        xor 1
+        ld (flash_ph),a
+.ph:    ld a,(enemy_alert)              ; attacked: flash 3 times
+        or a
+        jr z,.en
+        xor a
+        ld (enemy_alert),a
+        ld a,2*EN_FLASHES
+        ld (en_cnt),a
+        ld a,LED_SEC
+        ld (en_t),a
+.en:    ld a,(en_cnt)
+        or a
+        jr z,.spd
+        ld hl,en_t
+        call led_tick
+        jr nc,.spd
+        ld hl,en_cnt
+        dec (hl)
+
+.spd:   ld c,LC_R                       ; speed
+        ld a,(boost_on)
+        or a
+        jr nz,.ss
+        ld c,LC_A
+        ld a,(speed)
+        bit 7,a
+        jr nz,.ss                       ; reversing
+        cp SPEED_AMBER
+        jr nc,.ss
+        ld c,LC_G
+.ss:    ld hl,spd_led_shown
+        ld de,SPD_LED_MAP
+        call set_led
+
+        ld a,(vtol_hp)                  ; integrity
+        add a,a                         ; (percent)
+        ld bc,LC_G                      ; B = its band, C = its colour
+        cp INT_BEEP_A
+        jr nc,.ib
+        inc b
+        inc c
+        cp INT_BEEP_R
+        jr nc,.ib
+        inc b
+        inc c
+.ib:    ld a,(int_band)
+        cp $FF
+        jr z,.is                        ; (the level's start: quiet)
+        cp b
+        jr nc,.is                       ; no worse
+        ld a,b
+        cp 1
+        ld a,SFX_WARN_MID
+        jr z,.ir
+        ld a,SFX_WARN_HIGH
+.ir:    ld (sfx4_req),a
+.is:    ld a,b
+        ld (int_band),a
+        ld hl,int_led_shown
+        ld de,INT_LED_MAP
+        call set_led
+
+        call led_hum_near               ; humans
+        ld c,LC_G
+        call c,.flash
+        ld hl,hum_led_shown
+        ld de,HUM_LED_MAP
+        call set_led
+
+        call led_wall_near              ; walls
+        ld c,LC_A
+        call c,.flash
+        ld hl,wall_led_shown
+        ld de,WALL_LED_MAP
+        call set_led
+
+        ld c,LC_R                       ; enemies
+        ld a,(en_cnt)
+        bit 0,a
+        jr nz,.es                       ; (odd: the second off)
+        or a
+        jr z,.es
+        ld c,LC_RB
+.es:    ld hl,en_led_shown
+        ld de,EN_LED_MAP
+        jp set_led
+.flash: ld a,(flash_ph)                 ; C -> its bright one, this second
+        or a
+        ret z
+        inc c
+        inc c
+        inc c
+        ret
+        ASSERT LC_GB == LC_G+3 && LC_AB == LC_A+3 && LC_RB == LC_R+3
+
+; HL -> a timer (clock ticks): down by dt; carry set when a second is up
+; (and it's a second again, the overshoot carried)
+led_tick:
+        ld a,(dt)
+        ld b,a
+        ld a,(hl)
+        sub b
+        jr z,.up
+        jr nc,.st
+.up:    add a,LED_SEC
+        ld (hl),a
+        scf
+        ret
+.st:    ld (hl),a                       ; (no carry)
+        ret
+
+; Carry set if a human waiting to be rescued is within HUM_NEAR cells of the
+; VTOL on both axes
+led_hum_near:
+        ld a,(cam_x+2)
+        ld d,a
+        ld a,(cam_z+2)
+        ld e,a
+        ld ix,humans
+        ld b,HUMAN_MAX
+.h:     ld a,(ix+6)
+        cp HS_WAIT
+        jr nz,.n
+        ld a,(ix+1)
+        sub d
+        jr nc,.x
+        neg
+.x:     cp HUM_NEAR+1
+        jr nc,.n
+        ld a,(ix+3)
+        sub e
+        jr nc,.z
+        neg
+.z:     cp HUM_NEAR+1
+        ret c                           ; this one
+.n:     push de
+        ld de,HREC
+        add ix,de
+        pop de
+        djnz .h
+        or a
+        ret
+
+; Carry set if the VTOL is within WALL_NEAR of an edge of its cell with a
+; building past it that it couldn't fly over, or the city's edge
+led_wall_near:
+        ld a,(cam_x+1)                  ; west
+        cp WALL_NEAR
+        jr nc,.e
+        ld de,$FF00
+        call .cell
+        ret c
+.e:     ld a,(cam_x+1)                  ; east
+        cp 256-WALL_NEAR
+        jr c,.nz
+        ld de,$0100
+        call .cell
+        ret c
+.nz:    ld a,(cam_z+1)                  ; north (-z)
+        cp WALL_NEAR
+        jr nc,.sz
+        ld de,$00FF
+        call .cell
+        ret c
+.sz:    ld a,(cam_z+1)                  ; south (+z)
+        cp 256-WALL_NEAR
+        ccf
+        ret nc
+        ld de,$0001
+        ; fall through
+; D, E = the step in x, z: carry if that cell stops the VTOL (off the city,
+; or a roof it isn't COLL_H clear of)
+.cell:  ld a,(cam_x+2)
+        add a,d
+        cp GRID
+        ccf
+        ret c                           ; off the city
+        ld c,a
+        ld a,(cam_z+2)
+        add a,e
+        cp GRID
+        ccf
+        ret c
+        ld l,a
+        ld h,0
+        ROWOFS
+        ld a,c
+        add hl,a
+        ld de,city_map
+        add hl,de
+        ld a,(hl)
+        call bld_height                 ; HL = its height
+        ld a,h
+        or l
+        ret z                           ; a road (no carry)
+        ld de,COLL_H
+        add hl,de
+        ex de,hl
+        ld hl,(cam_y)
+        or a
+        sbc hl,de                       ; carry: lower than that
+        ret
+        ASSERT GRID == 64               ; (ROWOFS)
+
+flash_t:    db LED_SEC                  ; draw_leds: the flashing's second,
+flash_ph:   db 0                        ;   1: the bright second
+en_t:       db 0                        ; the enemy LED's second,
+en_cnt:     db 0                        ;   its seconds left (even: bright)
+int_band:   db $FF                      ; integrity: 0 >= 25%, 1, 2 < 10%
+spd_led_shown:  db $FF                  ; (each LED's colour shown)
+int_led_shown:  db $FF
+hum_led_shown:  db $FF
+wall_led_shown: db $FF
+en_led_shown:   db $FF
+
+;------------------------------------------------------------------------------
+; The weapon slots' LEDs (tilemap row WL_ROW from column WL_COL0) and their
+; labels (the row below), left to right in wpn_order, as the ULA's slots
+; (keys 2, 4, 1, 5, 3).  Every frame, each written only when it changes, so
+; the load-out, pick-ups, reloading and selecting all show at once.
+;   LED    no weapon fitted: LED_OFF; out of ammo: LED_R / LED_R_BRIGHT a
+;          second each (flash_ph) until reloaded; selected: LED_A, LED_R
+;          while fire is held (fire_held); else LED_G.  With a linked chain
+;          gun selected both of its slots count as selected.
+;   label  LABEL_WPNS with a weapon fitted, LABEL_WPNS_EMPTY with none.
+;------------------------------------------------------------------------------
+WL_ROW          equ 29
+WL_COL0         equ 30
+WL_MAP          equ TM_ADDR+TM_MAP+(WL_ROW*TM_40+WL_COL0)*2
+WLAB_MAP        equ WL_MAP+TM_40*2
+
+draw_wpn_leds:
+        ld a,(wpn_sel)                  ; a linked chain gun selected?
+        add a,a
+        ld hl,wpn_slots+WPN_TYPE
+        add hl,a
+        ld a,(hl)
+        call is_link
+        ld a,0
+        jr nz,.nl
+        inc a
+.nl:    ld (wl_link),a
+        ld b,0                          ; B = its place, left to right
+.lp:    push bc
+        ld hl,wpn_order
+        ld a,b
+        add hl,a
+        ld c,(hl)                       ; C = its slot
+        ld a,c
+        add a,a
+        ld hl,wpn_slots+WPN_TYPE
+        add hl,a
+        ld d,(hl)                       ; D = its weapon
+        inc hl
+        ld e,(hl)                       ; E = its ammo
+        push bc
+        push de
+        ld a,d                          ; the label
+        or a
+        ld c,LC_LAB
+        jr nz,.lb
+        ld c,LC_LABE
+.lb:    ld a,b
+        ld hl,wlab_shown
+        ld de,WLAB_MAP
+        call .put
+        pop de
+        pop bc
+        ld a,d                          ; the LED
+        or a
+        ld l,LC_OFF
+        jr z,.set                       ; no weapon
+        ld a,e
+        or a
+        jr nz,.am
+        ld l,LC_R                       ; out of ammo: flashing
+        ld a,(flash_ph)
+        or a
+        jr z,.set
+        ld l,LC_RB
+        jr .set
+.am:    ld a,(wpn_sel)
+        cp c
+        jr z,.sel
+        ld a,(wl_link)
+        or a
+        jr z,.uns
+        ld a,d
+        call is_link
+        jr z,.sel                       ; (the other of the linked pair)
+.uns:   ld l,LC_G
+        jr .set
+.sel:   ld l,LC_A
+        ld a,(fire_held)
+        or a
+        jr z,.set
+        ld l,LC_R                       ; firing
+.set:   ld c,l
+        ld a,b
+        ld hl,wl_shown
+        ld de,WL_MAP
+        call .put
+        pop bc
+        inc b
+        ld a,b
+        cp WPN_SLOTS
+        jr nz,.lp
+        ret
+; A = the place, HL -> its shown bytes, DE = its row's first cell, C = the
+; tile (LC_*)
+.put:   add hl,a
+        add a,a
+        add de,a
+        jp set_led
+
+; A = a weapon: Z if a linked chain gun's
+is_link:
+        cp WPN_LCHAIN_L
+        ret z
+        cp WPN_LCHAIN_R
+        ret
+
+wl_link:    db 0                        ; 1: a linked chain gun selected
+wl_shown:   ds WPN_SLOTS, $FF           ; the LEDs shown,
+wlab_shown: ds WPN_SLOTS, $FF           ;   the labels
+        ASSERT wlab_shown == wl_shown+WPN_SLOTS
 
 ; The gauges, GAUGE_H (48) pixels tall:
 ;   S  speed, 8 wide: (speed * 55) / 32 pixels, so SPEED_MAX 28 fills it;

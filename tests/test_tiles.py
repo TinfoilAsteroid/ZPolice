@@ -10,6 +10,13 @@ T = sym["PAGE_TILES"]
 DEFS, MAP = sym["TM_DEFS"], sym["TM_MAP"]
 
 
+# the LEDs the game changes (draw_boost_led, draw_alt_led, draw_leds): not
+# necessarily as the layout has them
+DRIVEN = {(29, sym["SPD_GCOL"] + 4), (29, sym["ALT_GCOL"] + 4), (29, sym["BST_GCOL"] + 4),
+          (10, 37), (13, 37), (16, 37), (26, 25)} | \
+    {(r, 30 + k) for r in (29, 30) for k in range(5)}     # (the weapon LEDs, labels)
+
+
 def game():
     sd = zp.SD()
     cpu = zp.machine(sd)
@@ -18,11 +25,12 @@ def game():
     return sd, cpu
 
 
-def call(cpu, name, **regs):
-    """name (in the sprites page, slot 7) with registers set, to its return"""
+def call(cpu, name, page="PAGE_SPRITES", **regs):
+    """name (in the sprites page, or page, slot 7) with registers set, to
+    its return"""
     pc0, sp0 = cpu.pc, cpu.sp
     mmu7 = cpu.mmu[7]
-    cpu.set_nextreg(0x57, sym["PAGE_SPRITES"])
+    cpu.set_nextreg(0x57, sym[page])
     idx = {"b": 0, "c": 1, "d": 2, "e": 3, "h": 4, "l": 5, "a": 7}
     for k, v in regs.items():
         if k in ("hl", "de", "bc"):
@@ -155,7 +163,7 @@ def test_console_in_the_game():
                 cl = d["layout"][r][c]
                 v = ct.cell_tile(cl, names)
                 want = (0, 0) if v is None else                     (v[0], ct.bank_offset(bank[cl.split("|")[0]]) << 4 | v[1])    # (+ its flags)
-                if cell(cpu, r, c) != want:
+                if cell(cpu, r, c) != want and (r, c) not in DRIVEN:
                     bad.append((c, r, cell(cpu, r, c), want))
         zp.check(not bad, f"cells not as sprites/console_tiles.json has them: {bad[:4]}")
         zp.check(all(cell(cpu, r, c)[0] for r in range(32) for c in range(40)
@@ -269,6 +277,228 @@ def test_alt_led():
         zp.check("LED_G" in seen, f"never green: {seen}")
     finally:
         sd.close()
+
+
+def led_test(body):
+    """A level's start, the clock stopped (dt 0, so nothing flashes on its
+    own); body(cpu, led, step) with led(row, col) the LED tile's name there
+    and step() a call of draw_leds"""
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(zp.ROOT, "tools"))
+    import consoletiles as ct
+    d = ct.load()
+    names = [t["name"] for t in d["tiles"]]
+    banks = {t["name"]: ct.bank_offset(t.get("bank", 0)) << 4 for t in d["tiles"]}
+    sd, cpu = game()
+    try:
+        zp.frames(cpu, 2)
+
+        def led(r, c):
+            t, a = cell(cpu, r, c)
+            n = names[t - sym["TM_FREE"]]
+            zp.check(a & 0xF0 == banks[n], f"cell {c},{r}: {n} with bank attribute {a:02X}")
+            return n
+
+        def step(dt=0):
+            cpu.wr(sym["dt"], dt)
+            call(cpu, "draw_leds", page="PAGE_HUD")
+        body(cpu, led, step)
+    finally:
+        sd.close()
+
+
+def test_speed_led():
+    """Under the S gauge: green; amber from SPEED_AMBER or reversing; red
+    boosting"""
+    def body(cpu, led, step):
+        r, c = sym["LED_ROW"], sym["SPD_GCOL"] + 4
+        for spd, boost, want in ((0, 0, "LED_G"), (sym["SPEED_AMBER"] - 1, 0, "LED_G"),
+                                 (sym["SPEED_AMBER"], 0, "LED_A"), (0xFC, 0, "LED_A"),
+                                 (sym["SPEED_MAX"], 1, "LED_R"), (0, 0, "LED_G")):
+            cpu.wr(sym["speed"], spd)
+            cpu.wr(sym["boost_on"], boost)
+            step()
+            zp.check(led(r, c) == want, f"speed {spd}, boost {boost}: {led(r, c)}, not {want}")
+    led_test(body)
+
+
+def test_integrity_led_and_beeps():
+    """Right of the percentage: green, amber below 25% with a mid beep, red
+    below 10% with the high beeps; once each, again after a repair"""
+    def body(cpu, led, step):
+        def at(hp, want, beep):
+            cpu.wr(sym["sfx4_req"], 0)
+            cpu.wr(sym["vtol_hp"], hp)
+            step()
+            got = cpu.rd(sym["sfx4_req"])
+            zp.check(led(26, 25) == want, f"hp {hp}: {led(26, 25)}, not {want}")
+            zp.check(got == beep, f"hp {hp}: sound {got}, not {beep}")
+        mid, high = sym["SFX_WARN_MID"], sym["SFX_WARN_HIGH"]
+        at(50, "LED_G", 0)
+        at(13, "LED_G", 0)                      # 26%
+        at(12, "LED_A", mid)                    # 24%: the beep,
+        at(10, "LED_A", 0)                      # once
+        at(4, "LED_R", high)                    # 8%
+        at(2, "LED_R", 0)
+        at(50, "LED_G", 0)                      # repaired: quiet,
+        at(3, "LED_R", high)                    # and again
+    led_test(body)
+
+
+def test_human_led():
+    """The top right LED: green; flashing bright (a second each) while a
+    waiting human is within 2 cells on both axes"""
+    def body(cpu, led, step):
+        hum, hrec = sym["humans"], sym["HREC"]
+        for k in range(sym["HUMAN_MAX"]):
+            cpu.wr(hum + k * hrec + 6, 0)       # none
+        cx, cz = cpu.rd(sym["cam_x"] + 2), cpu.rd(sym["cam_z"] + 2)
+
+        def put(dx, dz, state):
+            cpu.wr(hum + 1, cx + dx)
+            cpu.wr(hum + 3, cz + dz)
+            cpu.wr(hum + 6, state)
+        cpu.wr(sym["flash_ph"], 1)
+        for dx, dz, state, want in ((0, 0, 0, "LED_G"), (2, -2, sym["HS_WAIT"], "LED_G_BRIGHT"),
+                                    (3, 0, sym["HS_WAIT"], "LED_G"), (-1, 3, sym["HS_WAIT"], "LED_G"),
+                                    (1, 1, sym["HS_ABOARD"], "LED_G"), (-2, 1, sym["HS_WAIT"], "LED_G_BRIGHT")):
+            put(dx, dz, state)
+            step()
+            zp.check(led(10, 37) == want, f"a human {dx},{dz} state {state}: {led(10, 37)}, not {want}")
+        cpu.wr(sym["flash_t"], 50)              # a second on: back to green,
+        step(25)
+        zp.check(led(10, 37) == "LED_G_BRIGHT", "flashed too soon")
+        step(25)
+        zp.check(led(10, 37) == "LED_G", "not back to green after a second")
+        step(50)                                # and bright again
+        zp.check(led(10, 37) == "LED_G_BRIGHT", "not bright again after another second")
+    led_test(body)
+
+
+def test_wall_led():
+    """The middle right LED: amber; flashing bright within 0.2 of a cell's
+    edge with a building past it the VTOL isn't clear of, or the city's
+    edge"""
+    def body(cpu, led, step):
+        grid, cmap, htab = sym["GRID"], sym["city_map"], sym["htab"]
+
+        def height(x, z):
+            k = (cpu.rd(cmap + z * grid + x) & 31) * 2
+            return cpu.rd(htab + k) | cpu.rd(htab + k + 1) << 8
+        # a road cell with a building to its west and roads on its other sides
+        spot = next((x, z) for z in range(2, grid - 2) for x in range(2, grid - 2)
+                    if height(x, z) == 0 and height(x - 1, z) > 0
+                    and height(x + 1, z) == 0 and height(x, z - 1) == 0 and height(x, z + 1) == 0)
+        x, z = spot
+        roof = height(x - 1, z)
+        cpu.wr(sym["flash_ph"], 1)
+
+        def at(cx, fx, cz, fz, y, want):
+            cpu.wr(sym["cam_x"] + 1, fx)
+            cpu.wr(sym["cam_x"] + 2, cx)
+            cpu.wr(sym["cam_z"] + 1, fz)
+            cpu.wr(sym["cam_z"] + 2, cz)
+            cpu.wr(sym["cam_y"], y & 255)
+            cpu.wr(sym["cam_y"] + 1, y >> 8)
+            step()
+            zp.check(led(13, 37) == want, f"at {cx}+{fx}/256, {cz}+{fz}/256, y {y} (roof {roof} west "
+                     f"of {spot}): {led(13, 37)}, not {want}")
+        coll = sym["COLL_H"]
+        at(x, 128, z, 128, 8, "LED_A")          # the middle of the road
+        at(x, 50, z, 128, 8, "LED_A_BRIGHT")    # near the building
+        at(x, 51, z, 128, 8, "LED_A")
+        at(x, 20, z, 128, roof + coll - 1, "LED_A_BRIGHT")
+        at(x, 20, z, 128, roof + coll, "LED_A")         # clear of its roof
+        at(x, 220, z, 128, 8, "LED_A")          # the road side
+        at(0, 10, z, 128, 8, "LED_A_BRIGHT")    # the city's edges
+        at(grid - 1, 250, z, 128, 8, "LED_A_BRIGHT")
+        at(x, 128, 0, 5, 8, "LED_A_BRIGHT")
+        cpu.wr(sym["flash_ph"], 0)
+        at(x, 50, z, 128, 8, "LED_A")           # (its dim second)
+    led_test(body)
+
+
+def test_enemy_led():
+    """The bottom right LED: red; attacked (enemy_alert), bright a second,
+    red a second, 3 times; another attack starts them again"""
+    def body(cpu, led, step):
+        step()
+        zp.check(led(16, 37) == "LED_R", "not red to start")
+        cpu.wr(sym["enemy_alert"], 1)
+        seen = []
+        step()
+        seen.append(led(16, 37))
+        zp.check(cpu.rd(sym["enemy_alert"]) == 0, "the alert not taken")
+        for _ in range(6):
+            step(50)
+            seen.append(led(16, 37))
+        want = ["LED_R_BRIGHT", "LED_R"] * 3 + ["LED_R"]
+        zp.check(seen == want, f"{seen}, not {want}")
+        cpu.wr(sym["enemy_alert"], 1)           # again, mid-way: from the start
+        step()
+        step(50)
+        step(50)
+        cpu.wr(sym["enemy_alert"], 1)
+        step()
+        n = cpu.rd(sym["en_cnt"])
+        zp.check(n == 6, f"not started again: {n}")
+        zp.check(led(16, 37) == "LED_R_BRIGHT", "not bright again")
+    led_test(body)
+
+
+def test_weapon_leds():
+    """The weapon slots' LEDs (row 29, columns 30-34, in wpn_order: keys 2,
+    4, 1, 5, 3) and labels (row 30): no weapon LED_OFF and
+    LABEL_WPNS_EMPTY; else LABEL_WPNS and LED_G, LED_A selected, LED_R
+    selected and firing, LED_R / LED_R_BRIGHT flashing out of ammo; a linked
+    chain gun selected lights both its slots"""
+    def body(cpu, led, step):
+        order = [cpu.rd(sym["wpn_order"] + k) for k in range(5)]
+        slots = sym["wpn_slots"]
+
+        def load(*ws):                  # (type, ammo) for slots 0-4
+            for k, (t, a) in enumerate(ws):
+                cpu.wr(slots + 2 * k, t)
+                cpu.wr(slots + 2 * k + 1, a)
+
+        def show(sel, fire, ph):
+            cpu.wr(sym["wpn_sel"], sel)
+            cpu.wr(sym["fire_held"], fire)
+            cpu.wr(sym["flash_ph"], ph)
+            cpu.wr(sym["dt"], 0)
+            call(cpu, "draw_wpn_leds", page="PAGE_HUD")
+            by_slot = {}
+            for k, sl in enumerate(order):
+                by_slot[sl] = (led(29, 30 + k), led(30, 30 + k))
+            return [by_slot[k] for k in range(5)]
+        G, A, R, RB, OFF = "LED_G", "LED_A", "LED_R", "LED_R_BRIGHT", "LED_OFF"
+        W, E = "LABEL_WPNS", "LABEL_WPNS_EMPTY"
+        gun, rk, ms = sym["WPN_GUN"], sym["WPN_ROCKETS"], sym["WPN_MISSILE"]
+        load((gun, 255), (rk, 12), (0, 0), (ms, 0), (0, 0))
+        got = show(0, 0, 0)
+        want = [(A, W), (G, W), (OFF, E), (R, W), (OFF, E)]
+        zp.check(got == want, f"the gun selected: {got}, not {want}")
+        got = show(0, 1, 1)
+        want = [(R, W), (G, W), (OFF, E), (RB, W), (OFF, E)]
+        zp.check(got == want, f"firing, the flash's bright second: {got}, not {want}")
+        got = show(1, 0, 0)
+        want = [(G, W), (A, W), (OFF, E), (R, W), (OFF, E)]
+        zp.check(got == want, f"the rockets selected: {got}, not {want}")
+        load((gun, 255), (rk, 12), (0, 0), (ms, 4), (0, 0))   # reloaded
+        got = show(1, 0, 1)
+        want = [(G, W), (A, W), (OFF, E), (G, W), (OFF, E)]
+        zp.check(got == want, f"the missiles reloaded: {got}, not {want}")
+        lL, lR = sym["WPN_LCHAIN_L"], sym["WPN_LCHAIN_R"]
+        load((gun, 255), (0, 0), (0, 0), (lL, 90), (lR, 90))  # linked chain guns
+        for sel in (3, 4):
+            got = show(sel, 1, 0)
+            want = [(G, W), (OFF, E), (OFF, E), (R, W), (R, W)]
+            zp.check(got == want, f"a linked chain gun (slot {sel}) firing: {got}, not {want}")
+        got = show(0, 0, 0)
+        want = [(A, W), (OFF, E), (OFF, E), (G, W), (G, W)]
+        zp.check(got == want, f"back to the gun: {got}, not {want}")
+    led_test(body)
 
 
 if __name__ == "__main__":

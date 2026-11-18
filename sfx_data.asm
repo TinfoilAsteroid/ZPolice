@@ -67,13 +67,14 @@ sfx_table:
         dw sfx_bolt                     ; SFX_BOLT
         dw sfx_warn_low                 ; SFX_WARN_LOW
         dw sfx_warn_mid                 ; SFX_WARN_MID
+        dw sfx_warn_high                ; SFX_WARN_HIGH
         ASSERT SFX_MG == 1 && SFX_LASER == 2 && SFX_CHAIN == 3
         ASSERT SFX_ROCKET == 4 && SFX_MISSILE == 5 && SFX_AUTOCANNON == 6
         ASSERT SFX_BOOM_ROCKET == 7 && SFX_BOOM_MISSILE == 8
         ASSERT SFX_BOOM_AUTOCANNON == 9 && SFX_BOOM_PROX == 10 && SFX_SPLAT == 11
         ASSERT SFX_CRASH == 12 && SFX_LOCK == 13
         ASSERT SFX_CHARGE == 14 && SFX_BOLT == 15
-        ASSERT SFX_WARN_LOW == 16 && SFX_WARN_MID == 17
+        ASSERT SFX_WARN_LOW == 16 && SFX_WARN_MID == 17 && SFX_WARN_HIGH == 18
         ASSERT ($ - sfx_table)/2 == SFX_LAST
 
 ; The machine gun, heavy: a sharp crack (bright noise) dropping into a deep
@@ -251,6 +252,17 @@ sfx_warn_low:
         SFX_WARN WARN_LOW_TONE
 sfx_warn_mid:
         SFX_WARN WARN_MID_TONE
+
+; Integrity below 10% (draw_leds): more urgent, three high beeps (about
+; 2 kHz), 60 ms each with 40 ms between
+WARN_HIGH_TONE  equ 55              ; 109375 / 55 = 1989 Hz
+sfx_warn_high:
+        db AY_TONE_C, low WARN_HIGH_TONE, AY_TONE_C+1, high WARN_HIGH_TONE
+        REPT 3
+        db AY_VOL_C, 13, SFX_STEP, SFX_STEP, SFX_STEP
+        db AY_VOL_C, 0, SFX_STEP, SFX_STEP
+        ENDR
+        db SFX_END
 
 ; The missile lock: two short high beeps (about 1.5 kHz, channel A), 80 ms
 ; each with 40 ms between

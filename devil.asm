@@ -676,6 +676,8 @@ dv_eye_black:
 ; roof of comes down; and the VTOL is hit
 ;------------------------------------------------------------------------------
 dv_fire:
+        ld a,1
+        ld (enemy_alert),a              ; (the console's enemy LED)
         xor a
         ld (bolt_up),a                  ; (at the VTOL)
         ld a,BOLT_FRAMES

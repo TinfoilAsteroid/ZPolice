@@ -97,7 +97,9 @@ SFX_BOLT        equ 15              ; its lightning: a crackling zap, then
 SFX_WARN_LOW    equ 16              ; the base's warnings (AY 2 C, sfx4_req):
                                     ;   a terrace or barricade hit, a low beep;
 SFX_WARN_MID    equ 17              ;   the landing pad hit, a mid one
-SFX_LAST        equ 17              ; (sfx_table, sfx_data.asm)
+SFX_WARN_HIGH   equ 18              ; integrity below 10%: 3 high beeps
+                                    ;   (AY 2 C, sfx4_req: draw_leds)
+SFX_LAST        equ 18              ; (sfx_table, sfx_data.asm)
 SFX_STEP        equ $FE             ; end of a step: the next, next interrupt
 SFX_END         equ $FF             ; end of the sound
 ; AY 2's mixers keep tone C on (and its noise off): channel C is the

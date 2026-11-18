@@ -105,6 +105,8 @@ update_weapons:
         call debug_killall              ; (debug: keys 0, 9 and 8)
         call debug_gun_cycle            ; (debug: key 7)
     ENDIF
+        xor a
+        ld (fire_held),a                ; (the console's weapon LEDs)
         call wpn_select                 ; (slots can be chosen when landed)
         call gun_aim                    ; and the centre gun tilted
         call vtol_landed
@@ -113,7 +115,10 @@ update_weapons:
         call lock_off                   ; it takes off (nor a lock); on the
         call pad_service                ; pad: repairs and reloads
         jr .move
-.fire:  xor a
+.fire:  ld a,K_FIRE
+        call key_held
+        ld (fire_held),a                ; (the console's weapon LEDs)
+        xor a
         ld (svc_on),a                   ; (service starts afresh next landing)
         call lock_update                ; the missile lock
         call aim_probe                  ; the aim assist, and the sight
@@ -1766,6 +1771,8 @@ lich_fire:
         call round_spread
         ld a,SFX_ROCKET                 ; (a woosh)
         ld (sfx_req),a
+        ld a,1
+        ld (enemy_alert),a              ; (the console's enemy LED)
         ret
 
 ; HL = the distance from the lich to the aim -> lf_ax, ay, az = where the

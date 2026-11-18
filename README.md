@@ -1872,6 +1872,30 @@ transparent: the city map and the gauges.
   frame after the gauges, written only when the colour changes
   (`alt_led_shown`, reset at each level's start). Both LEDs share
   `set_led`.
+* **The other console LEDs (`draw_leds`, hud.asm):** every frame, each
+  written only when its tile changes; flashing a second bright, a second
+  normal on the 50 Hz clock.
+  * Speed (under S): green; amber from `SPEED_AMBER` (3/4 of SPEED_MAX) or
+    reversing; red boosting.
+  * Integrity (right of the percentage): green; amber below 25% with a mid
+    beep; red below 10% with three high beeps (`SFX_WARN_HIGH`); each beep
+    once on crossing (`int_band`).
+  * Humans (top right): green, flashing while a waiting human is within 2
+    cells (`HUM_NEAR`) on both axes.
+  * Walls (middle right): amber, flashing within 0.2 of a cell (`WALL_NEAR`)
+    of an edge with a building the VTOL isn't clear of, or the city's edge.
+  * Enemies (bottom right): red, flashing 3 times when a lich fires, the
+    devil's bolt is fired at the VTOL or a ghost strikes it
+    (`enemy_alert`, set there).
+* **The weapon LEDs and labels (`draw_wpn_leds`, hud.asm):** the five LEDs
+  at the bottom right (row 29, columns 30-34) and their labels below, left
+  to right as the ULA's slots (keys 2, 4, 1, 5, 3). LED: LED_OFF with no
+  weapon; LED_R / LED_R_BRIGHT flashing a second each while out of ammo;
+  LED_A selected, LED_R while fire is held (`fire_held`, weapons.asm);
+  LED_G otherwise. A linked chain gun selected lights both its slots.
+  Label: LABEL_WPNS with a weapon fitted, LABEL_WPNS_EMPTY without. Every
+  frame, written only when a tile changes, so the load-out, reloading and
+  selecting all show.
 * **Weapon slots (`draw_wpn`):** five columns, at character columns 11, 13,
   15, 17 and 19 (from `WPN_COL0`). Left to right they show the slots keys
   2, 4, 1, 5 and 3 select (`wpn_order`: the centre gun in the middle). From

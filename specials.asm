@@ -639,7 +639,9 @@ g_attack:
         ld (hl),FALSE
         call zblip
         jp g_lose
-.vtol:  ld a,(gp_dmg)                   ; the VTOL (at 0 it is destroyed;
+.vtol:  ld a,1
+        ld (enemy_alert),a              ; (the console's enemy LED)
+        ld a,(gp_dmg)                   ; the VTOL (at 0 it is destroyed;
         jp vtol_damage                  ; zpolice.asm)
 .base:  sub TG_BASE                     ; a base tile: E, D = its cell
         call g_basecell

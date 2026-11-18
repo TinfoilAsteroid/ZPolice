@@ -216,33 +216,30 @@ music on the main menu").
       the tests (the music's position stepping on, the refills, the
       stops).
 
-## Console LEDs and warnings (2026-11-17, to do)
+## Console LEDs and warnings (2026-11-17, done 2026-11-18)
 
-More of the console's LED tiles driven by the game, as the boost and
-altitude LEDs are (hud.asm `set_led`: LED_G / LED_A / LED_R, written to the
-tilemap only when the colour changes, reset at each level's start). The
-layout's spare LEDs: row 29 under the S gauge (column 5) and columns 30-34,
-row 26 column 25, and the column of three at column 37 (rows 10, 13, 16).
-- [ ] **Speed LED** (under the S gauge, row 29 column 5): green / amber /
-      red by speed. To decide: the bands (e.g. amber near SPEED_MAX, red
-      while boosting or reversing?).
-- [ ] **Wall proximity LED:** amber, then red, as the VTOL nears a
-      building's wall or the city's edge. To decide: the distances, and
-      where it's measured (the collision code already finds the nearest
-      wall?). Which cell.
-- [ ] **Integrity warning beeps:** a beep as integrity falls below 25%
-      (`INT_DANGER`) and another, more urgent, below 10%; once on crossing
-      each, or repeating while below? Sound page, like the base warning
-      beeps.
-- [ ] **Human nearby LED:** lit when a human to rescue is within some
-      distance of the VTOL. To decide: the distance, and green only or
-      brighter as it nears (LED_G_BRIGHT).
-- [ ] **Enemy nearby LED:** amber / red as a monster comes within range.
-      To decide: the distances, which monsters count (the current wave's
-      zombies, specials), and the cost: checked a few a frame, not all
-      every frame.
-- [ ] Choose the cells for the last three (the spare LEDs above), and add
-      a test for each LED as test_tiles.py does for boost and altitude.
+All in hud.asm `draw_leds` (every frame; each LED's tile written only when
+it changes, `set_led`; reset at each level's start), tests in
+tests/test_tiles.py. Flashing keeps time on the 50 Hz clock (`dt`).
+- [x] **Speed LED** (row 29 column 5, under S): green; amber from 3/4 of
+      SPEED_MAX (`SPEED_AMBER`) or reversing; red while boosting.
+      *(The bands were mine to choose: change them if you like.)*
+- [x] **Wall proximity LED** (the middle one on the right, row 13 column
+      37): amber; flashes LED_A_BRIGHT / LED_A a second each while within
+      0.20 of a cell (`WALL_NEAR`, 51/256) of an edge with a building past
+      it the VTOL isn't clear of (roof + COLL_H above it), or the city's
+      edge.
+- [x] **Integrity LED and beeps** (row 26 column 25, right of the
+      percentage): green; amber below 25% with a mid beep (SFX_WARN_MID);
+      red below 10% with three high beeps (new SFX_WARN_HIGH). Once on
+      crossing each; again after a repair lifts it back.
+- [x] **Human nearby LED** (the top one on the right, row 10 column 37):
+      green; flashes LED_G_BRIGHT / LED_G a second each while a human
+      waiting to be rescued is within 2 cells on both axes.
+- [x] **Enemy LED** (the bottom one on the right, row 16 column 37): red;
+      a lich's fireball, the devil's bolt at the VTOL or a ghost's blow
+      (`enemy_alert`) flash LED_R_BRIGHT / LED_R a second each, 3 times;
+      another attack starts the 3 again.
 
 ## Timing: real time instead of frame counting (2026-11-15, to review)
 

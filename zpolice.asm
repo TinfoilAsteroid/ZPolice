@@ -2571,6 +2571,10 @@ view_r:     db VIEW_R                   ; draw distance, tiles (load_level)
 dot_r:      db VIEW_R-1                 ; street dots' radius (load_level)
 vtol_hp:    db VTOL_HP                  ; the VTOL's hit points (newGame)
 vtol_dead:  db 0                        ; 1: destroyed (hit points 0)
+fire_held:  db 0                        ; not 0: fire held, flying (the weapon
+                                        ; LEDs: draw_wpn_leds)
+enemy_alert: db 0                       ; 1: a monster attacked the VTOL or
+                                        ; shot at it (the enemy LED: draw_leds)
 dead_down:  db 0                        ; 1: the wreck has hit the ground
 dead_vy:    db 0                        ; its falling speed, units a frame
 dead_wait:  db DEAD_PAUSE               ; frames on the ground to GAME OVER
